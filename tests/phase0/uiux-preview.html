@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ManualBuilder UI/UX Preview</title>
+  <style>
+    :root {
+      --bg:#f4f6f8; --panel:#fff; --line:#dfe3e8; --ink:#18202a; --muted:#66717f;
+      --blue:#175cd3; --blue-soft:#edf4ff; --green:#16794b; --yellow:#a15c00;
+      --shadow:0 1px 2px rgba(18,28,45,.05),0 8px 24px rgba(18,28,45,.05);
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 "BIZ UDPGothic","BIZ UDPゴシック","Meiryo","Yu Gothic UI",sans-serif}
+    button,input,textarea{font:inherit}
+    button{min-height:42px;border:1px solid #cfd5dc;border-radius:8px;background:#fff;color:var(--ink);padding:8px 14px;cursor:pointer}
+    button:hover{background:#f7f9fb} button:focus-visible,input:focus-visible,textarea:focus-visible{outline:3px solid #9bc2ff;outline-offset:2px}
+    .primary{background:var(--blue);border-color:var(--blue);color:#fff;font-weight:700}.primary:hover{background:#124eaf}
+    .appbar{height:64px;background:#fff;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px;padding:0 20px;position:sticky;top:0;z-index:5}
+    .back{width:42px;padding:0;font-size:20px}.brand{font-weight:800;color:#173b71}.docname{min-width:0;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .save{font-size:13px;color:var(--green)}.spacer{flex:1}.watch{display:flex;align-items:center;gap:7px;color:var(--green);font-size:13px;font-weight:700}
+    .dot{width:9px;height:9px;border-radius:99px;background:#2aa36b;box-shadow:0 0 0 4px #e4f5ed}
+    .layout{display:grid;grid-template-columns:240px minmax(0,920px);justify-content:center;gap:24px;padding:24px}
+    aside{position:sticky;top:88px;align-self:start;max-height:calc(100vh - 112px);overflow:auto}
+    .side-title{display:flex;align-items:center;justify-content:space-between;margin:0 0 10px;font-weight:800}
+    .side-title button{min-height:32px;padding:4px 9px;font-size:12px}.sheet{margin-bottom:10px}.sheet-head{display:flex;align-items:center;gap:7px;padding:9px;border-radius:8px;font-size:13px;font-weight:800;color:#3f4b58}.sheet-head.active{background:#eaf2ff;color:#163d75}.sheet-head .sheet-count{margin-left:auto;color:var(--muted);font-size:11px;font-weight:500}
+    .count{font-size:12px;color:var(--muted);font-weight:500}
+    .outline{list-style:none;margin:0;padding:0;display:grid;gap:7px}
+    .outline li{display:grid;grid-template-columns:27px 54px minmax(0,1fr);gap:8px;align-items:center;padding:7px;border:1px solid transparent;border-radius:9px;color:#46515e;font-size:13px}
+    .outline li.active{background:#fff;border-color:#b8cdf0;box-shadow:var(--shadow);color:#163d75}
+    .outline .num{width:26px;height:26px;border-radius:99px;background:#e8edf3;display:grid;place-items:center;font-weight:800}
+    .outline li.active .num{background:var(--blue);color:#fff}.mini{height:35px;border-radius:5px;background:linear-gradient(135deg,#dbe6f4,#f7f9fc);border:1px solid #d5dce5}
+    .olabel{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    main{min-width:0}.notice{display:flex;align-items:center;gap:12px;background:#fff8e8;border:1px solid #f0d69a;border-radius:10px;padding:12px 14px;margin-bottom:16px;color:#704600}
+    .notice strong{margin-right:auto}.notice button{min-height:34px;padding:5px 10px;background:#fffdf8}
+    .hero{display:flex;align-items:end;gap:16px;margin:6px 0 18px}.hero h1{font-size:24px;line-height:1.3;margin:0}.hero p{margin:3px 0 0;color:var(--muted)}
+    .step{background:var(--panel);border:1px solid var(--line);border-radius:13px;margin-bottom:16px;box-shadow:var(--shadow);overflow:hidden}
+    .step.selected{border-color:#8bb4ef;box-shadow:0 0 0 2px #dbeaff,var(--shadow)}
+    .step-head{display:flex;align-items:center;gap:10px;padding:13px 16px;border-bottom:1px solid #e9edf1}
+    .step-no{width:32px;height:32px;border-radius:99px;background:#173b71;color:#fff;display:grid;place-items:center;font-weight:800}.drag{color:#8a949f;letter-spacing:-2px}
+    .step-head strong{font-size:16px}.source{color:var(--muted);font-size:12px}.tools{margin-left:auto;display:flex;gap:7px}.tools button{min-height:34px;padding:5px 10px;font-size:13px}
+    .step-body{display:grid;grid-template-columns:minmax(300px,1.15fr) minmax(300px,1fr);gap:18px;padding:16px}
+    .shot{aspect-ratio:16/9;border:1px solid #d1d8e0;border-radius:9px;background:#f8fafc;overflow:hidden;position:relative}
+    .fakebar{height:13%;background:#225d9f}.fakebox{position:absolute;left:9%;top:27%;width:67%;height:11%;border:2px solid #bfc8d2;border-radius:5px;background:#fff}
+    .fakebox.b{top:45%;width:50%}.fakebutton{position:absolute;left:9%;top:66%;width:22%;height:13%;border-radius:5px;background:#2774c7}
+    .marker{position:absolute;left:73%;top:22%;width:34px;height:34px;border-radius:99px;background:#e33a3a;border:3px solid #fff;color:#fff;display:grid;place-items:center;font-weight:900;box-shadow:0 2px 8px #9228}
+    .arrow{position:absolute;left:55%;top:31%;width:20%;height:4px;background:#e33a3a;transform:rotate(-17deg);transform-origin:right}.arrow:before{content:"";position:absolute;left:-3px;top:-6px;border:8px solid transparent;border-right:12px solid #e33a3a}
+    .fields{display:grid;gap:12px}.field label{display:flex;justify-content:space-between;font-size:13px;font-weight:700;margin-bottom:5px}.hint{font-weight:400;color:#87919d}
+    input,textarea{width:100%;border:1px solid #cdd4dc;border-radius:8px;background:#fff;padding:10px 11px;color:var(--ink)}
+    textarea{min-height:96px;resize:vertical}.autosave{text-align:right;color:var(--green);font-size:12px}
+    .empty-add{border:2px dashed #b7c2ce;border-radius:12px;background:#fafbfd;text-align:center;padding:24px;color:#566271}
+    .empty-add strong{display:block;color:#283543;margin-bottom:6px}.shortcuts{font-size:13px;margin-top:12px}.shortcuts kbd{border:1px solid #cfd5dc;border-bottom-width:2px;border-radius:5px;background:#fff;padding:2px 6px}
+    .fab{display:none}.modal{position:fixed;inset:0;background:#17202c88;display:none;place-items:center;padding:20px;z-index:10}.modal.open{display:grid}
+    .dialog{width:min(560px,100%);background:#fff;border-radius:14px;box-shadow:0 24px 70px #10182855;padding:22px}
+    .dialog h2{margin:0 0 4px}.dialog>p{margin:0 0 18px;color:var(--muted)}
+    .formats{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}.format{border:2px solid #d9dfe6;border-radius:10px;padding:14px;cursor:pointer}.format.chosen{border-color:var(--blue);background:var(--blue-soft)}
+    .format strong{display:block}.format span{font-size:13px;color:var(--muted)}.dialog-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:20px}
+    @media(max-width:900px){.layout{grid-template-columns:1fr;padding:16px}aside{display:none}.step-body{grid-template-columns:1fr}.watch span:last-child{display:none}.docname{max-width:220px}}
+    @media(max-width:640px){.appbar{padding:0 10px}.brand,.save,.preview{display:none}.hero h1{font-size:20px}.tools button:not(:first-child){display:none}.step-body{padding:12px}.formats{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <header class="appbar">
+    <button class="back" aria-label="プロジェクト一覧へ">‹</button>
+    <span class="brand">ManualBuilder</span>
+    <span class="docname">経費精算システム 操作マニュアル</span>
+    <span class="save">✓ 保存済み 14:32</span>
+    <span class="spacer"></span>
+    <span class="watch" title="このタブが撮影対象です"><span class="dot"></span><span>監視中・このタブに追加</span></span>
+    <button class="preview">プレビュー</button>
+    <button class="primary" id="openExport">Excelで作成</button>
+  </header>
+
+  <div class="layout">
+    <aside aria-label="ステップ一覧">
+      <div class="side-title">シート <button>＋ シートを追加</button></div>
+      <div class="sheet">
+        <div class="sheet-head active"><span>▾</span><span>ログイン</span><span class="sheet-count">2手順</span></div>
+        <ol class="outline">
+          <li class="active"><span class="num">1</span><span class="mini"></span><span class="olabel">ログイン画面を開く</span></li>
+          <li><span class="num">2</span><span class="mini"></span><span class="olabel">社員番号を入力する</span></li>
+        </ol>
+      </div>
+      <div class="sheet">
+        <div class="sheet-head"><span>▸</span><span>経費申請</span><span class="sheet-count">1手順</span></div>
+      </div>
+      <div class="sheet">
+        <div class="sheet-head"><span>▸</span><span>承認</span><span class="sheet-count">0手順</span></div>
+      </div>
+    </aside>
+
+    <main>
+      <div class="notice" id="notice"><span>●</span><strong>新しいスクリーンショットを追加しました</strong><button onclick="document.getElementById('step2').scrollIntoView({behavior:'smooth'});this.parentElement.remove()">確認する</button></div>
+      <div class="hero"><div><h1>ログイン</h1><p>Excelシート「ログイン」・ 2ステップ</p></div></div>
+
+      <article class="step selected">
+        <div class="step-head"><span class="drag" aria-hidden="true">⠿</span><span class="step-no">1</span><strong>ログイン画面を開く</strong><span class="source">スクリーンショットから追加</span>
+          <div class="tools"><button>注釈</button><button>撮り直す</button><button>その他</button></div>
+        </div>
+        <div class="step-body">
+          <div class="shot" role="img" aria-label="ログイン画面。URL入力欄を矢印と番号1で示しています"><div class="fakebar"></div><div class="fakebox"></div><div class="fakebox b"></div><div class="fakebutton"></div><div class="arrow"></div><div class="marker">1</div></div>
+          <div class="fields">
+            <div class="field"><label for="title1">タイトル <span class="hint">見出しになります</span></label><input id="title1" value="ログイン画面を開く"></div>
+            <div class="field"><label for="body1">説明</label><textarea id="body1">ブラウザを開き、アドレス欄に社内システムのURLを入力します。</textarea></div>
+            <div class="field"><label for="note1">補足 <span class="hint">任意</span></label><input id="note1" placeholder="注意点や例外があれば入力"></div>
+            <div class="autosave">✓ 保存済み</div>
+          </div>
+        </div>
+      </article>
+
+      <article class="step" id="step2">
+        <div class="step-head"><span class="drag" aria-hidden="true">⠿</span><span class="step-no">2</span><strong>社員番号を入力する</strong><span class="source">12秒前に追加</span>
+          <div class="tools"><button>注釈</button><button>撮り直す</button><button>その他</button></div>
+        </div>
+        <div class="step-body">
+          <div class="shot" role="img" aria-label="社員番号入力画面"><div class="fakebar"></div><div class="fakebox"></div><div class="fakebox b"></div><div class="fakebutton"></div></div>
+          <div class="fields">
+            <div class="field"><label for="title2">タイトル</label><input id="title2" value="社員番号を入力する"></div>
+            <div class="field"><label for="body2">説明</label><textarea id="body2" autofocus placeholder="この画面で行う操作を書いてください"></textarea></div>
+            <div class="field"><label for="note2">補足 <span class="hint">任意</span></label><input id="note2" placeholder="注意点や例外があれば入力"></div>
+            <div class="autosave">入力すると自動保存</div>
+          </div>
+        </div>
+      </article>
+
+      <div class="empty-add">
+        <strong>次の画面を撮ると、ここにステップが追加されます</strong>
+        <span>画像の貼り付け・ドラッグ&ドロップ・ファイル選択にも対応</span>
+        <div class="shortcuts"><kbd>Win</kbd> + <kbd>Shift</kbd> + <kbd>S</kbd> で撮影　 <kbd>Ctrl</kbd> + <kbd>V</kbd> で貼り付け</div>
+      </div>
+    </main>
+  </div>
+
+  <div class="modal" id="exportModal" role="dialog" aria-modal="true" aria-labelledby="exportTitle">
+    <div class="dialog">
+      <h2 id="exportTitle">マニュアルを作成</h2>
+      <p>Excelを推奨します。アプリのシートがExcelのワークシートになります。</p>
+      <div class="formats">
+        <div class="format chosen" tabindex="0"><strong>Excel（推奨）</strong><span>部内で見やすく、あとから追記・修正できます</span></div>
+        <div class="format" tabindex="0"><strong>Word</strong><span>Word形式が必要な場合の縦長文書です</span></div>
+      </div>
+      <div class="dialog-actions"><button id="closeExport">キャンセル</button><button>プレビュー</button><button class="primary">作成する</button></div>
+    </div>
+  </div>
+
+  <script>
+    const modal=document.getElementById('exportModal');
+    document.getElementById('openExport').onclick=()=>modal.classList.add('open');
+    document.getElementById('closeExport').onclick=()=>modal.classList.remove('open');
+    modal.addEventListener('click',e=>{if(e.target===modal)modal.classList.remove('open')});
+    document.querySelectorAll('.format').forEach(x=>x.addEventListener('click',()=>{
+      document.querySelectorAll('.format').forEach(y=>y.classList.remove('chosen'));x.classList.add('chosen');
+    }));
+  </script>
+</body>
+</html>

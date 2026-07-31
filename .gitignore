@@ -1,0 +1,53 @@
+# ManualBuilder runtime and project data
+/data/
+/projects/
+/screenshots/
+/captures/
+/exports/
+/out/
+**/out/
+**/.tmp/
+**/tmp/
+
+# Generated reports and Office/PDF outputs
+result-*.txt
+*.xlsx
+*.xls
+*.xlsm
+*.xlsb
+*.docx
+*.docm
+*.pdf
+
+# Temporary and backup files
+*.tmp
+*.temp
+*.bak
+*.old
+*.log
+*.etl
+*.clixml
+~$*
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.pfx
+*.p12
+credentials*
+secrets*
+
+# OS and editor files
+Thumbs.db
+Desktop.ini
+.DS_Store
+.vscode/
+.idea/
+*.code-workspace
+
+# Test artifacts generated inside Phase 0
+/tests/phase0/test-images/
+/tests/phase0/server-data/
