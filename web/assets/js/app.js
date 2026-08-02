@@ -2,6 +2,9 @@
   'use strict';
 
   const appVersion = '0.21.8';
+  // 番号注釈はSVG属性で指定するためCSS変数を参照できない。
+  // 編集画面とExcel・Word出力（New-MbAnnotatedImage）で同じ見た目にするため、基準フォントを揃える。
+  const ANNOTATION_NUMBER_FONT = '"BIZ UDPGothic", "BIZ UDPゴシック", "BIZ UDGothic", "BIZ UDゴシック", Meiryo, "Yu Gothic UI", "MS Pゴシック", sans-serif';
   let versionReloadRequested = false;
   const ensureCurrentAssets = () => {
     const serverVersion = document.getElementById('workspace')?.dataset.appVersion || '';
@@ -186,8 +189,8 @@
       } else if (annotation.type === 'number') {
         group.appendChild(svgNode('circle', { cx: x1, cy: y1, r: 24 * unit, fill: annotationColor }));
         const text = svgNode('text', {
-          x: x1, y: y1 + (1.5 * unit), fill: '#ffffff', 'font-size': 27 * unit,
-          'font-family': 'Arial, sans-serif', 'font-weight': 700,
+          x: x1, y: y1 + (1.5 * unit), fill: '#ffffff', 'font-size': 24 * unit,
+          'font-family': ANNOTATION_NUMBER_FONT, 'font-weight': 700,
           'text-anchor': 'middle', 'dominant-baseline': 'middle'
         });
         text.textContent = String(annotation.label);
@@ -297,10 +300,8 @@
     positionCardAnnotationOverlay(card);
     renderAnnotations(overlay, readCardAnnotations(card));
     const image = card.querySelector('.step-image');
-    if (image && !image.dataset.annotationLoadBound) {
-      image.dataset.annotationLoadBound = 'true';
-      image.addEventListener('load', () => renderCardAnnotations(card));
-    }
+    // onloadは代入のたびに前のハンドラーを置き換えるため、画像差し替えを繰り返しても蓄積しない。
+    if (image) image.onload = () => renderCardAnnotations(card);
   };
 
   const renderAllCardAnnotations = () => stepCards().forEach(renderCardAnnotations);
@@ -548,6 +549,36 @@
 
   const imageEditSnapshot = () => JSON.stringify({ annotations: annotationEditor.annotations, crop: annotationEditor.crop });
 
+  // 番号注釈は同じシート内の手順をまたいで連番にする。手順ごとに1へ戻ると付け直しが煩雑なため。
+  // 編集中のカードだけは未保存の状態を見る（保存済みデータには反映前の値が残っているため）。
+  const usedNumberLabelsInSheet = () => {
+    const used = new Set();
+    stepCards().forEach((card) => {
+      const list = (card === annotationEditor.card) ? annotationEditor.annotations : readCardAnnotations(card);
+      list.forEach((item) => {
+        if (!item || item.type !== 'number') return;
+        const value = Math.round(Number(item.label));
+        if (Number.isFinite(value) && value >= 1 && value <= 99) used.add(value);
+      });
+    });
+    return used;
+  };
+
+  // 最大値の次を返す。99まで埋まっている場合は空き番号を探し、無ければ0（追加不可）を返す。
+  const nextNumberLabelInSheet = () => {
+    const used = usedNumberLabelsInSheet();
+    let maximum = 0;
+    used.forEach((value) => { if (value > maximum) maximum = value; });
+    if (maximum < 99) return maximum + 1;
+    for (let candidate = 1; candidate <= 99; candidate++) {
+      if (!used.has(candidate)) return candidate;
+    }
+    return 0;
+  };
+
+  const selectedAnnotation = () =>
+    annotationEditor.annotations.find((item) => item.id === annotationEditor.selectedId) || null;
+
   const setImageEditStatus = (state, text) => {
     const status = annotationEditor.dialog?.querySelector('[data-image-edit-status]');
     if (!status) return;
@@ -595,6 +626,19 @@
     if (redo) redo.disabled = annotationEditor.historyIndex >= annotationEditor.history.length - 1;
     if (remove) remove.disabled = !annotationEditor.selectedId;
     if (resetCrop) resetCrop.disabled = isFullCrop(annotationEditor.crop);
+
+    const numberInput = dialog.querySelector('[data-annotation-number]');
+    const numberHint = dialog.querySelector('[data-annotation-number-hint]');
+    if (numberInput) {
+      const selected = selectedAnnotation();
+      const isNumber = Boolean(selected) && selected.type === 'number';
+      numberInput.disabled = !isNumber;
+      // 入力中に値を上書きすると打ち直しになるため、フォーカス中は触らない。
+      if (document.activeElement !== numberInput) {
+        numberInput.value = isNumber ? String(selected.label) : '';
+      }
+      if (numberHint) numberHint.hidden = isNumber;
+    }
   };
 
   const renderCropOverlay = (svg) => {
@@ -750,7 +794,7 @@
     if (annotationEditor.dialog) return annotationEditor.dialog;
     const dialog = document.createElement('dialog');
     dialog.className = 'annotation-editor';
-    dialog.innerHTML = '<header class="annotation-editor__header"><div><strong>画像を編集</strong><span>ツールを選んで画像上をドラッグします。作成した注釈はそのまま移動・サイズ変更できます。</span></div><button type="button" class="button button--primary annotation-editor__done" data-annotation-close>完了</button></header><div class="annotation-editor__toolbar" role="toolbar" aria-label="画像編集ツール"><div class="annotation-editor__tool-group"><span>基本</span><button type="button" data-annotation-tool="select">選択・移動</button><button type="button" data-annotation-tool="crop">切り抜き</button></div><div class="annotation-editor__tool-group"><span>注釈</span><button type="button" data-annotation-tool="rect">赤枠</button><button type="button" data-annotation-tool="arrow">赤矢印</button><button type="button" data-annotation-tool="number">番号</button><button type="button" data-annotation-tool="blackout">黒塗り</button></div><div class="annotation-editor__tool-group annotation-editor__tool-group--commands"><span>編集</span><button type="button" data-annotation-undo title="元に戻す">↶ 戻す</button><button type="button" data-annotation-redo title="やり直す">↷ やり直す</button><button type="button" data-annotation-remove>選択を削除</button><button type="button" data-crop-reset>切り抜きを戻す</button><button type="button" data-annotation-clear>注釈をすべて削除</button></div></div><div class="annotation-editor__canvas"><div class="annotation-editor__stage"><img alt="編集対象のスクリーンショット"><svg class="annotation-editor__svg" viewBox="0 0 1000 1000" preserveAspectRatio="none"></svg></div></div><footer class="annotation-editor__footer"><span data-image-edit-status class="annotation-editor__save-status annotation-editor__save-status--saved">自動保存済み</span><span>黒塗りと切り抜きは元画像を変更しません。機密情報の完全削除機能ではありません。</span></footer>';
+    dialog.innerHTML = '<header class="annotation-editor__header"><div><strong>画像を編集</strong><span>ツールを選んで画像上をドラッグします。作成した注釈はそのまま移動・サイズ変更できます。</span></div><button type="button" class="button button--primary annotation-editor__done" data-annotation-close>完了</button></header><div class="annotation-editor__toolbar" role="toolbar" aria-label="画像編集ツール"><div class="annotation-editor__tool-group"><span>基本</span><button type="button" data-annotation-tool="select">選択・移動</button><button type="button" data-annotation-tool="crop">切り抜き</button></div><div class="annotation-editor__tool-group"><span>注釈</span><button type="button" data-annotation-tool="rect">赤枠</button><button type="button" data-annotation-tool="arrow">赤矢印</button><button type="button" data-annotation-tool="number">番号</button><button type="button" data-annotation-tool="blackout">黒塗り</button></div><div class="annotation-editor__tool-group"><span>番号の値</span><div class="annotation-number-field"><input type="number" inputmode="numeric" min="1" max="99" step="1" data-annotation-number aria-label="選択した番号注釈の値" title="番号注釈を選ぶと1〜99へ変更できます" disabled><span class="annotation-number-field__hint" data-annotation-number-hint>番号を選ぶ</span></div></div><div class="annotation-editor__tool-group annotation-editor__tool-group--commands"><span>編集</span><button type="button" data-annotation-undo title="元に戻す">↶ 戻す</button><button type="button" data-annotation-redo title="やり直す">↷ やり直す</button><button type="button" data-annotation-remove>選択を削除</button><button type="button" data-crop-reset>切り抜きを戻す</button><button type="button" data-annotation-clear>注釈をすべて削除</button></div></div><div class="annotation-editor__canvas"><div class="annotation-editor__stage"><img alt="編集対象のスクリーンショット"><svg class="annotation-editor__svg" viewBox="0 0 1000 1000" preserveAspectRatio="none"></svg></div></div><footer class="annotation-editor__footer"><span data-image-edit-status class="annotation-editor__save-status annotation-editor__save-status--saved">自動保存済み</span><span>黒塗りと切り抜きは元画像を変更しません。機密情報の完全削除機能ではありません。</span></footer>';
     document.body.appendChild(dialog);
     annotationEditor.dialog = dialog;
 
@@ -777,6 +821,42 @@
       if (event.target.closest('[data-annotation-close]')) closeAnnotationEditor();
     });
 
+    // 選択中の番号注釈を任意の値へ変更する。入力のたびに描画し、確定時に履歴へ積む。
+    const applySelectedNumberLabel = (input, commit) => {
+      const selected = selectedAnnotation();
+      if (!selected || selected.type !== 'number') return;
+      const value = Math.round(Number(input.value));
+      if (!Number.isFinite(value) || value < 1 || value > 99) {
+        if (commit) { input.value = String(selected.label); }
+        return;
+      }
+      if (selected.label === value) return;
+      selected.label = value;
+      renderAnnotationEditor();
+      if (commit) { pushAnnotationHistory(); } else { queueImageEditSave(); }
+    };
+
+    dialog.addEventListener('input', (event) => {
+      const input = event.target.closest('[data-annotation-number]');
+      if (input) applySelectedNumberLabel(input, false);
+    });
+
+    dialog.addEventListener('change', (event) => {
+      const input = event.target.closest('[data-annotation-number]');
+      if (input) applySelectedNumberLabel(input, true);
+    });
+
+    dialog.addEventListener('keydown', (event) => {
+      const input = event.target.closest('[data-annotation-number]');
+      if (!input) return;
+      // 編集中のEnterでダイアログが閉じないようにし、その場で確定させる。
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        applySelectedNumberLabel(input, true);
+        input.blur();
+      }
+    });
+
     dialog.addEventListener('cancel', (event) => {
       event.preventDefault();
       closeAnnotationEditor();
@@ -791,7 +871,11 @@
         return;
       }
       if (tool === 'number') {
-        const nextLabel = Math.min(99, Math.max(0, ...annotationEditor.annotations.filter((item) => item.type === 'number').map((item) => Number(item.label) || 0)) + 1);
+        const nextLabel = nextNumberLabelInSheet();
+        if (nextLabel < 1) {
+          showToast('このシートで1〜99の番号をすべて使っています。', 'info');
+          return;
+        }
         const annotation = { id: createAnnotationId(), type: 'number', x1: point.x, y1: point.y, x2: point.x, y2: point.y, label: nextLabel };
         annotationEditor.annotations.push(annotation);
         annotationEditor.selectedId = annotation.id;
@@ -1034,7 +1118,6 @@
     card.querySelector('.crop-badge')?.remove();
     if (previewButton) previewButton.dataset.imagePreview = result.imageUrl;
     if (image) {
-      image.removeAttribute('data-annotation-load-bound');
       image.onload = () => renderCardAnnotations(card);
       image.src = result.imageUrl;
     }
@@ -1621,9 +1704,13 @@
     if (empty) empty.hidden = visible > 0;
   });
 
+  let stepNavigationRebuildTimer = 0;
   document.body.addEventListener('input', (event) => {
     if (!event.target.matches('.step-card input[name="title"], .step-card textarea[name="description"]')) return;
-    rebuildStepNavigation();
+    // 打鍵ごとに左アウトライン全体を作り直すと、手順数が多いマニュアルで入力が引っかかる。
+    // 入力が一段落してからまとめて更新する。
+    window.clearTimeout(stepNavigationRebuildTimer);
+    stepNavigationRebuildTimer = window.setTimeout(rebuildStepNavigation, 200);
   });
 
   document.body.addEventListener('input', (event) => {

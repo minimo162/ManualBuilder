@@ -184,6 +184,12 @@ function Test-MbProject {
             if (@($step.annotations).Count -gt 100) { throw '1手順の注釈は100件までです。' }
             $annotationIds = New-Object 'System.Collections.Generic.HashSet[string]'
             foreach ($annotation in @($step.annotations)) {
+                # StrictMode下で生の英語例外にならないよう、必須プロパティの存在を先に確かめる。
+                $annotationProperties = @()
+                if ($null -ne $annotation) { $annotationProperties = @($annotation.PSObject.Properties.Name) }
+                if (($annotationProperties -notcontains 'id') -or ($annotationProperties -notcontains 'type')) {
+                    throw '注釈データの形式が不正です。'
+                }
                 if ([string]$annotation.id -notmatch '^annotation-[a-f0-9]{32}$') { throw '注釈IDの形式が不正です。' }
                 if (-not $annotationIds.Add([string]$annotation.id)) { throw '注釈IDが重複しています。' }
                 if ([string]$annotation.type -notin @('rect', 'arrow', 'number', 'blackout')) { throw '注釈種類が不正です。' }
@@ -194,7 +200,7 @@ function Test-MbProject {
                         throw '注釈座標が範囲外です。'
                     }
                 }
-                $label = [int]$annotation.label
+                $label = if ($annotationProperties -contains 'label') { [int]$annotation.label } else { 0 }
                 if ([string]$annotation.type -eq 'number' -and ($label -lt 1 -or $label -gt 99)) { throw '番号注釈は1〜99です。' }
                 if ([string]$annotation.type -ne 'number' -and $label -ne 0) { throw '番号以外の注釈ラベルが不正です。' }
             }
@@ -228,7 +234,11 @@ function Save-MbProject {
 
     $Project = Repair-MbProject -Project $Project
     Test-MbProject -Project $Project
-    $Project.revision = [int]$Project.revision + 1
+    # revisionとupdatedAtはJSONへ載せるため書込み前に更新するが、
+    # 書込みに失敗した場合はメモリとディスクがずれないよう元へ戻す。
+    $previousRevision = [int]$Project.revision
+    $previousUpdatedAt = [string]$Project.updatedAt
+    $Project.revision = $previousRevision + 1
     $Project.updatedAt = Get-MbUtcTimestamp
 
     $directory = Split-Path -Parent $Path
@@ -248,6 +258,10 @@ function Save-MbProject {
         } else {
             [IO.File]::Move($tempPath, $Path)
         }
+    } catch {
+        $Project.revision = $previousRevision
+        $Project.updatedAt = $previousUpdatedAt
+        throw
     } finally {
         if (Test-Path -LiteralPath $tempPath) {
             Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
@@ -263,6 +277,7 @@ function Get-MbProject {
         return Save-MbProject -Project (New-MbProject) -Path $Path
     }
 
+    $primaryError = ''
     try {
         $raw = [IO.File]::ReadAllText($Path, [Text.Encoding]::UTF8)
         $project = $raw | ConvertFrom-Json
@@ -270,8 +285,27 @@ function Get-MbProject {
         Test-MbProject -Project $project
         return $project
     } catch {
-        throw "プロジェクトを読み込めません。破損の可能性があります。$($_.Exception.Message)"
+        $primaryError = $_.Exception.Message
     }
+
+    # 本体が壊れている場合だけ、Save-MbProjectが残した直前のバックアップから復旧を試みる。
+    # 検証に通ったものだけを採用し、通らなければ従来どおり安全停止する。
+    $backupPath = "$Path.bak"
+    if (Test-Path -LiteralPath $backupPath) {
+        try {
+            $backupRaw = [IO.File]::ReadAllText($backupPath, [Text.Encoding]::UTF8)
+            $backupProject = $backupRaw | ConvertFrom-Json
+            $backupProject = Repair-MbProject -Project $backupProject
+            Test-MbProject -Project $backupProject
+            try {
+                return Save-MbProject -Project $backupProject -Path $Path
+            } catch {
+                return $backupProject
+            }
+        } catch { }
+    }
+
+    throw "プロジェクトを読み込めません。破損の可能性があります。$primaryError"
 }
 
 function Get-MbSelectedSheet {
@@ -469,6 +503,12 @@ function Set-MbStepAnnotations {
     $normalized = New-Object System.Collections.ArrayList
     $annotationIds = New-Object 'System.Collections.Generic.HashSet[string]'
     foreach ($annotation in $parsed) {
+        # 受信JSONは配列要素がオブジェクトとは限らないため、プロパティ参照前に形式を確かめる。
+        $annotationProperties = @()
+        if ($null -ne $annotation) { $annotationProperties = @($annotation.PSObject.Properties.Name) }
+        if (($annotationProperties -notcontains 'id') -or ($annotationProperties -notcontains 'type')) {
+            throw '注釈データの形式が不正です。'
+        }
         if ([string]$annotation.id -notmatch '^annotation-[a-f0-9]{32}$') { throw '注釈IDの形式が不正です。' }
         if (-not $annotationIds.Add([string]$annotation.id)) { throw '注釈IDが重複しています。' }
         $type = [string]$annotation.type
