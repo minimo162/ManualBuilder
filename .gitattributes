@@ -1,5 +1,10 @@
 * text=auto
 
+# Repository configuration files stay LF on every platform.
+.editorconfig text eol=lf
+.gitattributes text eol=lf
+.gitignore text eol=lf
+
 # Windows PowerShell 5.1 scripts are checked out with CRLF.
 *.ps1 text eol=crlf
 *.psm1 text eol=crlf
