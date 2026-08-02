@@ -1,12 +1,12 @@
 # web
 
-Phase 1のブラウザーUIを置きます。
+Phase 1のブラウザーUIです。
 
-予定する構成:
+構成:
 
-- `index.html`: アプリシェル
-- `assets/css/`: ローカルCSS
-- `assets/js/`: htmx、並べ替え、必要最小限のJavaScript
-- `partials/`: htmxで返す画面断片の設計資料またはテンプレート
+- `index.html`: セッショントークンを受け取り、編集画面を読み込むアプリシェル
+- `assets/css/app.css`: PC閲覧を優先したレスポンシブUI
+- `assets/js/app.js`: 保存状態、画像取込み、手順並べ替え・削除、注釈編集、Excel出力進捗、エラー通知
+- `vendor/htmx-2.0.10.min.js`: CDNを使わない固定版htmx
 
 実行時にCDNへ依存せず、必要なライブラリはバージョンを固定してリポジトリ内から配信します。入力中カードの親要素をポーリングで差し替えないことを基本原則とします。
