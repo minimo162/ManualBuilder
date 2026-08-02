@@ -1484,8 +1484,8 @@ try {
         $context = $null
         $contextTask = $listener.GetContextAsync()
         while (-not $contextTask.AsyncWaitHandle.WaitOne(200)) {
-            Update-MbCaptureHeartbeatState
-            Invoke-MbWatcherFlush
+            try { Update-MbCaptureHeartbeatState } catch { Write-MbLog $_.Exception.Message 'WARN' }
+            try { Invoke-MbWatcherFlush } catch { Write-MbLog $_.Exception.Message 'WARN' }
             if (-not $script:Running) { break }
         }
         if (-not $script:Running) { break }
@@ -1494,10 +1494,15 @@ try {
             $context = $contextTask.GetAwaiter().GetResult()
             Invoke-MbRoute -Context $context -BoundPort $boundPort -Token $token
         } catch [System.UnauthorizedAccessException] {
-            if ($context) { Write-MbResponse $context $_.Exception.Message 403 'text/plain; charset=utf-8' }
+            # 応答の送信途中で失敗した場合、再送信も失敗する。ここで握り潰さないとサーバー全体が停止する。
+            if ($context) {
+                try { Write-MbResponse $context $_.Exception.Message 403 'text/plain; charset=utf-8' } catch { }
+            }
             Write-MbLog $_.Exception.Message 'WARN'
         } catch {
-            if ($context) { Write-MbResponse $context '処理中にエラーが発生しました。入力内容はプロジェクトファイルを確認してください。' 500 'text/plain; charset=utf-8' }
+            if ($context) {
+                try { Write-MbResponse $context '処理中にエラーが発生しました。入力内容はプロジェクトファイルを確認してください。' 500 'text/plain; charset=utf-8' } catch { }
+            }
             Write-MbLog $_.Exception.Message 'ERROR'
         } finally {
             if ($context) {

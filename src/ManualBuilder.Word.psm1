@@ -30,11 +30,17 @@ function Release-MbWordComObject {
 function Get-MbWordProcessId {
     param([Parameter(Mandatory = $true)][object]$Application)
     if (-not $script:MbWordPInvokeAvailable) { return 0 }
+    # WordのApplicationはExcelと違い Hwnd を公開せず、常に0になる。
+    # 文書を1つ開いた後の ActiveWindow.Hwnd なら所有プロセスを特定できるため、そちらを優先する。
+    $handle = [int64]0
+    try { $handle = [int64]$Application.ActiveWindow.Hwnd } catch { $handle = [int64]0 }
+    if ($handle -eq 0) {
+        try { $handle = [int64]$Application.Hwnd } catch { $handle = [int64]0 }
+    }
+    if ($handle -eq 0) { return 0 }
     try {
-        $hwnd = [IntPtr]([int64]$Application.Hwnd)
-        if ($hwnd -eq [IntPtr]::Zero) { return 0 }
         $processId = [uint32]0
-        [void][ManualBuilderWord.NativeMethods]::GetWindowThreadProcessId($hwnd, [ref]$processId)
+        [void][ManualBuilderWord.NativeMethods]::GetWindowThreadProcessId([IntPtr]$handle, [ref]$processId)
         return [int]$processId
     } catch { return 0 }
 }
@@ -188,8 +194,9 @@ function Set-MbWordStyleDefinition {
 
 function Set-MbWordDocumentDesign {
     param($Document, [string]$FontName)
-    $colorText = ConvertTo-MbWordBgr 32 55 72
-    $colorAccent = ConvertTo-MbWordBgr 46 94 140
+    # ExcelとWordは同じproject.jsonから作るため、テーマ色をExcel側（ManualBuilder.Excel.psm1）と揃える。
+    $colorText = ConvertTo-MbWordBgr 24 32 51
+    $colorAccent = ConvertTo-MbWordBgr 58 91 160
     Set-MbWordStyleDefinition $Document -1 $FontName 10.5 $false $colorText 0 6
     Set-MbWordStyleDefinition $Document -2 $FontName 16 $true $colorAccent 18 10
     Set-MbWordStyleDefinition $Document -3 $FontName 13 $true $colorAccent 14 7
@@ -319,6 +326,19 @@ function Invoke-MbWordExport {
         $settingsApplied = $true
         $documents = $null
         try { $documents = $word.Documents; $document = $documents.Add() } finally { Release-MbWordComObject $documents }
+
+        # 文書ができるとActiveWindow経由でHwndを取得できる。PID差分で特定した所有PIDと
+        # 一致した場合だけ「Hwndで所有を証明した」状態へ引き上げ、終了時の安全網を有効にする。
+        # 一致しない場合は引き上げず、強制終了の対象にしない。
+        if ($ownershipMode -ne 'Hwnd') {
+            $hwndOwnedPid = Get-MbWordProcessId -Application $word
+            if ($hwndOwnedPid -gt 0 -and $hwndOwnedPid -eq $ownPid) {
+                $ownershipMode = 'Hwnd'
+                $status.ownershipMode = $ownershipMode
+                Write-MbWordStatus $StatusPath $status
+            }
+        }
+
         $selection = $word.Selection
         Set-MbWordDocumentDesign $document $fontName
         $pageSetup = $null
@@ -398,7 +418,7 @@ function Invoke-MbWordExport {
                     if (-not $sourcePath -or -not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) { throw "画像が見つかりません: $($step.imageId)" }
                     $renderedPath = Join-Path $renderDirectory ("word-image-{0:d4}.png" -f $globalStep)
                     $imagePath = New-MbAnnotatedImage -SourcePath $sourcePath -Annotations @($step.annotations) -Crop $step.crop `
-                        -DestinationPath $renderedPath -TargetDisplayWidth 600 -TargetDisplayHeight 680
+                        -DestinationPath $renderedPath -TargetDisplayWidth 600 -TargetDisplayHeight 680 -NumberFontName $fontName
                     if ($imagePath -eq $renderedPath) { [void]$generatedImages.Add($renderedPath) }
                     Move-MbWordSelectionToEnd $selection $document
                     $shape = $null; $imageParagraph = $null
@@ -504,6 +524,8 @@ function Invoke-MbWordExport {
         Release-MbWordComObject $word
         $selection = $null; $document = $null; $word = $null
         [GC]::Collect(); [GC]::WaitForPendingFinalizers(); [GC]::Collect(); [GC]::WaitForPendingFinalizers()
+        # Stop-ProcessはHwndで所有を証明したPIDにのみ許可する（WORD-OUTPUT-DESIGN-v0.12 の安全境界）。
+        # PID差分モードは他人のWINWORDを指し得るため、未保存文書を守る目的で強制終了しない。
         if ($ownershipProven -and $ownPid -gt 0 -and $ownershipMode -eq 'Hwnd') {
             $deadline = (Get-Date).AddSeconds(10)
             do {

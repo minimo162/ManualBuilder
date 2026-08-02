@@ -94,7 +94,13 @@ function Get-MbProjectCatalog {
             })
         }
     }
-    return @($entries | Sort-Object @{ Expression = { [DateTime]$_.updatedAt }; Descending = $true }, @{ Expression = { $_.title }; Descending = $false })
+    # updatedAtが日時として壊れた項目が1件でもあると一覧全体が表示できなくなるため、
+    # パースできない場合は最古扱いにして並べ替えだけを継続する。
+    $updatedAtExpression = {
+        $parsed = [DateTime]::MinValue
+        if ([DateTime]::TryParse([string]$_.updatedAt, [ref]$parsed)) { $parsed } else { [DateTime]::MinValue }
+    }
+    return @($entries | Sort-Object @{ Expression = $updatedAtExpression; Descending = $true }, @{ Expression = { $_.title }; Descending = $false })
 }
 
 function New-MbCatalogProject {

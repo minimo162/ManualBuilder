@@ -115,7 +115,7 @@ function Get-MbSafeExcelFileName {
         [string]$Extension = '.xlsx'
     )
 
-    $safe = $Name -replace '[\/:*?"<>|]', '_'
+    $safe = $Name -replace '[\\/:*?"<>|]', '_'
     $safe = ($safe.ToCharArray() | ForEach-Object { if ([int]$_ -lt 32) { '_' } else { $_ } }) -join ''
     $safe = $safe.TrimEnd(' ', '.')
     if ([string]::IsNullOrWhiteSpace($safe)) { $safe = 'manual' }
@@ -140,7 +140,7 @@ function Get-MbSafeExcelWorksheetName {
     )
 
     $safe = [string]$RequestedName
-    $safe = $safe -replace '[:\/\?\*\[\]]', '・'
+    $safe = $safe -replace '[:\\/\?\*\[\]]', '・'
     $safe = ($safe.ToCharArray() | ForEach-Object { if ([int]$_ -lt 32) { '・' } else { $_ } }) -join ''
     $safe = $safe.Trim().Trim([char]39)
     if ([string]::IsNullOrWhiteSpace($safe)) { $safe = 'シート' }
@@ -163,7 +163,7 @@ function Get-MbSafeExcelWorksheetName {
 function Test-MbExcelWorksheetName {
     param([AllowEmptyString()][string]$Name)
     if ([string]::IsNullOrWhiteSpace($Name) -or $Name.Length -gt 31) { return $false }
-    if ($Name -match '[:\/\?\*\[\]]') { return $false }
+    if ($Name -match '[:\\/\?\*\[\]]') { return $false }
     if ($Name.StartsWith("'") -or $Name.EndsWith("'")) { return $false }
     foreach ($character in $Name.ToCharArray()) {
         if ([int]$character -lt 32) { return $false }
@@ -259,8 +259,11 @@ function New-MbAnnotatedImage {
         [Parameter(Mandatory = $true)][string]$DestinationPath,
         [ValidateRange(100, 4000)][int]$TargetDisplayWidth = 760,
         [ValidateRange(100, 4000)][int]$TargetDisplayHeight = 880,
-        [ValidateRange(1.0, 2.0)][double]$MaximumDisplayScale = 2.0
+        [ValidateRange(1.0, 2.0)][double]$MaximumDisplayScale = 2.0,
+        # 番号注釈は編集画面のSVGと同じ基準フォントで描く。呼び出し元の解決済みフォントを受け取る。
+        [AllowEmptyString()][string]$NumberFontName = ''
     )
+    if ([string]::IsNullOrWhiteSpace($NumberFontName)) { $NumberFontName = Resolve-MbExcelBodyFont }
 
     $cropX = if ($null -ne $Crop -and $Crop.PSObject.Properties.Name -contains 'x') { [double]$Crop.x } else { 0.0 }
     $cropY = if ($null -ne $Crop -and $Crop.PSObject.Properties.Name -contains 'y') { [double]$Crop.y } else { 0.0 }
@@ -321,9 +324,11 @@ function New-MbAnnotatedImage {
         $redBrush = New-Object Drawing.SolidBrush $red
         $blackBrush = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(17, 24, 39))
         $whiteBrush = New-Object Drawing.SolidBrush ([Drawing.Color]::White)
-        $fontSize = [single][Math]::Max(9, (27.0 * $annotationUnit) / $displayScale)
+        # 基準フォント(BIZ UDPゴシック)はArialより数字が広いため、2桁でも円内に余白が残る24を使う。
+        # 編集画面のSVG(app.js)と同じ値にすること。
+        $fontSize = [single][Math]::Max(9, (24.0 * $annotationUnit) / $displayScale)
         $numberOffsetY = [single]((1.5 * $annotationUnit) / $displayScale)
-        $numberFont = New-Object Drawing.Font 'Arial', $fontSize, ([Drawing.FontStyle]::Bold), ([Drawing.GraphicsUnit]::Pixel)
+        $numberFont = New-Object Drawing.Font $NumberFontName, $fontSize, ([Drawing.FontStyle]::Bold), ([Drawing.GraphicsUnit]::Pixel)
         $numberFormat = New-Object Drawing.StringFormat
         $numberFormat.Alignment = [Drawing.StringAlignment]::Center
         $numberFormat.LineAlignment = [Drawing.StringAlignment]::Center
@@ -462,7 +467,9 @@ function Get-MbExcelStepCardLayout {
         [AllowEmptyString()][string]$Description = '',
         [AllowEmptyString()][string]$Note = '',
         [ValidateRange(0, 100000)][int]$ImageWidth = 0,
-        [ValidateRange(0, 100000)][int]$ImageHeight = 0
+        [ValidateRange(0, 100000)][int]$ImageHeight = 0,
+        # 画像のない手順はカード全幅を文章に使うため、画像領域の最低行数を確保しない。
+        [bool]$HasImage = $true
     )
 
     $descriptionLines = Get-MbExcelTextLineEstimate -Text $Description -CharactersPerLine 68
@@ -481,8 +488,8 @@ function Get-MbExcelStepCardLayout {
     # 画像列の実幅（約570pt）から必要な高さを逆算する。
     # 先頭の本文行は20pt、以降は26pt、画像の上下余白は合計18ptとすることで、
     # 16:9は14行、16:10は15行に収まり、画像の下へ不要な空白を残さない。
-    $imageRows = 6
-    if ($ImageWidth -gt 0 -and $ImageHeight -gt 0) {
+    $imageRows = if ($HasImage) { 6 } else { 0 }
+    if ($HasImage -and $ImageWidth -gt 0 -and $ImageHeight -gt 0) {
         $imageAspectRatio = $ImageWidth / [double]$ImageHeight
         $requiredImageHeightPoints = (570.0 * ($ImageHeight / [double]$ImageWidth)) + 18.0
         $imageRows = 1 + [int][Math]::Ceiling(([Math]::Max(0.0, $requiredImageHeightPoints - 20.0) / 26.0) - 0.000001)
@@ -525,7 +532,6 @@ function Add-MbExcelStepCard {
     $msoFalse = 0
     $colorAccent = ConvertTo-MbExcelBgr 58 91 160
     $colorAccentDark = ConvertTo-MbExcelBgr 38 57 104
-    $colorAccentSoft = ConvertTo-MbExcelBgr 239 243 251
     $colorLine = ConvertTo-MbExcelBgr 216 222 232
     $colorText = ConvertTo-MbExcelBgr 24 32 51
     $colorMuted = ConvertTo-MbExcelBgr 102 112 133
@@ -538,7 +544,8 @@ function Add-MbExcelStepCard {
     $hasNote = -not [string]::IsNullOrWhiteSpace($Note)
     $imageWidth = 0
     $imageHeight = 0
-    if ($ImagePath -and (Test-Path -LiteralPath $ImagePath -PathType Leaf)) {
+    $hasImage = [bool]($ImagePath -and (Test-Path -LiteralPath $ImagePath -PathType Leaf))
+    if ($hasImage) {
         $layoutImage = $null
         try {
             $layoutImage = [Drawing.Image]::FromFile($ImagePath)
@@ -548,7 +555,10 @@ function Add-MbExcelStepCard {
             if ($layoutImage) { $layoutImage.Dispose() }
         }
     }
-    $layout = Get-MbExcelStepCardLayout -Description $Description -Note $Note -ImageWidth $imageWidth -ImageHeight $imageHeight
+    # 画像のない手順は左半分を空けず、説明と補足をカード全幅で読ませる。
+    # 編集画面が「画像なし手順の空白を縮小する」のと同じ考え方に揃える。
+    $textColumn = if ($hasImage) { 'H' } else { 'A' }
+    $layout = Get-MbExcelStepCardLayout -Description $Description -Note $Note -ImageWidth $imageWidth -ImageHeight $imageHeight -HasImage $hasImage
     $headerRow = $StartRow
     $contentStart = $StartRow + 1
     $contentEnd = $contentStart + [int]$layout.ContentRows - 1
@@ -592,10 +602,10 @@ function Add-MbExcelStepCard {
         $headerBand = $Worksheet.Range("A${headerRow}:L${headerRow}")
         $numberCell = $Worksheet.Range("A${headerRow}:A${headerRow}")
         $titleArea = $Worksheet.Range("B${headerRow}:L${headerRow}")
-        $imageArea = $Worksheet.Range("A${contentStart}:G${contentEnd}")
-        $descriptionLabel = $Worksheet.Range("H${descriptionLabelRow}:L${descriptionLabelRow}")
-        $descriptionArea = $Worksheet.Range("H${descriptionStart}:L${descriptionEnd}")
-        $textPanel = $Worksheet.Range("H${contentStart}:L${contentEnd}")
+        if ($hasImage) { $imageArea = $Worksheet.Range("A${contentStart}:G${contentEnd}") }
+        $descriptionLabel = $Worksheet.Range("${textColumn}${descriptionLabelRow}:L${descriptionLabelRow}")
+        $descriptionArea = $Worksheet.Range("${textColumn}${descriptionStart}:L${descriptionEnd}")
+        $textPanel = $Worksheet.Range("${textColumn}${contentStart}:L${contentEnd}")
         $card = $Worksheet.Range("A${headerRow}:L${contentEnd}")
 
         $headerBand.Interior.Color = $colorWhite
@@ -620,12 +630,14 @@ function Add-MbExcelStepCard {
         $titleArea.HorizontalAlignment = $xlLeft
         $titleArea.VerticalAlignment = $xlCenter
 
-        $imageArea.Merge()
-        $imageArea.Interior.Color = $colorImage
+        if ($hasImage) {
+            $imageArea.Merge()
+            $imageArea.Interior.Color = $colorImage
+        }
 
-        # 説明と補足は必要な高さだけ白／黄で表示し、残りは画像側と同じ中立背景にする。
-        # 左右同高のカードを維持しながら、文章欄の末尾まで入力領域が続くように見える余白を防ぐ。
-        $textPanel.Interior.Color = $colorImage
+        # 文章側は下端まで白の一枚面にする。必要な行だけ白くすると、短い説明のときに
+        # 白い帯がグレーの中へ浮いて見え、カードが未完成の印象になるため。
+        $textPanel.Interior.Color = $colorWhite
 
         $descriptionLabel.Merge()
         $descriptionLabel.NumberFormat = '@'
@@ -637,6 +649,8 @@ function Add-MbExcelStepCard {
         $descriptionLabel.Interior.Color = $colorWhite
         $descriptionLabel.HorizontalAlignment = $xlLeft
         $descriptionLabel.VerticalAlignment = $xlCenter
+        # 文字が区切り線へ張り付かないよう、文章側は一段字下げする。
+        $descriptionLabel.IndentLevel = 1
 
         $descriptionArea.Merge()
         $descriptionArea.NumberFormat = '@'
@@ -648,11 +662,12 @@ function Add-MbExcelStepCard {
         $descriptionArea.Font.Size = 12
         $descriptionArea.Font.Color = if ([string]::IsNullOrWhiteSpace($Description)) { $colorMuted } else { $colorText }
         $descriptionArea.Interior.Color = $colorWhite
+        $descriptionArea.IndentLevel = 1
 
         if ($hasNote) {
-            $noteLabel = $Worksheet.Range("H${noteLabelRow}:L${noteLabelRow}")
-            $noteArea = $Worksheet.Range("H${noteStart}:L${noteEnd}")
-            $noteBlock = $Worksheet.Range("H${noteLabelRow}:L${noteEnd}")
+            $noteLabel = $Worksheet.Range("${textColumn}${noteLabelRow}:L${noteLabelRow}")
+            $noteArea = $Worksheet.Range("${textColumn}${noteStart}:L${noteEnd}")
+            $noteBlock = $Worksheet.Range("${textColumn}${noteLabelRow}:L${noteEnd}")
             $noteLabel.Merge()
             $noteLabel.NumberFormat = '@'
             $noteLabel.Value2 = '補足'
@@ -663,6 +678,7 @@ function Add-MbExcelStepCard {
             $noteLabel.Font.Color = ConvertTo-MbExcelBgr 122 83 0
             $noteLabel.HorizontalAlignment = $xlLeft
             $noteLabel.VerticalAlignment = $xlCenter
+            $noteLabel.IndentLevel = 1
 
             $noteArea.Merge()
             $noteArea.NumberFormat = '@'
@@ -674,14 +690,16 @@ function Add-MbExcelStepCard {
             $noteArea.Font.Name = $FontName
             $noteArea.Font.Size = 11
             $noteArea.Font.Color = $colorText
+            $noteArea.IndentLevel = 1
             Set-MbExcelEdgeBorder -Range $noteBlock -Edges @(7) -Color $colorNoteLine -Weight 2
         }
 
         Set-MbExcelEdgeBorder -Range $card -Edges @(7, 8, 9, 10) -Color $colorLine
         Set-MbExcelEdgeBorder -Range $headerBand -Edges @(9) -Color $colorLine -Weight 2
-        Set-MbExcelEdgeBorder -Range $textPanel -Edges @(7) -Color $colorLine -Weight -4138
+        # 区切り線は画像と文章が並ぶときだけ引く。全幅の文章カードには不要。
+        if ($hasImage) { Set-MbExcelEdgeBorder -Range $textPanel -Edges @(7) -Color $colorLine -Weight -4138 }
 
-        if ($ImagePath -and (Test-Path -LiteralPath $ImagePath -PathType Leaf)) {
+        if ($hasImage) {
             $shape = $Worksheet.Shapes.AddPicture(
                 $ImagePath, $msoFalse, $msoTrue,
                 [single]($imageArea.Left + 9), [single]($imageArea.Top + 9), [single]-1, [single]-1
@@ -704,14 +722,6 @@ function Add-MbExcelStepCard {
             $shape.Top = [single]($imageArea.Top + (($imageArea.Height - $shape.Height) / 2))
             $shape.Placement = $xlMoveAndSize
             try { $shape.AlternativeText = "手順 $StepNumber の画面: $Title" } catch { }
-        } else {
-            $imageArea.NumberFormat = '@'
-            $imageArea.Value2 = '画像なし'
-            $imageArea.Font.Name = $FontName
-            $imageArea.Font.Size = 10.5
-            $imageArea.Font.Color = $colorMuted
-            $imageArea.HorizontalAlignment = $xlCenter
-            $imageArea.VerticalAlignment = $xlCenter
         }
     } finally {
         Release-MbExcelComObject $shape
@@ -779,6 +789,8 @@ function Invoke-MbExcelExport {
     $temporaryPath = ''
     $outputPath = ''
     $renderDirectory = Join-Path (Split-Path -Parent $StatusPath) 'rendered-images'
+    # 注釈を合成した派生画像は出力専用のため、成功・失敗・中止のいずれでもfinallyで削除する。
+    $generatedImages = New-Object System.Collections.ArrayList
     $pidsBefore = @(Get-Process -Name EXCEL -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
     $xlOpenXMLWorkbook = 51
     $xlCenter = -4108
@@ -928,6 +940,7 @@ function Invoke-MbExcelExport {
                 }
                 $createdSheetNames += $safeName
                 try { $worksheet.Tab.Color = $colorAccent } catch { }
+                # 画像はA:G、説明はH:Lで約半幅ずつ。1920×1080・100%表示で画像と説明を同時に読む前提。
                 $worksheet.Columns.Item(1).ColumnWidth = 9
                 foreach ($column in 2..7) { $worksheet.Columns.Item($column).ColumnWidth = 15 }
                 foreach ($column in 8..12) { $worksheet.Columns.Item($column).ColumnWidth = 20 }
@@ -978,7 +991,8 @@ function Invoke-MbExcelExport {
                         $summaryRange.Value2 = $summaryText
                         $summaryRange.Font.Name = $bodyFont
                         $summaryRange.Font.Size = 10.5
-                        $summaryRange.Font.Color = $colorMuted
+                        # 淡い青地の上ではcolorMutedがAA(4.5:1)を下回るため、本文色で表示する。
+                        $summaryRange.Font.Color = $colorText
                         $summaryRange.Interior.Color = $colorAccentSoft
                         $summaryRange.RowHeight = 28
                         $summaryRange.WrapText = $true
@@ -1029,7 +1043,8 @@ function Invoke-MbExcelExport {
                         # 注釈の線幅・番号径も最終配置倍率と一致させる。
                         $renderTargetHeight = if ($effectivePixelWidth -gt 0 -and ($effectivePixelHeight / $effectivePixelWidth) -ge 3.0) { 620 } else { 880 }
                         $imagePath = New-MbAnnotatedImage -SourcePath $sourcePath -Annotations $annotations -Crop $crop `
-                            -DestinationPath $renderedPath -TargetDisplayWidth $renderTargetWidth -TargetDisplayHeight $renderTargetHeight -MaximumDisplayScale 1.5
+                            -DestinationPath $renderedPath -TargetDisplayWidth $renderTargetWidth -TargetDisplayHeight $renderTargetHeight -MaximumDisplayScale 1.5 -NumberFontName $bodyFont
+                        if ($imagePath -eq $renderedPath) { [void]$generatedImages.Add($renderedPath) }
                         $expectedShapes++
                     }
 
@@ -1219,6 +1234,9 @@ function Invoke-MbExcelExport {
         [GC]::Collect()
         [GC]::WaitForPendingFinalizers()
 
+        # Stop-ProcessはHwndで所有を証明したPIDにのみ許可する。
+        # PID差分は「起動直後に利用者がExcelを開いた」場合に他人のプロセスを指し得るため、
+        # 未保存ブックを失わせないよう強制終了の対象にしない（Quitと参照解放に任せる）。
         if ($ownershipProven -and $ownPid -gt 0 -and $ownershipMode -eq 'Hwnd') {
             $deadline = (Get-Date).AddSeconds(10)
             do {
@@ -1232,6 +1250,11 @@ function Invoke-MbExcelExport {
         }
         if ($temporaryPath -and (Test-Path -LiteralPath $temporaryPath)) {
             Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+        }
+        foreach ($generatedImage in @($generatedImages)) {
+            if (Test-Path -LiteralPath $generatedImage) {
+                Remove-Item -LiteralPath $generatedImage -Force -ErrorAction SilentlyContinue
+            }
         }
     }
 

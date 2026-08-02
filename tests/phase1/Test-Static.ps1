@@ -89,7 +89,7 @@ Add-Result (($serverText -match '\$projectReady = \$false') -and ($serverText -m
 Add-Result ($serverText -match '\$storageLayout\.RuntimePath') '二重起動情報をユーザーデータ配下へ置く'
 Add-Result ($serverText -match '\$storageLayout\.ExportJobsRoot') 'Office一時ジョブをユーザーデータ配下へ置く'
 Add-Result (($runCommandText -match '%~dp0src\\Start-ManualBuilderLauncher\.ps1') -and ($runCommandText -notmatch '(?im)^cd /d')) 'UNC共有フォルダーから更新ランチャーを起動できる'
-Add-Result ([string]$appVersionManifest.appVersion -eq '0.21.8') '配布用アプリバージョンを0.21.8へ更新する'
+Add-Result ([string]$appVersionManifest.appVersion -eq '0.22.0') '配布用アプリバージョンを0.22.0へ更新する'
 Add-Result ($workspaceModuleText -notmatch "ManualBuilder\.Project\.psm1'\) -Force") 'WorkspaceがProjectコマンドを強制再読込しない'
 Add-Result ($launcherModuleText -match "'ManualBuilder\\app'") 'アプリ実行コードをLocalApplicationDataへキャッシュする'
 Add-Result ($launcherModuleText -match "@\('src', 'web', 'run\.cmd', 'app-version\.json'\)") 'キャッシュ対象からプロジェクトデータを除外する'
@@ -144,7 +144,8 @@ Add-Result ($excelModuleText -match 'New-MbAnnotatedImage') 'Excel用画像へ�
 Add-Result ($excelModuleText -match '\.tmp\.xlsx') 'Excelを一時名で保存してから完成扱いにする'
 Add-Result ($excelModuleText -match '\$window\.Zoom = 100') 'Excel出力の標準ズームを100%にする'
 Add-Result ($excelModuleText -match 'A\$\{contentStart\}:G\$\{contentEnd\}') 'Excel画像領域を読みやすい約半幅へ調整する'
-Add-Result ($excelModuleText -match 'H\$\{descriptionLabelRow\}:L\$\{descriptionLabelRow\}') 'Excel説明領域を5列へ拡大する'
+Add-Result (($excelModuleText -match '\$textColumn = if \(\$hasImage\) \{ ''H'' \} else \{ ''A'' \}') -and ($excelModuleText -match '\$\{textColumn\}\$\{descriptionLabelRow\}:L\$\{descriptionLabelRow\}')) 'Excel説明領域を5列へ拡大する'
+Add-Result (($excelModuleText -match '\$imageRows = if \(\$HasImage\) \{ 6 \} else \{ 0 \}') -and ($excelModuleText -notmatch "imageArea\.Value2 = '画像なし'")) '画像なし手順をExcelで全幅の文章カードにする'
 Add-Result (($excelModuleText -match 'Get-MbExcelStepCardLayout') -and ($excelModuleText -match '\$contentEnd = \$contentStart \+ \[int\]\$layout\.ContentRows - 1') -and ($excelModuleText -match '\$startRow = Add-MbExcelStepCard')) 'Excelカードの高さを画像と文章に合わせて可変化する'
 Add-Result (($excelModuleText -match 'Columns\.Item\(1\)\.ColumnWidth = 9') -and ($excelModuleText -match 'foreach \(\$column in 2\.\.7\).*ColumnWidth = 15') -and ($excelModuleText -match 'foreach \(\$column in 8\.\.12\).*ColumnWidth = 20')) 'Excelの画像と説明を約半幅ずつへ再配分する'
 Add-Result (($excelModuleText -match '\$descriptionArea\.Font\.Size = 12') -and ($excelModuleText -match '\$noteArea\.Font\.Size = 11')) 'Excelの説明と補足を読みやすい文字サイズにする'
@@ -232,6 +233,8 @@ $annotationTypesImplemented =
     ($jsText -match "annotation\.type === 'number'") -and
     ($jsText -match "annotation\.type === 'blackout'")
 Add-Result $annotationTypesImplemented '赤枠・赤矢印・番号・黒塗り注釈を実装する'
+Add-Result (($jsText -match 'const nextNumberLabelInSheet') -and ($jsText -match 'const usedNumberLabelsInSheet') -and ($jsText -notmatch 'Math\.min\(99, Math\.max\(0')) '番号注釈をシート内の手順をまたいで連番にする'
+Add-Result (($jsText -match 'data-annotation-number\b') -and ($jsText -match 'applySelectedNumberLabel')) '選択した番号注釈を任意の番号へ変更できる'
 Add-Result ($jsText -match 'renderAnnotations') 'SVG注釈レイヤーを実装する'
 Add-Result ($jsText -match 'data-annotation-tool="crop"') '切り抜きツールを実装する'
 Add-Result ($jsText -match 'queueImageEditSave') '画像編集を自動保存する'

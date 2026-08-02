@@ -10,6 +10,7 @@
 - Excel COMによる主出力: 単発、10回連続、キャンセル、異常分岐を実機確認済み
 - 既存の未保存Excelブックへ影響しないことを実機確認済み
 - Word COMによる副出力の安全性と基本レイアウトを確認済み
+- Phase 1基盤 v0.22.0: 注釈が1件だけの手順で編集画面から注釈が消えて失われる不具合、Word出力後にWINWORDが残る不具合、応答の送信中にサーバーが停止する不具合を修正。番号注釈をシート内で連番にし、1〜99の任意の番号へ変更できるようにした。基準フォントをBIZ UDPゴシックへ統一
 - Phase 1基盤 v0.21.8: アプリとExcelの注釈寸法を統一し、Office出力中の不明瞭な斜め矢印を標準的な処理中リングへ変更
 - スクリーンショット監視、貼り付け、ドラッグ&ドロップ、画像選択を製品UIへ統合
 - 左の手順アウトラインへドラッグ並べ替え／削除を集約し、中央を1手順の集中表示へ一本化
@@ -68,7 +69,7 @@ v0.14.1以前のアプリ配下に `data\projects\default` がある場合、v0.
 
 初回は `tests\phase1\run-tests.cmd` を実行し、PowerShell 5.1構文、プロジェクト保存、localhostサーバーを確認してください。詳しくは [docs/PHASE1-FOUNDATION.md](docs/PHASE1-FOUNDATION.md) を参照してください。
 
-Phase 1 v0.21.8の出力進捗表示確認は [docs/RETEST-PHASE1-v0.21.8.md](docs/RETEST-PHASE1-v0.21.8.md) にまとめています。
+Phase 1 v0.22.0の再確認手順は [docs/RETEST-PHASE1-v0.22.0.md](docs/RETEST-PHASE1-v0.22.0.md) にまとめています。
 
 ## 製品方針
 

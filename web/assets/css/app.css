@@ -5,7 +5,7 @@
   --surface-inset: #f1f3f5;
   --text: #1c2027;
   --text-2: #5b626e;
-  --text-3: #8a909b;
+  --text-3: #6b7280;
   --border: #e7e9ed;
   --border-strong: #d4d8de;
   --accent: #3a5ba0;
@@ -17,7 +17,9 @@
   --danger: #b42318;
   --danger-soft: #fdecea;
   --focus: #6c8bd3;
-  --font: "BIZ UDPGothic", "BIZ UDPゴシック", Meiryo, "Yu Gothic UI", sans-serif;
+  /* BIZ UDPゴシックを基準フォントとし、Excel・Wordの解決順（Resolve-Mb*BodyFont）と同じ並びにする。
+     基準フォントはRegularとBoldの2ウェイトのみのため、font-weightは400と700だけを使う。 */
+  --font: "BIZ UDPGothic", "BIZ UDPゴシック", "BIZ UDGothic", "BIZ UDゴシック", Meiryo, "Yu Gothic UI", "MS Pゴシック", sans-serif;
 }
 
 * {
@@ -100,7 +102,7 @@ button:disabled {
   place-items: center;
   color: #fff;
   background: var(--accent);
-  font-weight: 800;
+  font-weight: 700;
   border-radius: 6px;
 }
 
@@ -288,7 +290,7 @@ button:disabled {
   padding: 7px 12px;
   background: var(--surface);
   color: var(--text);
-  font-weight: 650;
+  font-weight: 700;
   line-height: 1.25;
 }
 
@@ -610,7 +612,7 @@ button:disabled {
   margin-top: 10px;
   border-color: var(--border);
   background: var(--surface);
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .step-nav {
@@ -781,7 +783,7 @@ button:disabled {
   background: var(--surface);
   border-color: var(--border-strong);
   box-shadow: inset 2px 0 0 var(--accent);
-  font-weight: 650;
+  font-weight: 700;
 }
 
 .step-nav__number {
@@ -809,7 +811,7 @@ button:disabled {
 
 .step-nav__title--fallback {
   color: var(--text-3);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .step-nav__status {
@@ -954,7 +956,7 @@ kbd {
   background: var(--accent-soft);
   border-radius: 6px;
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 700;
 }
 
 .step-card__label {
@@ -1338,7 +1340,7 @@ kbd {
 .field__optional {
   color: var(--text-3);
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .field input,
@@ -1570,6 +1572,42 @@ kbd {
   border-right: 0;
 }
 
+/* 選択した番号注釈の値を直接書き換える欄。番号以外を選んでいる間は無効にする。 */
+.annotation-number-field {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+}
+
+.annotation-number-field input {
+  width: 62px;
+  min-height: 32px;
+  padding: 4px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--surface);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.annotation-number-field input:disabled {
+  border-color: var(--border);
+  color: var(--text-3);
+  background: var(--surface-inset);
+}
+
+.annotation-number-field__hint {
+  color: var(--text-3);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 .annotation-editor__tool-group > button {
   min-height: 36px;
   padding: 6px 11px;
@@ -1578,7 +1616,7 @@ kbd {
   color: var(--text-2);
   background: transparent;
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 700;
 }
 
 .annotation-editor__tool-group > button:hover:not(:disabled) {
@@ -1820,7 +1858,7 @@ kbd {
   border: 2px solid transparent;
   border-radius: 50%;
   font-size: 16px;
-  font-weight: 750;
+  font-weight: 700;
   box-sizing: border-box;
 }
 
@@ -1885,7 +1923,7 @@ kbd {
 
 .excel-export-dialog__mappings summary {
   cursor: pointer;
-  font-weight: 650;
+  font-weight: 700;
 }
 
 .excel-export-dialog__mappings ul {
@@ -1919,7 +1957,7 @@ kbd {
 
 .excel-export-dialog__mappings li strong {
   color: var(--text);
-  font-weight: 650;
+  font-weight: 700;
 }
 
 .excel-export-dialog__path {
@@ -1982,7 +2020,7 @@ kbd {
   border-left: 1px solid var(--border);
   color: var(--text-2);
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 700;
 }
 
 .project-library__main {
@@ -2003,8 +2041,9 @@ kbd {
   margin: 0 0 6px;
   color: var(--accent);
   font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.12em;
+  font-weight: 700;
+  /* 欧文の大文字前提の字間だと日本語では間延びするため、控えめにする。 */
+  letter-spacing: 0.04em;
 }
 
 .project-library__intro h1 {
@@ -2033,9 +2072,8 @@ kbd {
   gap: 8px;
   padding: 6px;
   border: 1px solid var(--border);
-  border-radius: 9px;
+  border-radius: 8px;
   background: var(--surface);
-  box-shadow: 0 1px 2px rgba(28, 32, 39, 0.04);
 }
 
 .project-create input {
@@ -2115,14 +2153,12 @@ kbd {
   flex-direction: column;
   overflow: visible;
   border: 1px solid var(--border);
-  border-radius: 9px;
+  border-radius: 8px;
   background: var(--surface);
-  box-shadow: 0 1px 2px rgba(28, 32, 39, 0.035);
 }
 
 .project-card:hover {
   border-color: var(--border-strong);
-  box-shadow: 0 5px 18px rgba(28, 32, 39, 0.065);
 }
 
 .project-card__header {
@@ -2150,7 +2186,7 @@ kbd {
   background: var(--surface-inset);
   color: var(--text-2);
   font-size: 10px;
-  font-weight: 650;
+  font-weight: 700;
 }
 
 .project-card__menu {
@@ -2223,7 +2259,7 @@ kbd {
   gap: 4px;
   margin: 0;
   border: 1px dashed var(--border-strong);
-  border-radius: 9px;
+  border-radius: 8px;
   color: var(--text-2);
 }
 
@@ -2244,7 +2280,7 @@ kbd {
   padding: 18px 2px;
   color: var(--text-2);
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 700;
 }
 
 .project-archive__list {
