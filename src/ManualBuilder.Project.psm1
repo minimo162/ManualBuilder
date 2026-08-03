@@ -469,6 +469,24 @@ function Update-MbStep {
     $target.updatedAt = Get-MbUtcTimestamp
 }
 
+# 注釈の矩形として使える形かどうか。0〜1の正規化座標で、潰れていないこと。
+# 録画からの取り込みと操作記録の両方が使うため、ここに1つだけ置く。
+function Test-MbNormalizedRect {
+    param([AllowNull()]$Rect)
+    if ($null -eq $Rect) { return $false }
+    foreach ($name in @('x1', 'y1', 'x2', 'y2')) {
+        if ($Rect.PSObject.Properties.Name -notcontains $name) { return $false }
+        # 画面から来た値は数値とは限らない。変換に失敗したら不正として扱う。
+        $value = 0.0
+        try { $value = [double]$Rect.$name } catch { return $false }
+        if ([double]::IsNaN($value) -or [double]::IsInfinity($value)) { return $false }
+        if ($value -lt 0 -or $value -gt 1) { return $false }
+    }
+    if (([double]$Rect.x2 - [double]$Rect.x1) -lt 0.004) { return $false }
+    if (([double]$Rect.y2 - [double]$Rect.y1) -lt 0.004) { return $false }
+    return $true
+}
+
 function Get-MbStepById {
     param([Parameter(Mandatory = $true)][object]$Project, [Parameter(Mandatory = $true)][string]$StepId)
     foreach ($sheet in @($Project.sheets)) {
@@ -728,6 +746,7 @@ Export-ModuleMember -Function @(
     'New-MbStep',
     'New-MbStepCapture',
     'Get-MbStepById',
+    'Test-MbNormalizedRect',
     'Set-MbStepCapture',
     'Set-MbStepDraft',
     'Get-MbProject',

@@ -103,7 +103,7 @@ Add-Result (($serverText -match '\$projectReady = \$false') -and ($serverText -m
 Add-Result ($serverText -match '\$storageLayout\.RuntimePath') '二重起動情報をユーザーデータ配下へ置く'
 Add-Result ($serverText -match '\$storageLayout\.ExportJobsRoot') 'Office一時ジョブをユーザーデータ配下へ置く'
 Add-Result (($runCommandText -match '%~dp0src\\Start-ManualBuilderLauncher\.ps1') -and ($runCommandText -notmatch '(?im)^cd /d')) 'UNC共有フォルダーから更新ランチャーを起動できる'
-Add-Result ([string]$appVersionManifest.appVersion -eq '0.31.0') '配布用アプリバージョンを0.31.0へ更新する'
+Add-Result ([string]$appVersionManifest.appVersion -eq '0.32.0') '配布用アプリバージョンを0.32.0へ更新する'
 Add-Result ($workspaceModuleText -notmatch "ManualBuilder\.Project\.psm1'\) -Force") 'WorkspaceがProjectコマンドを強制再読込しない'
 Add-Result ($launcherModuleText -match "'ManualBuilder\\app'") 'アプリ実行コードをLocalApplicationDataへキャッシュする'
 Add-Result ($launcherModuleText -match "@\('src', 'web', 'run\.cmd', 'app-version\.json'\)") 'キャッシュ対象からプロジェクトデータを除外する'
@@ -400,6 +400,56 @@ Add-Result ($webModuleText -match 'data-copilot-review') '文章を整えるを�
 Add-Result ($jsText -match "copilotDraft.mode === 'review'") '下書きと校正で画面の出し分けをする'
 Add-Result ($serverText -notmatch 'PowerPoint') 'PowerPoint出力を持たない'
 Add-Result ($jsText -notmatch '(?i)powerpoint') '画面にPowerPoint出力が残っていない'
+
+# 入口スクリプトが呼ぶ関数が、その場で解決できることを確かめる。
+#
+# PowerShell では、モジュールの中で Import-Module したものは、そのモジュールの中でしか
+# 見えない。入口スクリプトから呼びたい関数は、入口スクリプト自身が読み込んだモジュールが
+# 公開していなければならない。この取り違えは実行するまで気付けず、実際に2度作り込んだ。
+$entryDefinitions = New-Object 'System.Collections.Generic.HashSet[string]'
+foreach ($match in [regex]::Matches($serverText, '(?m)^\s*function\s+([A-Za-z]+-Mb[A-Za-z0-9]*)')) {
+    [void]$entryDefinitions.Add($match.Groups[1].Value)
+}
+foreach ($match in [regex]::Matches($serverText, "Import-Module \(Join-Path \`$PSScriptRoot '([A-Za-z.]+\.psm1)'\)")) {
+    $modulePath = Join-Path $repoRoot ('src\' + $match.Groups[1].Value)
+    if (-not (Test-Path -LiteralPath $modulePath -PathType Leaf)) { continue }
+    $moduleSource = [IO.File]::ReadAllText($modulePath, [Text.Encoding]::UTF8)
+    $exportBlock = [regex]::Match($moduleSource, 'Export-ModuleMember\s+-Function\s+@\(([\s\S]*?)\)')
+    if (-not $exportBlock.Success) { continue }
+    foreach ($exported in [regex]::Matches($exportBlock.Groups[1].Value, "'([A-Za-z]+-Mb[A-Za-z0-9]*)'")) {
+        [void]$entryDefinitions.Add($exported.Groups[1].Value)
+    }
+}
+# 文字列リテラルの中の名前は呼び出しではない。ヘッダー名などを拾わないよう外す。
+$callSites = [regex]::Replace($serverText, "'[^'\r\n]*'", "''")
+$callSites = [regex]::Replace($callSites, '"[^"\r\n]*"', '""')
+$unresolved = New-Object 'System.Collections.Generic.List[string]'
+foreach ($match in [regex]::Matches($callSites, '\b([A-Za-z]+-Mb[A-Za-z0-9]*)\b')) {
+    $name = $match.Groups[1].Value
+    if (-not $entryDefinitions.Contains($name) -and -not $unresolved.Contains($name)) {
+        [void]$unresolved.Add($name)
+    }
+}
+$unresolvedMessage = '本体が呼ぶ関数がすべて解決する'
+if ($unresolved.Count -gt 0) { $unresolvedMessage += '（未解決: ' + ($unresolved -join ', ') + '）' }
+Add-Result ($unresolved.Count -eq 0) $unresolvedMessage
+
+# 同じ名前の関数を複数のモジュールが公開していると、読み込み順で後勝ちになる。
+$exportOwners = @{}
+foreach ($moduleFile in (Get-ChildItem -LiteralPath (Join-Path $repoRoot 'src') -Filter '*.psm1' -File)) {
+    $moduleSource = [IO.File]::ReadAllText($moduleFile.FullName, [Text.Encoding]::UTF8)
+    $exportBlock = [regex]::Match($moduleSource, 'Export-ModuleMember\s+-Function\s+@\(([\s\S]*?)\)')
+    if (-not $exportBlock.Success) { continue }
+    foreach ($exported in [regex]::Matches($exportBlock.Groups[1].Value, "'([A-Za-z]+-Mb[A-Za-z0-9]*)'")) {
+        $name = $exported.Groups[1].Value
+        if (-not $exportOwners.ContainsKey($name)) { $exportOwners[$name] = New-Object 'System.Collections.Generic.List[string]' }
+        [void]$exportOwners[$name].Add($moduleFile.Name)
+    }
+}
+$collisions = @($exportOwners.Keys | Where-Object { $exportOwners[$_].Count -gt 1 } | Sort-Object)
+$collisionMessage = '同じ関数名を複数のモジュールが公開していない'
+if ($collisions.Count -gt 0) { $collisionMessage += '（重複: ' + ($collisions -join ', ') + '）' }
+Add-Result ($collisions.Count -eq 0) $collisionMessage
 
 if ($errors.Count -gt 0) {
     Write-Host ''

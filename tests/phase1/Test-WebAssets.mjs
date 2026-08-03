@@ -81,6 +81,28 @@ if (indexHtml && appVersion) {
     stamps.every((v) => v === appVersion), stamps.join(', '));
 }
 
+// Web.psm1 は画面へ版数を埋め込む。ここがずれると app.js が版違いとみなして
+// 再読込を繰り返し、画面が使えなくなる。実際に v0.32.0 で取り残しが起きた。
+const webModule = read('src/ManualBuilder.Web.psm1');
+if (webModule && appVersion) {
+  const embedded = [...webModule.matchAll(/data-app-version="([0-9.]+)"/g)].map((m) => m[1]);
+  const shown = [...webModule.matchAll(/>v([0-9.]+)</g)].map((m) => m[1]);
+  check('Web.psm1 が画面へ版数を埋め込む', embedded.length > 0);
+  check('Web.psm1 の埋め込み版数が app-version.json と一致する',
+    embedded.every((v) => v === appVersion), embedded.join(', '));
+  check('Web.psm1 の表示版数が app-version.json と一致する',
+    shown.every((v) => v === appVersion), shown.join(', '));
+}
+
+// 配布前の検査そのものが古い版数を見ていると、更新漏れに気付けない。
+const staticTest = read('tests/phase1/Test-Static.ps1');
+if (staticTest && appVersion) {
+  const asserted = staticTest.match(/appVersionManifest\.appVersion -eq '([0-9.]+)'/);
+  check('Test-Static.ps1 の版数検査がある', Boolean(asserted));
+  check('Test-Static.ps1 の版数検査が app-version.json と一致する',
+    asserted?.[1] === appVersion, `${asserted?.[1]} vs ${appVersion}`);
+}
+
 // ---------------------------------------------------------------
 console.log('読み込みの配線');
 if (indexHtml) {

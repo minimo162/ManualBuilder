@@ -130,21 +130,23 @@ try {
         if ($Mode -eq 'review') {
             foreach ($step in $packet) { [void]$usableSteps.Add($step) }
         } else {
-        foreach ($step in $packet) {
-            $sourcePath = Get-MbImageFilePath -Project $project -ProjectPath $ProjectPath -ImageId ([string]$step.imageId)
-            if ([string]::IsNullOrWhiteSpace($sourcePath) -or -not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
-                Write-MbJobLog ("画像が見つからないため手順を飛ばします: " + [string]$step.id) 'WARN'
-                continue
+            foreach ($step in $packet) {
+                $sourcePath = Get-MbImageFilePath -Project $project -ProjectPath $ProjectPath -ImageId ([string]$step.imageId)
+                if ([string]::IsNullOrWhiteSpace($sourcePath) -or -not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+                    Write-MbJobLog ("画像が見つからないため手順を飛ばします: " + [string]$step.id) 'WARN'
+                    continue
+                }
+                $fileName = ('step-{0:d3}.jpg' -f [int]$step.order)
+                $attachmentPath = New-MbCopilotAttachment -Step $step -SourcePath $sourcePath -WorkDirectory $packetDirectory -FileName $fileName
+                [void]$attachments.Add($attachmentPath)
+                $attachmentNames[[string]$step.id] = $fileName
+                [void]$usableSteps.Add($step)
             }
-            $fileName = ('step-{0:d3}.jpg' -f [int]$step.order)
-            $attachmentPath = New-MbCopilotAttachment -Step $step -SourcePath $sourcePath -WorkDirectory $packetDirectory -FileName $fileName
-            [void]$attachments.Add($attachmentPath)
-            $attachmentNames[[string]$step.id] = $fileName
-            [void]$usableSteps.Add($step)
-        }
         }
         if ($usableSteps.Count -eq 0) {
-            Write-MbJobLog ("パケット {0} に使える画像がありませんでした。" -f $packetNumber) 'WARN'
+            $emptyReason = "パケット {0} に使える画像がありませんでした。" -f $packetNumber
+            if ($Mode -eq 'review') { $emptyReason = "パケット {0} に整える文章がありませんでした。" -f $packetNumber }
+            Write-MbJobLog $emptyReason 'WARN'
             continue
         }
 

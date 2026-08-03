@@ -337,23 +337,6 @@ function Import-MbRecordedEvents {
     return [pscustomobject]@{ added = $added; skipped = $skipped }
 }
 
-# 正規化された矩形かどうか。CopilotServer と同じ判定を使いたいが、
-# モジュールをまたいで公開すると読み込み順に縛られるため、ここにも持つ。
-function Test-MbNormalizedRect {
-    param([AllowNull()]$Rect)
-    if ($null -eq $Rect) { return $false }
-    foreach ($name in @('x1', 'y1', 'x2', 'y2')) {
-        if ($Rect.PSObject.Properties.Name -notcontains $name) { return $false }
-        $value = 0.0
-        try { $value = [double]$Rect.$name } catch { return $false }
-        if ([double]::IsNaN($value) -or [double]::IsInfinity($value)) { return $false }
-        if ($value -lt 0 -or $value -gt 1) { return $false }
-    }
-    if (([double]$Rect.x2 - [double]$Rect.x1) -lt 0.004) { return $false }
-    if (([double]$Rect.y2 - [double]$Rect.y1) -lt 0.004) { return $false }
-    return $true
-}
-
 function Remove-MbRecordingJob {
     if ($null -eq $script:MbRecordingJob) { return }
     $job = $script:MbRecordingJob
