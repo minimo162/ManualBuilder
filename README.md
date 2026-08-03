@@ -10,6 +10,7 @@
 - Excel COMによる主出力: 単発、10回連続、キャンセル、異常分岐を実機確認済み
 - 既存の未保存Excelブックへ影響しないことを実機確認済み
 - Word COMによる副出力の安全性と基本レイアウトを確認済み
+- Phase 1基盤 v0.32.3: 画面の使い勝手をひととおり見直して修正した。キーボードだけで手順とシートを並べ替えられるようにし、シートを切り替えて戻ったときのスクロール位置の復元を有効にした（記録する処理だけがあり、戻す処理が呼ばれていなかった）。手順アウトラインの「説明未入力」と「画像なし」を形でも見分けられるようにし、読み上げにも届くようにした。狭い画面で撮影監視の文言が途中で欠けていたのをやめ、アイコンとツールチップで状態が分かるようにした。通知は前の1件を消さずに積み、閉じるボタンを付けた。フォーカス表示を輪郭線にし、ハイコントラストでも見えるようにした
 - Phase 1基盤 v0.32.2: PowerPoint出力の削除時に残った閉じ括弧と、入れ子モジュールの強制再読込によってアプリが起動できない問題を修正した。あわせて、操作記録とOCRの正規化座標が0または1へ丸められる問題、Copilotの対象が1まとまりだけのとき設定した件数で分割されない問題を修正し、停止していた回帰試験を復旧した
 - Phase 1基盤 v0.32.1: 配布済みHTMLの元データを別PCで開いたとき、共有側がローカルより新しい場合に古いローカル版を開いて再反映できてしまう問題を修正した。古い版を残しつつ「共有版」の別項目として取り込み、同じ共有版を開き直しても重複しない。あわせて、保存先フォルダーの作成やJSON変換に失敗した場合に、ディスクへ書けていないrevisionだけが進まないよう保存処理をロールバックする
 - Phase 1基盤 v0.32.0: その他メニューに「Copilotで文章を整える」を追加した。敬体の統一・表記ゆれ・用語の不統一・誤字・長すぎる一文を確認し、直したい箇所だけを受け取る。画像は渡さず文章だけを一度にまとめて渡すため、下書きより速く、表記ゆれのように全体を見ないと気付けない指摘が出せる。指摘は確認画面で1件ずつ採用でき、空欄は「変更しない」の意味なので既存の文章を消さない。あわせてPowerPoint出力を削除した（動画つきの配布はHTMLとExcelが担うようになり、COM由来の不具合を抱え続ける利点が薄れたため）。v0.31.0でapp.jsなど3ファイルを空で出してしまった不具合を修正し、同じ取りこぼしを防ぐ検査（Test-WebAssets.mjs）を追加
@@ -57,6 +58,7 @@ Windowsでリポジトリ直下の `run.cmd` をダブルクリックします�
 - シートの追加、切替、名称変更、ドラッグ並べ替え、削除
 - 手順カードの追加、手順名・説明・補足の自動保存、削除
 - 左の手順アウトラインからの選択、ドラッグによる並べ替え・別シート移動、削除
+- 並べ替えの取っ手にフォーカスして `↑` `↓` を押すと、キーボードだけでも手順とシートを並べ替えられる
 - 中央は選択した1手順だけを表示する集中編集
 - スクリーンショットの切り抜き、赤枠、赤矢印、番号、黒塗り、Undo／Redo、自動保存
 - 切り抜きと注釈を反映したスクリーンショットのクリック拡大表示
@@ -105,7 +107,7 @@ v0.14.1以前のアプリ配下に `data\projects\default` がある場合、v0.
 
 初回は `tests\phase1\run-tests.cmd` を実行し、PowerShell 5.1構文、プロジェクト保存、localhostサーバーを確認してください。詳しくは [docs/PHASE1-FOUNDATION.md](docs/PHASE1-FOUNDATION.md) を参照してください。
 
-Phase 1 v0.32.2の再確認手順は [docs/RETEST-PHASE1-v0.32.2.md](docs/RETEST-PHASE1-v0.32.2.md)、v0.32.1は [docs/RETEST-PHASE1-v0.32.1.md](docs/RETEST-PHASE1-v0.32.1.md)、v0.32.0は [docs/RETEST-PHASE1-v0.32.0.md](docs/RETEST-PHASE1-v0.32.0.md)、v0.30.0は [docs/RETEST-PHASE1-v0.30.0.md](docs/RETEST-PHASE1-v0.30.0.md)、v0.29.0は [docs/RETEST-PHASE1-v0.29.0.md](docs/RETEST-PHASE1-v0.29.0.md)、v0.28.0は [docs/RETEST-PHASE1-v0.28.0.md](docs/RETEST-PHASE1-v0.28.0.md)、v0.27.0は [docs/RETEST-PHASE1-v0.27.0.md](docs/RETEST-PHASE1-v0.27.0.md)、v0.26.0は [docs/RETEST-PHASE1-v0.26.0.md](docs/RETEST-PHASE1-v0.26.0.md)、v0.25.0は [docs/RETEST-PHASE1-v0.25.0.md](docs/RETEST-PHASE1-v0.25.0.md)、v0.24.0は [docs/RETEST-PHASE1-v0.24.0.md](docs/RETEST-PHASE1-v0.24.0.md)、v0.23.0は [docs/RETEST-PHASE1-v0.23.0.md](docs/RETEST-PHASE1-v0.23.0.md)、v0.22.1は [docs/RETEST-PHASE1-v0.22.1.md](docs/RETEST-PHASE1-v0.22.1.md)、v0.22.0は [docs/RETEST-PHASE1-v0.22.0.md](docs/RETEST-PHASE1-v0.22.0.md) にまとめています。
+Phase 1 v0.32.3の再確認手順は [docs/RETEST-PHASE1-v0.32.3.md](docs/RETEST-PHASE1-v0.32.3.md)、v0.32.2は [docs/RETEST-PHASE1-v0.32.2.md](docs/RETEST-PHASE1-v0.32.2.md)、v0.32.1は [docs/RETEST-PHASE1-v0.32.1.md](docs/RETEST-PHASE1-v0.32.1.md)、v0.32.0は [docs/RETEST-PHASE1-v0.32.0.md](docs/RETEST-PHASE1-v0.32.0.md)、v0.30.0は [docs/RETEST-PHASE1-v0.30.0.md](docs/RETEST-PHASE1-v0.30.0.md)、v0.29.0は [docs/RETEST-PHASE1-v0.29.0.md](docs/RETEST-PHASE1-v0.29.0.md)、v0.28.0は [docs/RETEST-PHASE1-v0.28.0.md](docs/RETEST-PHASE1-v0.28.0.md)、v0.27.0は [docs/RETEST-PHASE1-v0.27.0.md](docs/RETEST-PHASE1-v0.27.0.md)、v0.26.0は [docs/RETEST-PHASE1-v0.26.0.md](docs/RETEST-PHASE1-v0.26.0.md)、v0.25.0は [docs/RETEST-PHASE1-v0.25.0.md](docs/RETEST-PHASE1-v0.25.0.md)、v0.24.0は [docs/RETEST-PHASE1-v0.24.0.md](docs/RETEST-PHASE1-v0.24.0.md)、v0.23.0は [docs/RETEST-PHASE1-v0.23.0.md](docs/RETEST-PHASE1-v0.23.0.md)、v0.22.1は [docs/RETEST-PHASE1-v0.22.1.md](docs/RETEST-PHASE1-v0.22.1.md)、v0.22.0は [docs/RETEST-PHASE1-v0.22.0.md](docs/RETEST-PHASE1-v0.22.0.md) にまとめています。
 
 ## 製品方針
 

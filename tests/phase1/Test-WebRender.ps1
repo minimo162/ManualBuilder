@@ -62,5 +62,43 @@ $emptyHtml = ConvertTo-MbStepCardHtml -Step $emptyStep -Number 1 -Total 1 -Token
 Assert-Mb ((Get-MbAnnotationsJson -Html $emptyHtml) -eq '[]') '注釈が0件のときは空配列を出力する'
 
 Write-Host ''
+Write-Host '--- 撮影監視の状態表示 ---' -ForegroundColor Cyan
+
+# 狭い画面では文言を畳んでアイコンだけにする。文言は別の要素へ入れ、
+# 状態名をツールチップの先頭へ置かないと、畳んだときに状態が分からなくなる（UX-04・UX-09）。
+$watchHtml = ConvertTo-MbWatchStatusHtml -State 'active' -Role 'owner' -Directory 'C:\shots'
+Assert-Mb ($watchHtml -match 'class="watch-status__label"') '監視状態の文言を畳める要素へ入れる'
+Assert-Mb ($watchHtml -match 'title="監視中・このタブに追加 /') '状態名をツールチップの先頭へ入れる'
+Assert-Mb ($watchHtml -match 'C:\\shots') 'ツールチップに保存先も残す'
+
+$disabledHtml = ConvertTo-MbWatchStatusHtml -State 'disabled' -Role 'available'
+Assert-Mb ($disabledHtml -match 'title="自動監視なし・貼り付け利用可 /') '保存先が無い場合も状態名をツールチップへ入れる'
+
+Write-Host ''
+Write-Host '--- 手順アウトラインの状態 ---' -ForegroundColor Cyan
+
+function New-MbTestSheet {
+    param([object[]]$Steps)
+    return [pscustomobject]@{ id = 'sheet-1'; name = 'テストシート'; steps = @($Steps) }
+}
+
+$completeStep = New-MbTestStep -AnnotationCount 0
+$incompleteStep = New-MbTestStep -AnnotationCount 0
+$incompleteStep.description = ''
+$imagelessStep = New-MbTestStep -AnnotationCount 0
+$imagelessStep.imageId = ''
+
+$testSheet = New-MbTestSheet -Steps @($completeStep, $incompleteStep, $imagelessStep)
+# Render-MbStepNavigation は公開していない補助関数のため、モジュールの内側で呼ぶ。
+$navHtml = & (Get-Module ManualBuilder.Web) { param($Sheet) Render-MbStepNavigation -Sheet $Sheet } $testSheet
+# aria-label は role の無い span では支援技術へ届かない。目印には必ず role="img" を付ける（UX-10）。
+Assert-Mb ($navHtml -notmatch '<span class="step-nav__status"(?![^>]*role=")') '未完了の目印にrole="img"を付ける'
+Assert-Mb ($navHtml -match 'aria-label="説明未入力"') '説明未入力の手順に読み上げ可能な目印を出す'
+Assert-Mb ($navHtml -match 'aria-label="画像なし"') '画像なしの手順に読み上げ可能な目印を出す'
+Assert-Mb (([regex]::Matches($navHtml, 'step-nav__status')).Count -eq 2) '入力済みの手順には目印を出さない'
+# ドラッグしか案内していないと、キーボードだけを使う人が並べ替えに気付けない（UX-08）。
+Assert-Mb ($navHtml -match 'data-step-nav-drag-handle[^>]*↑↓ キー') '手順の取っ手がキーボード操作を案内する'
+
+Write-Host ''
 Write-Host 'Web rendering tests passed.' -ForegroundColor Green
 exit 0

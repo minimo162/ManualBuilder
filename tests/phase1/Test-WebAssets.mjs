@@ -130,6 +130,35 @@ if (appJs) {
 }
 
 // ---------------------------------------------------------------
+// v0.32.3 のUI/UX修正。どれも「動くが使えない」種類の欠けで、機能のテストでは落ちない。
+console.log('操作性の作り込みが残っていること');
+if (appJs) {
+  check('シート切替でスクロール位置を戻す', /restoreScroll\(\)/.test(appJs));
+  check('キーボードでも手順を並べ替えられる', appJs.includes('moveStepByKeyboard'));
+  check('キーボードでもシートを並べ替えられる', appJs.includes('moveSheetByKeyboard'));
+  check('通知を積んで出す', appJs.includes('TOAST_LIMIT'));
+  check('通知を閉じられる', appJs.includes('toast__close'));
+  check('動きを減らす設定を尊重する', appJs.includes('prefers-reduced-motion'));
+  // 名前の無いダイアログは読み上げが「ダイアログ」としか伝えない。作る数と名前を付ける数を合わせる。
+  const dialogCreations = (appJs.match(/document\.createElement\('dialog'\)/g) || []).length;
+  const dialogLabels = (appJs.match(/dialog\.setAttribute\('aria-label'/g) || []).length;
+  check('作るダイアログすべてに名前を付ける', dialogLabels >= dialogCreations,
+    `ダイアログ ${dialogCreations} 件 / 名前 ${dialogLabels} 件`);
+}
+
+const appCss = read('web/assets/css/app.css');
+if (appCss) {
+  check('フォーカス位置を輪郭線でも示す', /:focus-visible[\s\S]{0,200}outline:/.test(appCss));
+  check('ハイコントラストでもフォーカスが見える', appCss.includes('forced-colors: active'));
+  check('未入力の目印を狭い画面で切り捨てない', !appCss.includes('max-width: 32px'));
+}
+
+const indexHtmlText = read('web/index.html');
+if (indexHtmlText) {
+  check('通知は増えた1件だけを読み上げる', indexHtmlText.includes('aria-atomic="false"'));
+}
+
+// ---------------------------------------------------------------
 console.log('取り除いた機能が戻っていないこと');
 if (appJs) {
   check('PowerPoint出力を持たない', !/powerpoint/i.test(appJs));

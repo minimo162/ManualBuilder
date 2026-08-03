@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>ManualBuilder</title>
-  <link rel="stylesheet" href="/assets/css/app.css?v=0.32.2">
+  <link rel="stylesheet" href="/assets/css/app.css?v=0.32.3">
   <script src="/vendor/htmx-2.0.10.min.js" defer></script>
-  <script src="/assets/js/video-scenes.js?v=0.32.2" defer></script>
-  <script src="/assets/js/app.js?v=0.32.2" defer></script>
+  <script src="/assets/js/video-scenes.js?v=0.32.3" defer></script>
+  <script src="/assets/js/app.js?v=0.32.3" defer></script>
 </head>
 <body hx-headers='{"X-Manual-Token":"__TOKEN__"}'>
   <div id="app-root" hx-get="/ui/workspace" hx-trigger="load" hx-swap="innerHTML">
@@ -20,6 +20,7 @@
       </div>
     </div>
   </div>
-  <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+  <!-- 通知は積んで出すため、領域全体ではなく増えた1件だけを読み上げさせる。 -->
+  <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="false"></div>
 </body>
 </html>
