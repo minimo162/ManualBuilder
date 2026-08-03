@@ -221,6 +221,63 @@ $noOcr = Resolve-MbOperationRect -Rect ([pscustomobject]@{ x1 = 0.1; y1 = 0.1; x
 Add-Result ([string]$noOcr.matched -eq 'none' -and [double]$noOcr.rect.x2 -eq 0.2) '文字認識が使えなくても枠はそのまま使える'
 
 # ---------------------------------------------------------------------
+# 文章を整える（校正）
+# ---------------------------------------------------------------------
+$reviewProject = New-MbProject
+$reviewProject.title = '経費精算システム操作手順'
+$reviewSheet = $reviewProject.sheets[0]
+$reviewSheet.name = '申請を出す'
+
+$written = Add-MbStep -Project $reviewProject -SheetId $reviewSheet.id
+$written.imageId = 'image-' + ('{0:d32}' -f 1)
+$written.title = '申請の作成'
+$written.description = '「申請」ボタンをクリックする。'
+
+# 画像が無く文字だけの手順も、校正の対象になる。
+$textOnly = Add-MbStep -Project $reviewProject -SheetId $reviewSheet.id
+$textOnly.title = '注意'
+$textOnly.description = '金額は税込で入力します。'
+
+# 文章がまったく無い手順は対象にしない。
+$emptyStep = Add-MbStep -Project $reviewProject -SheetId $reviewSheet.id
+$emptyStep.imageId = 'image-' + ('{0:d32}' -f 2)
+
+$reviewSteps = Get-MbCopilotStepList -Project $reviewProject
+$reviewPackets = Get-MbCopilotPackets -Steps $reviewSteps -StepsPerPacket 25 -Mode 'review'
+$reviewFlat = @($reviewPackets | ForEach-Object { $_ })
+Add-Result (@($reviewFlat).Count -eq 2) '文章のある手順だけが校正の対象になる'
+Add-Result (@($reviewFlat | Where-Object { $_.id -eq $textOnly.id }).Count -eq 1) '画像の無い手順も校正の対象になる'
+Add-Result (@($reviewFlat | Where-Object { $_.id -eq $emptyStep.id }).Count -eq 0) '文章の無い手順は校正しない'
+
+$reviewPrompt = New-MbCopilotReviewPrompt -Project $reviewProject -PacketSteps $reviewFlat -TotalSteps 3 -Marker 'MB_END'
+Add-Result ($reviewPrompt.Contains('「申請」ボタンをクリックする。')) '今の文章を依頼文へ入れる'
+Add-Result ($reviewPrompt.Contains('敬体')) '敬体の統一を見るよう頼む'
+Add-Result ($reviewPrompt.Contains('表記ゆれ')) '表記ゆれを見るよう頼む'
+Add-Result ($reviewPrompt.Contains('用語')) '用語の不統一を見るよう頼む'
+Add-Result ($reviewPrompt.Contains('意味を変えない')) '意味を変えないよう釘を刺す'
+Add-Result ($reviewPrompt.EndsWith((Get-MbCopilotPromptTailAnchor))) '依頼文が目印で終わる'
+# 校正では画像を渡さない。依頼文に添付の話が出ないこと。
+Add-Result (-not $reviewPrompt.Contains('添付画像')) '校正では画像を渡さない'
+
+$reviewId = [string]$reviewFlat[0].id
+$reviewBody = '{"steps":[{"id":"' + $reviewId + '","title":"","description":"「申請」を選択します。","note":"","kind":"敬体","reason":"常体を敬体へ揃えました"}]}'
+$reviewDrafts = ConvertFrom-MbCopilotStepAnswer -Answer (Get-MbStepAnswerJson -Text $reviewBody) -PacketSteps $reviewFlat -Mode 'review'
+Add-Result (@($reviewDrafts).Count -eq 1) '直した箇所を受け取る'
+Add-Result ([string]$reviewDrafts[0].kind -eq '敬体') '指摘の種類が残る'
+Add-Result ([string]$reviewDrafts[0].description -eq '「申請」を選択します。') '直した文章が入る'
+Add-Result ([string]$reviewDrafts[0].title -eq '') '直さない項目は空のまま'
+Add-Result ([string]$reviewDrafts[0].currentDescription -eq '「申請」ボタンをクリックする。') '直す前の文章も持つ'
+
+# 3項目とも空の指摘は、直すところが無いという意味。確認画面へ出さない。
+$noChange = '{"steps":[{"id":"' + $reviewId + '","title":"","description":"","note":"","reason":"問題ありません"}]}'
+$noChangeDrafts = ConvertFrom-MbCopilotStepAnswer -Answer (Get-MbStepAnswerJson -Text $noChange) -PacketSteps $reviewFlat -Mode 'review'
+Add-Result (@($noChangeDrafts).Count -eq 0) '直すところが無い指摘は捨てる'
+
+# 下書きでは空の項目も「変更しない」の意味で残す。校正と扱いが違う。
+$draftNoChange = ConvertFrom-MbCopilotStepAnswer -Answer (Get-MbStepAnswerJson -Text $noChange) -PacketSteps $reviewFlat -Mode 'draft'
+Add-Result (@($draftNoChange).Count -eq 1) '下書きでは空の項目でも受け取る'
+
+# ---------------------------------------------------------------------
 Write-Host ''
 if ($errors.Count -eq 0) {
     Write-Host 'Copilot下書きの検査はすべて成功しました。' -ForegroundColor Green

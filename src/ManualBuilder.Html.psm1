@@ -1,5 +1,5 @@
 ﻿# ManualBuilder HTML exporter.
-# Excel・Word・PowerPointと違いCOMを使わない。文字列を組み立ててファイルへ書くだけなので、
+# Excel・Wordと違いCOMを使わない。文字列を組み立ててファイルへ書くだけなので、
 # Officeの有無に依存せず、既存のブック・文書へ影響することもない。
 # 出力したHTMLはJavaScriptを使わない。共有フォルダー上のファイルはゾーン判定で
 # スクリプトが制限されることがあるため、HTML標準の機能だけで成立させる。
@@ -411,7 +411,7 @@ function Invoke-MbHtmlExport {
                     if (-not (Test-Path -LiteralPath $imageDirectory)) { [void](New-Item -ItemType Directory -Path $imageDirectory -Force) }
                     $imageCount++
                     $destinationPath = Join-Path $imageDirectory ("step-{0:d4}.png" -f $stepCount)
-                    # 注釈と切り抜きは画像へ焼き込む。Excel・Word・PowerPointと同じ見た目になり、
+                    # 注釈と切り抜きは画像へ焼き込む。Excel・Wordと同じ見た目になり、
                     # 黒塗りがHTMLのソースから読み取られることもない。
                     $renderedPath = New-MbAnnotatedImage -SourcePath $sourcePath -Annotations @($step.annotations) -Crop $step.crop `
                         -DestinationPath $destinationPath `

@@ -122,7 +122,7 @@ function ConvertTo-MbStepCardHtml {
     $isCropped = ([double]$crop.x -gt 0.000001 -or [double]$crop.y -gt 0.000001 -or [double]$crop.width -lt 0.999999 -or [double]$crop.height -lt 0.999999)
     $sb = New-Object System.Text.StringBuilder
 
-    # 動画はPowerPoint出力にだけ埋め込む。画面では添付されていることだけを示す。
+    # 動画はExcelとHTMLの出力から再生する。画面では添付されていることだけを示す。
     $videoRow = ''
     if ($Video) {
         $videoSizeText = if ([long]$Video.byteLength -ge (1024 * 1024)) {
@@ -131,7 +131,7 @@ function ConvertTo-MbStepCardHtml {
             [string][Math]::Max(1, [Math]::Round([long]$Video.byteLength / 1KB)) + 'KB'
         }
         $videoLengthText = [string][Math]::Round([double]$Video.durationSec, 1) + '秒'
-        $videoRow = '<div class="step-video" data-step-video><span class="step-video__mark" aria-hidden="true">▶</span><span class="step-video__text">動画つき ' + (ConvertTo-MbHtml $videoLengthText) + ' ・ ' + (ConvertTo-MbHtml $videoSizeText) + '<span class="step-video__hint">PowerPointで作成すると再生できます</span></span><button type="button" class="image-secondary-button" data-detach-video>動画を外す</button></div>'
+        $videoRow = '<div class="step-video" data-step-video><span class="step-video__mark" aria-hidden="true">▶</span><span class="step-video__text">動画つき ' + (ConvertTo-MbHtml $videoLengthText) + ' ・ ' + (ConvertTo-MbHtml $videoSizeText) + '<span class="step-video__hint">ExcelまたはHTMLで作成すると再生できます</span></span><button type="button" class="image-secondary-button" data-detach-video>動画を外す</button></div>'
     }
 
     $imageStateClass = if ($Step.imageId) { '' } else { ' step-card--no-image' }
@@ -291,7 +291,7 @@ function ConvertTo-MbWorkspaceHtml {
     [void]$sb.AppendLine('<button type="button" class="brand brand--home" data-project-home hx-post="/api/projects/home" hx-target="#workspace" hx-swap="outerHTML" title="マニュアル一覧へ戻る" aria-label="マニュアル一覧へ戻る"><span class="brand__mark" aria-hidden="true">M</span><span>ManualBuilder</span></button>')
     [void]$sb.AppendLine('<label class="project-title editable-name name-field" data-editable-name title="マニュアル名を編集"><span class="sr-only">マニュアル名</span><input type="text" name="title" maxlength="100" value="' + $title + '" aria-label="マニュアル名。入力して変更" hx-post="/api/project/title" hx-trigger="input changed delay:700ms, change" hx-target="#save-status" hx-swap="outerHTML"></label>')
     [void]$sb.AppendLine('<div class="topbar__state">' + (ConvertTo-MbSaveStatusHtml) + (ConvertTo-MbWatchStatusHtml -State $CaptureState -Role $CaptureRole -Directory $CaptureDirectory) + '</div>')
-    [void]$sb.AppendLine('<div class="topbar__actions"><button type="button" class="button button--primary" data-export-excel>Excelで作成</button><button type="button" class="button button--secondary" data-export-html>HTMLで作成</button><details class="action-menu topbar-menu"><summary class="icon-button" title="その他" aria-label="その他の操作">…</summary><div class="action-menu__panel action-menu__panel--right"><button type="button" class="menu-command" data-record-operations>操作を記録して手順にする</button><button type="button" class="menu-command" data-copilot-draft>Copilotで手順の文章を作る</button><button type="button" class="menu-command" data-export-powerpoint>PowerPointで作成（動画つき）</button><button type="button" class="menu-command" data-export-word>Wordで作成</button><button type="button" class="menu-command menu-command--danger" hx-post="/api/shutdown" hx-target="body" hx-swap="none" hx-confirm="ManualBuilderを終了しますか？">ManualBuilderを終了</button></div></details></div>')
+    [void]$sb.AppendLine('<div class="topbar__actions"><button type="button" class="button button--primary" data-export-excel>Excelで作成</button><button type="button" class="button button--secondary" data-export-html>HTMLで作成</button><details class="action-menu topbar-menu"><summary class="icon-button" title="その他" aria-label="その他の操作">…</summary><div class="action-menu__panel action-menu__panel--right"><button type="button" class="menu-command" data-record-operations>操作を記録して手順にする</button><button type="button" class="menu-command" data-copilot-draft>Copilotで手順の文章を作る</button><button type="button" class="menu-command" data-copilot-review>Copilotで文章を整える</button><button type="button" class="menu-command" data-export-word>Wordで作成</button><button type="button" class="menu-command menu-command--danger" hx-post="/api/shutdown" hx-target="body" hx-swap="none" hx-confirm="ManualBuilderを終了しますか？">ManualBuilderを終了</button></div></details></div>')
     [void]$sb.AppendLine('</header>')
 
     [void]$sb.AppendLine('<div class="app-layout">')

@@ -10,6 +10,7 @@
 - Excel COMによる主出力: 単発、10回連続、キャンセル、異常分岐を実機確認済み
 - 既存の未保存Excelブックへ影響しないことを実機確認済み
 - Word COMによる副出力の安全性と基本レイアウトを確認済み
+- Phase 1基盤 v0.32.0: その他メニューに「Copilotで文章を整える」を追加した。敬体の統一・表記ゆれ・用語の不統一・誤字・長すぎる一文を確認し、直したい箇所だけを受け取る。画像は渡さず文章だけを一度にまとめて渡すため、下書きより速く、表記ゆれのように全体を見ないと気付けない指摘が出せる。指摘は確認画面で1件ずつ採用でき、空欄は「変更しない」の意味なので既存の文章を消さない。あわせてPowerPoint出力を削除した（動画つきの配布はHTMLとExcelが担うようになり、COM由来の不具合を抱え続ける利点が薄れたため）。v0.31.0でapp.jsなど3ファイルを空で出してしまった不具合を修正し、同じ取りこぼしを防ぐ検査（Test-WebAssets.mjs）を追加
 - Phase 1基盤 v0.31.0: 録画からのローカル音声認識（System.Speech）を廃止した。日本語の口述筆記の精度が実用未満で、誤認識した文をCopilotへ渡すとかえって説明を狂わせるため。良い音声認識が要る場合は、Win+Hと同じ仕組みが使える操作記録モード（v0.30.0）を使う。録画からの手順づくり自体は従来どおり動く
 - Phase 1基盤 v0.30.0: 操作記録モードで、話しながら操作した内容も手順の手がかりにできるようにした。Win+H（音声入力）と同じ Windows.Media.SpeechRecognition を使うため、v0.28.0の録画からの文字起こし（System.Speech）とは精度が段違いになる。この仕組みは入力がマイク固定で録画ファイルを食えないが、操作記録モードは実時間で動くのでその制約に当たらない。認識は記録ループと同居できないため並走する別プロセスにし、発話の開始時刻で操作と突き合わせる。「操作の直後に話したらその操作への補足、そうでなければ次に来る操作の説明」として振り分ける。マイクを使い音声が端末の外へ出るため、既定では行わず、記録のたびに選ぶ
 - Phase 1基盤 v0.29.0: 操作を記録して手順にするモードを追加した。記録中はクリックのたびに画面を取り込み、押したコントロールの名前・種類・矩形をWindowsのUI Automationから直接読む。v0.28.0の録画からの取り込みが画面の変化から押された場所を推定するのに対し、こちらは推定しない。赤枠はボタンの輪郭そのもので、操作対象の名前も確定値になる。低レベルフックは使わずマウスの状態を60Hzで見る方式にした（フックのコールバック内でスクリーンショットを撮るとWindowsに無警告でフックを外されるため）。押す直前の画面を先に確保してからUI Automationへ問い合わせるので、押した後の画面が写ることはない。高DPIで赤枠がずれないようプロセスをDPI認識にしている。入力した文字は記録せず、「どの欄に入力したか」だけを残すため、パスワードが手順に残ることはない
@@ -78,14 +79,11 @@ Windowsでリポジトリ直下の `run.cmd` をダブルクリックします�
 - 録画から「自動で手順に分ける」を選ぶと、場面の切れ目を自動で見つけて手順を並べ、押された場所に赤枠を付ける（音声は扱わない）
 - 画面全体が一度に切り替わった手順は押された場所を特定できないため、赤枠を出さない（憶測の枠は付けない）
 - その他メニューの「Copilotで手順の文章を作る」から、Microsoft 365 Copilotに手順名・説明・補足の下書きを作らせる
+- その他メニューの「Copilotで文章を整える」から、敬体の統一・表記ゆれ・用語の不統一・誤字を確認する（画像は渡さない）
 - Copilotへ渡すのは画面・赤枠・読み取った操作対象・すでに人が書いた手順の文体で、APIキーもGraphの権限も使わない
 - 下書きは確認画面で1件ずつ採用・却下でき、その場で直してから採用できる。却下したものは手順に入らない
 - 下書きの空欄は「変更しない」の意味で、すでに書いた文章を消さない
-- その他メニューの「PowerPointで作成（動画つき）」から、手順ごとに1枚のスライドを持つpptxを作成
-- 動画つきの手順は動画をpptxの中へ取り込むため、受け取った人はファイル1つで再生できる（Wordは静止画のみ）
 - 動画つきの手順があるときは、Excelもブックと動画を1つのフォルダーへ出力し、見出し右の「▶ 動画を見る」から再生できる
-- PowerPoint起動中もWordと同じく安全停止し、閉じて再実行するよう案内
-- PowerPoint作成中は専用プロセスのウィンドウが最小化状態で現れる（PowerPointは非表示で動かせないため）
 - その他メニューの「HTMLで作成（ブラウザー用）」から、index.htmlと画像・動画を持つフォルダーを作成
 - HTML出力はCOMを使わないためOfficeが不要で、既存のブック・文書へ一切影響しない
 - 出力したHTMLはJavaScriptを使わないため、共有フォルダーのゾーン判定に左右されずに開ける
@@ -105,7 +103,7 @@ v0.14.1以前のアプリ配下に `data\projects\default` がある場合、v0.
 
 初回は `tests\phase1\run-tests.cmd` を実行し、PowerShell 5.1構文、プロジェクト保存、localhostサーバーを確認してください。詳しくは [docs/PHASE1-FOUNDATION.md](docs/PHASE1-FOUNDATION.md) を参照してください。
 
-Phase 1 v0.30.0の再確認手順は [docs/RETEST-PHASE1-v0.30.0.md](docs/RETEST-PHASE1-v0.30.0.md)、v0.29.0は  [docs/RETEST-PHASE1-v0.29.0.md](docs/RETEST-PHASE1-v0.29.0.md)、v0.28.0は  [docs/RETEST-PHASE1-v0.28.0.md](docs/RETEST-PHASE1-v0.28.0.md)、v0.27.0は [docs/RETEST-PHASE1-v0.27.0.md](docs/RETEST-PHASE1-v0.27.0.md)、v0.26.0は [docs/RETEST-PHASE1-v0.26.0.md](docs/RETEST-PHASE1-v0.26.0.md)、v0.25.0は [docs/RETEST-PHASE1-v0.25.0.md](docs/RETEST-PHASE1-v0.25.0.md)、v0.24.0は [docs/RETEST-PHASE1-v0.24.0.md](docs/RETEST-PHASE1-v0.24.0.md)、v0.23.0は [docs/RETEST-PHASE1-v0.23.0.md](docs/RETEST-PHASE1-v0.23.0.md)、v0.22.1は [docs/RETEST-PHASE1-v0.22.1.md](docs/RETEST-PHASE1-v0.22.1.md)、v0.22.0は [docs/RETEST-PHASE1-v0.22.0.md](docs/RETEST-PHASE1-v0.22.0.md) にまとめています。
+Phase 1 v0.32.0の再確認手順は [docs/RETEST-PHASE1-v0.32.0.md](docs/RETEST-PHASE1-v0.32.0.md)、v0.30.0は [docs/RETEST-PHASE1-v0.30.0.md](docs/RETEST-PHASE1-v0.30.0.md)、v0.29.0は [docs/RETEST-PHASE1-v0.29.0.md](docs/RETEST-PHASE1-v0.29.0.md)、v0.28.0は [docs/RETEST-PHASE1-v0.28.0.md](docs/RETEST-PHASE1-v0.28.0.md)、v0.27.0は [docs/RETEST-PHASE1-v0.27.0.md](docs/RETEST-PHASE1-v0.27.0.md)、v0.26.0は [docs/RETEST-PHASE1-v0.26.0.md](docs/RETEST-PHASE1-v0.26.0.md)、v0.25.0は [docs/RETEST-PHASE1-v0.25.0.md](docs/RETEST-PHASE1-v0.25.0.md)、v0.24.0は [docs/RETEST-PHASE1-v0.24.0.md](docs/RETEST-PHASE1-v0.24.0.md)、v0.23.0は [docs/RETEST-PHASE1-v0.23.0.md](docs/RETEST-PHASE1-v0.23.0.md)、v0.22.1は [docs/RETEST-PHASE1-v0.22.1.md](docs/RETEST-PHASE1-v0.22.1.md)、v0.22.0は [docs/RETEST-PHASE1-v0.22.0.md](docs/RETEST-PHASE1-v0.22.0.md) にまとめています。
 
 ## 製品方針
 
@@ -115,7 +113,7 @@ Phase 1 v0.30.0の再確認手順は [docs/RETEST-PHASE1-v0.30.0.md](docs/RETEST
 - 1手順を「画像・手順名・説明・補足」のカードとして扱い、Excelでは画像比率と文章量に応じて高さを調整する
 - Excelでは画像を左、説明を右に配置し、PCの横長画面で見やすくする
 - Wordは同じプロジェクトデータから生成できる副出力とする
-- 動画を見せたい場合はPowerPointかHTMLを使う。Wordは動画を扱わず、静止画のまま出力する
+- 動画を見せたい場合はHTMLかExcelを使う。Wordは動画を扱わず、静止画のまま出力する
 - Excelは動画を埋め込めないが、動画つきの手順があるときだけブックと動画をフォルダーへまとめ、`=HYPERLINK()` の相対パスから再生できるようにする。動画が無い場合は単体のxlsxのままとし、メールで送れる手軽さを残す
 - HTML出力はJavaScriptを使わない。共有フォルダー上のファイルはゾーン判定でスクリプトが制限されることがあるため
 - 出力は必ずローカル（ドキュメント\ManualBuilder）へ作る。共有フォルダーへ書くのは、本人が「共有フォルダーへ反映」を押したときだけ

@@ -93,13 +93,23 @@ function Get-MbCopilotPackets {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Steps,
         [int]$StepsPerPacket = 6,
-        [switch]$IncludeWritten
+        [switch]$IncludeWritten,
+        [ValidateSet('draft', 'review')][string]$Mode = 'draft'
     )
 
     if ($StepsPerPacket -lt 1) { $StepsPerPacket = 1 }
-    $targets = @($Steps | Where-Object {
-        $_.imageId -and ($IncludeWritten -or [string]::IsNullOrWhiteSpace($_.title) -or [string]::IsNullOrWhiteSpace($_.description))
-    })
+    if ($Mode -eq 'review') {
+        # 校正は書かれている文章が対象。画像は見ないので、文字だけの手順も含める。
+        $targets = @($Steps | Where-Object {
+            (-not [string]::IsNullOrWhiteSpace($_.title)) -or
+            (-not [string]::IsNullOrWhiteSpace($_.description)) -or
+            (-not [string]::IsNullOrWhiteSpace($_.note))
+        })
+    } else {
+        $targets = @($Steps | Where-Object {
+            $_.imageId -and ($IncludeWritten -or [string]::IsNullOrWhiteSpace($_.title) -or [string]::IsNullOrWhiteSpace($_.description))
+        })
+    }
     $packets = New-Object System.Collections.ArrayList
     for ($i = 0; $i -lt $targets.Count; $i += $StepsPerPacket) {
         $count = [Math]::Min($StepsPerPacket, $targets.Count - $i)
@@ -188,6 +198,61 @@ function New-MbCopilotStepPrompt {
     return $builder.ToString()
 }
 
+# 文章を整えてもらうための依頼文。
+#
+# 下書きと違い、画像は渡さない。表記ゆれや用語の不統一は、文章を一度にまとめて
+# 見ないと分からないため、1回で渡す手順の数を多くする。画像が無いぶん軽い。
+function New-MbCopilotReviewPrompt {
+    param(
+        [Parameter(Mandatory = $true)]$Project,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$PacketSteps,
+        [int]$TotalSteps = 0,
+        [string]$Marker = 'MB_END'
+    )
+
+    $builder = New-Object System.Text.StringBuilder
+    [void]$builder.AppendLine('あなたは部内向け操作マニュアルの校正者です。次の手順の文章を読み、直したほうがよい箇所だけを挙げてください。')
+    [void]$builder.AppendLine()
+    [void]$builder.AppendLine('## このマニュアルについて')
+    [void]$builder.AppendLine(('マニュアル名: ' + [string]$Project.title))
+    if ($TotalSteps -gt 0) { [void]$builder.AppendLine(('全体の手順数: ' + $TotalSteps)) }
+    [void]$builder.AppendLine()
+
+    [void]$builder.AppendLine('## 手順の文章')
+    foreach ($step in $PacketSteps) {
+        [void]$builder.AppendLine(('### ' + [string]$step.id))
+        [void]$builder.AppendLine(('シート: ' + [string]$step.sheetName + '（このシートの ' + [string]$step.indexInSheet + ' 番目）'))
+        [void]$builder.AppendLine(('手順名: ' + [string]$step.title))
+        [void]$builder.AppendLine(('説明: ' + [string]$step.description))
+        [void]$builder.AppendLine(('補足: ' + [string]$step.note))
+        [void]$builder.AppendLine()
+    }
+
+    [void]$builder.AppendLine('## 見るところ')
+    [void]$builder.AppendLine('- 敬体の統一。「〜します。」に揃える。')
+    [void]$builder.AppendLine('- 表記ゆれ。同じものが別の書き方になっていないか（送り仮名、全角と半角、カタカナの長音）。')
+    [void]$builder.AppendLine('- 用語の不統一。同じ画面や操作を、手順によって別の名前で呼んでいないか。')
+    [void]$builder.AppendLine('- 誤字脱字。')
+    [void]$builder.AppendLine('- 一文が長すぎて読みにくい箇所。')
+    [void]$builder.AppendLine()
+
+    [void]$builder.AppendLine('## 決まり')
+    [void]$builder.AppendLine('- 直す必要がない手順は挙げないでください。')
+    [void]$builder.AppendLine('- 意味を変えないでください。書き方だけを整えます。')
+    [void]$builder.AppendLine('- 手順の順序や、操作そのものの是非は指摘しないでください。校正の範囲を超えます。')
+    [void]$builder.AppendLine('- 直す項目だけを書き、直さない項目は空文字にしてください。')
+    [void]$builder.AppendLine('- 表記ゆれや用語の不統一を直すときは、このマニュアルの中で多いほうへ揃えてください。')
+    [void]$builder.AppendLine()
+
+    [void]$builder.AppendLine('## 出力の形')
+    [void]$builder.AppendLine('次の形のJSONだけを出力してください。説明文や前置きは書かないでください。')
+    [void]$builder.AppendLine('{"steps":[{"id":"手順のid","title":"直した手順名","description":"直した説明","note":"直した補足","kind":"敬体","reason":"直した理由を一行で"}]}')
+    [void]$builder.AppendLine('kind は 敬体 / 表記ゆれ / 用語 / 誤字 / 長文 のいずれかにしてください。')
+    [void]$builder.AppendLine(('JSONを出力し終えたら、最後の行に ' + $Marker + ' とだけ書いてください。'))
+    [void]$builder.Append((Get-MbCopilotPromptTailAnchor))
+    return $builder.ToString()
+}
+
 function Get-MbTrimmedText {
     param([AllowNull()]$Value, [int]$MaxLength)
     if ($null -eq $Value) { return '' }
@@ -210,7 +275,8 @@ function Get-MbBooleanOrDefault {
 function ConvertFrom-MbCopilotStepAnswer {
     param(
         [AllowNull()]$Answer,
-        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$PacketSteps
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$PacketSteps,
+        [ValidateSet('draft', 'review')][string]$Mode = 'draft'
     )
 
     $known = @{}
@@ -231,6 +297,13 @@ function ConvertFrom-MbCopilotStepAnswer {
         $description = Get-MbTrimmedText -Value $(if ($item.PSObject.Properties.Name -contains 'description') { $item.description } else { '' }) -MaxLength $script:MbDraftDescriptionMaxLength
         $note = Get-MbTrimmedText -Value $(if ($item.PSObject.Properties.Name -contains 'note') { $item.note } else { '' }) -MaxLength $script:MbDraftNoteMaxLength
         $reason = Get-MbTrimmedText -Value $(if ($item.PSObject.Properties.Name -contains 'reason') { $item.reason } else { '' }) -MaxLength 200
+        $kind = Get-MbTrimmedText -Value $(if ($item.PSObject.Properties.Name -contains 'kind') { $item.kind } else { '' }) -MaxLength 40
+
+        # 校正で3項目とも空なら、直すところが無いという意味。確認画面へ出さない。
+        if ($Mode -eq 'review' -and
+            [string]::IsNullOrWhiteSpace($title) -and
+            [string]::IsNullOrWhiteSpace($description) -and
+            [string]::IsNullOrWhiteSpace($note)) { continue }
 
         [void]$drafts.Add([pscustomobject]@{
             id              = $id
@@ -240,6 +313,7 @@ function ConvertFrom-MbCopilotStepAnswer {
             keep            = Get-MbBooleanOrDefault -Container $item -Name 'keep' -Default $true
             confident       = Get-MbBooleanOrDefault -Container $item -Name 'confident' -Default $true
             reason          = $reason
+            kind            = $kind
             title           = $title
             description     = $description
             note            = $note
@@ -282,6 +356,7 @@ Export-ModuleMember -Function @(
     'Get-MbCopilotStyleSamples',
     'Get-MbCopilotPackets',
     'New-MbCopilotStepPrompt',
+    'New-MbCopilotReviewPrompt',
     'ConvertFrom-MbCopilotStepAnswer',
     'New-MbCopilotAttachment',
     'Get-MbTrimmedText'

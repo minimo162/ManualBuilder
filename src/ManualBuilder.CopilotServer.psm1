@@ -162,7 +162,8 @@ function Read-MbCopilotDraftStatus {
 function Start-MbCopilotDraftJob {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectPath,
-        [switch]$IncludeWritten
+        [switch]$IncludeWritten,
+        [ValidateSet('draft', 'review')][string]$Mode = 'draft'
     )
 
     $current = Read-MbCopilotDraftStatus
@@ -170,9 +171,13 @@ function Start-MbCopilotDraftJob {
 
     $project = Get-MbProject -Path $ProjectPath
     $steps = Get-MbCopilotStepListFromProject -Project $project
-    if ($steps.withImage -lt 1) { throw '画像のある手順が1件もありません。録画かスクリーンショットから手順を作ってください。' }
-    if (-not $IncludeWritten -and $steps.needsDraft -lt 1) {
-        throw 'すべての手順に文章が入っています。書き直したい場合は「すでに書いた手順も対象にする」を選んでください。'
+    if ($Mode -eq 'review') {
+        if ($steps.withText -lt 1) { throw '文章が書かれた手順がありません。先に手順の文章を作ってください。' }
+    } else {
+        if ($steps.withImage -lt 1) { throw '画像のある手順が1件もありません。録画かスクリーンショットから手順を作ってください。' }
+        if (-not $IncludeWritten -and $steps.needsDraft -lt 1) {
+            throw 'すべての手順に文章が入っています。書き直したい場合は「すでに書いた手順も対象にする」を選んでください。'
+        }
     }
     [void](Save-MbProject -Project $project -Path $ProjectPath)
 
@@ -191,7 +196,7 @@ function Start-MbCopilotDraftJob {
 
     $queued = [pscustomobject]@{
         jobId = $jobId; state = 'queued'; phase = 'queued'; message = 'Copilotの準備をしています'; percent = 0
-        currentPacket = 0; totalPackets = 0; totalSteps = $steps.needsDraft; draftCount = 0
+        currentPacket = 0; totalPackets = 0; totalSteps = $(if ($Mode -eq 'review') { $steps.withText } else { $steps.needsDraft }); draftCount = 0
         resultPath = $resultPath; startedAt = [DateTime]::UtcNow.ToString('o')
         updatedAt = [DateTime]::UtcNow.ToString('o'); completedAt = ''; errorCode = ''
     }
@@ -214,6 +219,8 @@ function Start-MbCopilotDraftJob {
         '-LogPath', (& $quote $logPath)
     )
     if ($IncludeWritten) { $arguments += '-IncludeWritten' }
+    $arguments += '-Mode'
+    $arguments += $Mode
 
     $worker = Start-Process -FilePath $powerShellPath -ArgumentList $arguments -WindowStyle Hidden -PassThru
     $processId = [int]$worker.Id
@@ -232,8 +239,15 @@ function Get-MbCopilotStepListFromProject {
     param([Parameter(Mandatory = $true)][object]$Project)
     $withImage = 0
     $needsDraft = 0
+    $withText = 0
     foreach ($sheet in @($Project.sheets)) {
         foreach ($step in @($sheet.steps)) {
+            # 校正は文字だけの手順も対象にするため、画像の有無とは別に数える。
+            if ((-not [string]::IsNullOrWhiteSpace([string]$step.title)) -or
+                (-not [string]::IsNullOrWhiteSpace([string]$step.description)) -or
+                (-not [string]::IsNullOrWhiteSpace([string]$step.note))) {
+                $withText++
+            }
             if ([string]::IsNullOrWhiteSpace([string]$step.imageId)) { continue }
             $withImage++
             if ([string]::IsNullOrWhiteSpace([string]$step.title) -or [string]::IsNullOrWhiteSpace([string]$step.description)) {
@@ -241,7 +255,7 @@ function Get-MbCopilotStepListFromProject {
             }
         }
     }
-    return [pscustomobject]@{ withImage = $withImage; needsDraft = $needsDraft }
+    return [pscustomobject]@{ withImage = $withImage; needsDraft = $needsDraft; withText = $withText }
 }
 
 function Request-MbCopilotDraftCancel {
