@@ -50,9 +50,9 @@ function Test-MbApplicationIsRunning {
 
 function Show-MbAlreadyRunningNotice {
     $message = if ($ImportFrom) {
-        "ManualBuilderはすでに起動しています。`r`n既存のブラウザータブでManualBuilderを終了してから、もう一度「編集する」を実行してください。"
+        "起動中のManualBuilderをブラウザーで開きました。`r`nManualBuilderを終了してから、もう一度「編集する」を実行してください。"
     } else {
-        "ManualBuilderはすでに起動しています。`r`n既存のブラウザータブへ戻ってください。"
+        "ManualBuilderはすでに起動していますが、ブラウザーを開き直せませんでした。"
     }
     try {
         Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
@@ -64,6 +64,19 @@ function Show-MbAlreadyRunningNotice {
         )
     } catch {
         Write-MbLauncherLog $message 'WARN'
+    }
+}
+
+function Open-MbRunningApplication {
+    try {
+        $runtime = [IO.File]::ReadAllText($runtimePath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+        $url = [string]$runtime.url
+        if ($url -notmatch '^http://localhost:\d+/$') { return $false }
+        Start-Process $url
+        return $true
+    } catch {
+        Write-MbLauncherLog "起動中のManualBuilderをブラウザーで開けませんでした: $($_.Exception.Message)" 'WARN'
+        return $false
     }
 }
 
@@ -91,7 +104,8 @@ try {
     }
 
     if (Test-MbApplicationIsRunning) {
-        Show-MbAlreadyRunningNotice
+        $opened = Open-MbRunningApplication
+        if ($ImportFrom -or -not $opened) { Show-MbAlreadyRunningNotice }
         return
     }
 

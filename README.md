@@ -10,6 +10,7 @@
 - Excel COMによる主出力: 単発、10回連続、キャンセル、異常分岐を実機確認済み
 - 既存の未保存Excelブックへ影響しないことを実機確認済み
 - Word COMによる副出力の安全性と基本レイアウトを確認済み
+- Phase 1基盤 v0.32.6: ブラウザータブだけを閉じてManualBuilder本体が残った場合、`run.cmd` や「編集する」を再実行すると、警告だけで終わらず起動中のManualBuilderをブラウザーで開き直すよう修正した
 - Phase 1基盤 v0.32.5: 操作記録を実機で再確認し、タッチパッドなどの短いクリック・キー入力を60Hzの巡回で取りこぼす問題と、閉じた記録・CopilotダイアログがCSSによって画面に残る問題を修正した
 - Phase 1基盤 v0.32.4: 「操作を記録して手順にする」をレビューし、記録中に確認画面を閉じても裏で記録が続く問題、入力直後のクリックが同じ画像として除かれる問題、停止直前の入力が失われる問題を修正した。同じ画面でも操作対象が違えば画像を共有した別手順として残す。入力手順は入力開始時の画面を使い、対象欄を黒塗りする。右クリックも操作として記録する
 - Phase 1基盤 v0.32.3: 画面の使い勝手をひととおり見直して修正した。キーボードだけで手順とシートを並べ替えられるようにし、シートを切り替えて戻ったときのスクロール位置の復元を有効にした（記録する処理だけがあり、戻す処理が呼ばれていなかった）。手順アウトラインの「説明未入力」と「画像なし」を形でも見分けられるようにし、読み上げにも届くようにした。狭い画面で撮影監視の文言が途中で欠けていたのをやめ、アイコンとツールチップで状態が分かるようにした。通知は前の1件を消さずに積み、閉じるボタンを付けた。フォーカス表示を輪郭線にし、ハイコントラストでも見えるようにした
@@ -68,7 +69,7 @@ Windowsでリポジトリ直下の `run.cmd` をダブルクリックします�
 - `Win + Shift + S` の保存先監視、`Ctrl + V`、ドロップ、画像選択による画像付き手順の追加
 - PNG／JPEG／BMPの実体検証、20MB上限、SHA-256重複除去
 - 画像を `%LOCALAPPDATA%\ManualBuilder\data\projects\<マニュアルID>\images` へ保存し、JSONには安全なメタデータだけを保持
-- 二重起動時に新しいタブを開かず、既存のブラウザータブへ戻る案内を表示
+- 二重起動時は、起動中のManualBuilderを新しいブラウザータブで開き直す
 - JSONの同一フォルダー内一時保存、直前バックアップ、破損時の安全停止
 - 「Excelで作成」から、目次とユーザー定義シートを持つ横長カード型xlsxを作成
 - Excel作成中も編集画面を操作でき、進捗表示・安全な中止・完成ファイル／保存先を開く操作が可能
@@ -109,7 +110,7 @@ v0.14.1以前のアプリ配下に `data\projects\default` がある場合、v0.
 
 初回は `tests\phase1\run-tests.cmd` を実行し、PowerShell 5.1構文、プロジェクト保存、localhostサーバーを確認してください。詳しくは [docs/PHASE1-FOUNDATION.md](docs/PHASE1-FOUNDATION.md) を参照してください。
 
-Phase 1 v0.32.5の再確認手順は [docs/RETEST-PHASE1-v0.32.5.md](docs/RETEST-PHASE1-v0.32.5.md)、v0.32.4は [docs/RETEST-PHASE1-v0.32.4.md](docs/RETEST-PHASE1-v0.32.4.md)、v0.32.3は [docs/RETEST-PHASE1-v0.32.3.md](docs/RETEST-PHASE1-v0.32.3.md)、v0.32.2は [docs/RETEST-PHASE1-v0.32.2.md](docs/RETEST-PHASE1-v0.32.2.md)、v0.32.1は [docs/RETEST-PHASE1-v0.32.1.md](docs/RETEST-PHASE1-v0.32.1.md)、v0.32.0は [docs/RETEST-PHASE1-v0.32.0.md](docs/RETEST-PHASE1-v0.32.0.md)、v0.30.0は [docs/RETEST-PHASE1-v0.30.0.md](docs/RETEST-PHASE1-v0.30.0.md)、v0.29.0は [docs/RETEST-PHASE1-v0.29.0.md](docs/RETEST-PHASE1-v0.29.0.md)、v0.28.0は [docs/RETEST-PHASE1-v0.28.0.md](docs/RETEST-PHASE1-v0.28.0.md)、v0.27.0は [docs/RETEST-PHASE1-v0.27.0.md](docs/RETEST-PHASE1-v0.27.0.md)、v0.26.0は [docs/RETEST-PHASE1-v0.26.0.md](docs/RETEST-PHASE1-v0.26.0.md)、v0.25.0は [docs/RETEST-PHASE1-v0.25.0.md](docs/RETEST-PHASE1-v0.25.0.md)、v0.24.0は [docs/RETEST-PHASE1-v0.24.0.md](docs/RETEST-PHASE1-v0.24.0.md)、v0.23.0は [docs/RETEST-PHASE1-v0.23.0.md](docs/RETEST-PHASE1-v0.23.0.md)、v0.22.1は [docs/RETEST-PHASE1-v0.22.1.md](docs/RETEST-PHASE1-v0.22.1.md)、v0.22.0は [docs/RETEST-PHASE1-v0.22.0.md](docs/RETEST-PHASE1-v0.22.0.md) にまとめています。
+Phase 1 v0.32.6の再確認手順は [docs/RETEST-PHASE1-v0.32.6.md](docs/RETEST-PHASE1-v0.32.6.md)、v0.32.5は [docs/RETEST-PHASE1-v0.32.5.md](docs/RETEST-PHASE1-v0.32.5.md)、v0.32.4は [docs/RETEST-PHASE1-v0.32.4.md](docs/RETEST-PHASE1-v0.32.4.md)、v0.32.3は [docs/RETEST-PHASE1-v0.32.3.md](docs/RETEST-PHASE1-v0.32.3.md)、v0.32.2は [docs/RETEST-PHASE1-v0.32.2.md](docs/RETEST-PHASE1-v0.32.2.md)、v0.32.1は [docs/RETEST-PHASE1-v0.32.1.md](docs/RETEST-PHASE1-v0.32.1.md)、v0.32.0は [docs/RETEST-PHASE1-v0.32.0.md](docs/RETEST-PHASE1-v0.32.0.md)、v0.30.0は [docs/RETEST-PHASE1-v0.30.0.md](docs/RETEST-PHASE1-v0.30.0.md)、v0.29.0は [docs/RETEST-PHASE1-v0.29.0.md](docs/RETEST-PHASE1-v0.29.0.md)、v0.28.0は [docs/RETEST-PHASE1-v0.28.0.md](docs/RETEST-PHASE1-v0.28.0.md)、v0.27.0は [docs/RETEST-PHASE1-v0.27.0.md](docs/RETEST-PHASE1-v0.27.0.md)、v0.26.0は [docs/RETEST-PHASE1-v0.26.0.md](docs/RETEST-PHASE1-v0.26.0.md)、v0.25.0は [docs/RETEST-PHASE1-v0.25.0.md](docs/RETEST-PHASE1-v0.25.0.md)、v0.24.0は [docs/RETEST-PHASE1-v0.24.0.md](docs/RETEST-PHASE1-v0.24.0.md)、v0.23.0は [docs/RETEST-PHASE1-v0.23.0.md](docs/RETEST-PHASE1-v0.23.0.md)、v0.22.1は [docs/RETEST-PHASE1-v0.22.1.md](docs/RETEST-PHASE1-v0.22.1.md)、v0.22.0は [docs/RETEST-PHASE1-v0.22.0.md](docs/RETEST-PHASE1-v0.22.0.md) にまとめています。
 
 ## 製品方針
 
