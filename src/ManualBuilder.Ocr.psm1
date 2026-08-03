@@ -226,11 +226,13 @@ function Resolve-MbOperationRect {
         [double]$NearestLimit = 0.08
     )
 
-    $clamp = { param([double]$Value) [Math]::Round([Math]::Min(1, [Math]::Max(0, $Value)), 6) }
+    # 0/1 を整数リテラルにすると Math.Min/Max が Int32 オーバーロードを選び、
+    # 0〜1 の正規化座標が四捨五入されて 0 または 1 に潰れる。
+    $clamp = { param([double]$Value) [Math]::Round([Math]::Min(1.0, [Math]::Max(0.0, $Value)), 6) }
     $result = [pscustomobject]@{
         rect    = [pscustomobject]@{
-            x1 = & $clamp ([double]$Rect.x1); y1 = & $clamp ([double]$Rect.y1)
-            x2 = & $clamp ([double]$Rect.x2); y2 = & $clamp ([double]$Rect.y2)
+            x1 = & $clamp ([double]($Rect.x1)); y1 = & $clamp ([double]($Rect.y1))
+            x2 = & $clamp ([double]($Rect.x2)); y2 = & $clamp ([double]($Rect.y2))
         }
         label   = ''
         matched = 'none'
@@ -268,10 +270,10 @@ function Resolve-MbOperationRect {
     # ボタンは文字より一回り大きいため、この余白があると輪郭に近くなる。
     $pad = ([double]$nearest.y2 - [double]$nearest.y1) / 4
     $result.rect = [pscustomobject]@{
-        x1 = & $clamp ([Math]::Min([double]$Rect.x1, [double]$nearest.x1) - $pad)
-        y1 = & $clamp ([Math]::Min([double]$Rect.y1, [double]$nearest.y1) - $pad)
-        x2 = & $clamp ([Math]::Max([double]$Rect.x2, [double]$nearest.x2) + $pad)
-        y2 = & $clamp ([Math]::Max([double]$Rect.y2, [double]$nearest.y2) + $pad)
+        x1 = & $clamp ([Math]::Min([double]($Rect.x1), [double]($nearest.x1)) - $pad)
+        y1 = & $clamp ([Math]::Min([double]($Rect.y1), [double]($nearest.y1)) - $pad)
+        x2 = & $clamp ([Math]::Max([double]($Rect.x2), [double]($nearest.x2)) + $pad)
+        y2 = & $clamp ([Math]::Max([double]($Rect.y2), [double]($nearest.y2)) + $pad)
     }
     $result.label = ([string]$nearest.text).Trim()
     $result.matched = 'nearest'

@@ -132,17 +132,23 @@ try {
     $plainRoot = Join-Path $testRoot 'plain-image'
     [void](New-Item -ItemType Directory -Path (Join-Path $plainRoot 'images') -Force)
     $plainImageName = 'image-' + ('a' * 32) + '.png'
+    $plainImagePath = Join-Path (Join-Path $plainRoot 'images') $plainImageName
     # 1x1の透明PNG（GDI+を使わずに用意できる最小の実画像）
-    [IO.File]::WriteAllBytes((Join-Path (Join-Path $plainRoot 'images') $plainImageName),
+    [IO.File]::WriteAllBytes($plainImagePath,
         [Convert]::FromBase64String('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='))
     $plainProject = New-MbProject
     $plainProject.title = '注釈なしの出力'
     $plainSheetId = [string]$plainProject.sheets[0].id
     $plainStep = Add-MbStep -Project $plainProject -SheetId $plainSheetId
     $plainStep.title = '注釈を付けていない手順'
-    $plainStep.imageId = 'image-plain'
-    $plainProject.images = @([pscustomobject]@{ id = 'image-plain'; fileName = $plainImageName })
+    $plainImageId = 'image-' + ('a' * 32)
+    $plainStep.imageId = $plainImageId
+    $plainProject.images = @([pscustomobject]@{
+        id = $plainImageId; fileName = $plainImageName; sha256 = (Get-FileHash -LiteralPath $plainImagePath -Algorithm SHA256).Hash
+        width = 1; height = 1; byteLength = (Get-Item -LiteralPath $plainImagePath).Length; mimeType = 'image/png'
+    })
     $plainProjectPath = Join-Path $plainRoot 'project.json'
+    $plainProject = Save-MbProject -Project $plainProject -Path $plainProjectPath
     # 画像の取り扱いはGDI+（System.Drawing）を通る。.NET 6以降のGDI+はWindows専用のため、
     # Windows以外の開発環境ではこの節を飛ばす。実機のテストでは必ず実行される。
     $imageRenderingAvailable = $true

@@ -103,7 +103,7 @@ Add-Result (($serverText -match '\$projectReady = \$false') -and ($serverText -m
 Add-Result ($serverText -match '\$storageLayout\.RuntimePath') '二重起動情報をユーザーデータ配下へ置く'
 Add-Result ($serverText -match '\$storageLayout\.ExportJobsRoot') 'Office一時ジョブをユーザーデータ配下へ置く'
 Add-Result (($runCommandText -match '%~dp0src\\Start-ManualBuilderLauncher\.ps1') -and ($runCommandText -notmatch '(?im)^cd /d')) 'UNC共有フォルダーから更新ランチャーを起動できる'
-Add-Result ([string]$appVersionManifest.appVersion -eq '0.32.1') '配布用アプリバージョンを0.32.1へ更新する'
+Add-Result ([string]$appVersionManifest.appVersion -eq '0.32.2') '配布用アプリバージョンを0.32.2へ更新する'
 Add-Result ($workspaceModuleText -notmatch "ManualBuilder\.Project\.psm1'\) -Force") 'WorkspaceがProjectコマンドを強制再読込しない'
 Add-Result ($launcherModuleText -match "'ManualBuilder\\app'") 'アプリ実行コードをLocalApplicationDataへキャッシュする'
 Add-Result ($launcherModuleText -match "@\('src', 'web', 'run\.cmd', 'app-version\.json'\)") 'キャッシュ対象からプロジェクトデータを除外する'
@@ -170,7 +170,7 @@ Add-Result ($excelModuleText -match '\$videoCell\.Formula = ''=HYPERLINK\(') 'Ex
 # オブジェクト1個ではなく配列になる。配列にはプロパティを設定できず、出力全体が失敗する。
 $comObjectIfAssignment = '\$\w+\s*=\s*if\s*\([^\r\n]*\)\s*\{[^\r\n]*\.(Range|Cells|Shapes|Slides|Paragraphs|Tables|Worksheets|Hyperlinks|Presentations|Documents)\('
 Add-Result (($excelModuleText -notmatch $comObjectIfAssignment) -and
-    ($wordModuleText -notmatch $comObjectIfAssignment) -and
+    ($wordModuleText -notmatch $comObjectIfAssignment)) 'COMオブジェクトをif式の値として受け取らない（配列へ展開されるため）'
 Add-Result ($excelModuleText -match '\$usesFolderOutput = \[int\]\$videoPlan\.Count -gt 0') '動画つきのときだけExcelをフォルダー出力にする'
 Add-Result ($excelModuleText -match '\.mb-excel-') 'Excelのフォルダー出力も組み立ててから差し替える'
 Add-Result ($excelModuleText -match '出力した動画数の自己検査に失敗しました') '出力した動画数を自己検査する'
@@ -366,10 +366,13 @@ Add-Result ($copilotModuleText -notmatch '(?i)api[_-]?key') 'APIキーを持た�
 Add-Result ($copilotJobText -match '\$rendered = New-MbAnnotatedImage') '焼き込み結果の戻り値を捨てない'
 Add-Result ($copilotServerText -match 'Resolve-MbOperationRect') '赤枠を読み取った文字へ寄せる'
 Add-Result ($ocrModuleText -match 'return \$false') '文字認識が使えない環境では機能だけを止める'
-Add-Result ($projectModuleText -match "Add-MbPropertyIfMissing \$step 'capture'") '古い手順にも録画情報の入れ物を補う'
+Add-Result ($projectModuleText -match 'Add-MbPropertyIfMissing \$step ''capture''') '古い手順にも録画情報の入れ物を補う'
 
 $recorderModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.Recorder.psm1'), [Text.Encoding]::UTF8)
 $recorderServerText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.RecorderServer.psm1'), [Text.Encoding]::UTF8)
+Add-Result (($copilotJobText -notmatch '(?m)^Import-Module .+ -Force$') -and
+    ($copilotServerText -notmatch '(?m)^Import-Module .+ -Force$') -and
+    ($recorderServerText -notmatch '(?m)^Import-Module .+ -Force$')) '入れ子のモジュールが共有コマンドを強制再読込しない'
 Add-Result ($recorderModuleText -match 'AutomationElement\]::FromPoint') '押した位置のコントロールをUI Automationから取る'
 Add-Result ($recorderModuleText -match 'SetProcessDpiAwarenessContext') '高DPIで座標がずれないようDPI認識にする'
 Add-Result ($recorderModuleText -notmatch 'SetWindowsHookEx') '低レベルフックを使わない'

@@ -79,7 +79,7 @@ Add-Result ($prompt.Contains('経費精算システム操作手順')) '依頼文
 Add-Result ($prompt.Contains('申請を出す')) '依頼文にシート名が入る'
 Add-Result ($prompt.Contains([string]$packet[0].id)) '依頼文に手順のidが入る'
 Add-Result ($prompt.Contains('step-002.jpg')) '依頼文に添付画像の名前が入る'
-Add-Result ($prompt.Contains('赤枠の位置から読み取れた操作対象: 申請')) '読み取った操作対象が依頼文に入る'
+Add-Result ($prompt.Contains('赤枠の位置にあった操作対象: 申請')) '読み取った操作対象が依頼文に入る'
 Add-Result ($prompt.Contains('1:12')) '録画内の時刻が入る'
 Add-Result ($prompt.Contains('ここで申請ボタンを押します')) '録画の音声が入る'
 Add-Result ($prompt.Contains('ログイン')) '文体の見本が入る'

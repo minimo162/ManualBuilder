@@ -3,10 +3,10 @@
 # 本体（Start-ManualBuilder.ps1）を大きくしないため、状態と手順をここへ寄せる。
 # ジョブの状態はモジュール変数として保持し、リクエストをまたいで残す。
 
-Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Project.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Capture.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Ocr.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Copilot.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Project.psm1')
+Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Capture.psm1')
+Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Ocr.psm1')
+Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Copilot.psm1')
 
 $script:MbCopilotJobsRoot = ''
 $script:MbCopilotScriptRoot = ''

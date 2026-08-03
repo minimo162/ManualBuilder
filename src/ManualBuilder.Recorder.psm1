@@ -400,7 +400,8 @@ function ConvertTo-MbRegionRect {
     $height = [double]$Region.height
     if ($width -le 0 -or $height -le 0) { return $null }
 
-    $clamp = { param([double]$Value) [Math]::Round([Math]::Min(1, [Math]::Max(0, $Value)), 6) }
+    # double のオーバーロードを明示し、0〜1の座標を整数へ丸めない。
+    $clamp = { param([double]$Value) [Math]::Round([Math]::Min(1.0, [Math]::Max(0.0, $Value)), 6) }
     $x1 = & $clamp ((([double]$Target.left) - [double]$Region.left) / $width)
     $y1 = & $clamp ((([double]$Target.top) - [double]$Region.top) / $height)
     $x2 = & $clamp ((([double]$Target.left + [double]$Target.width) - [double]$Region.left) / $width)

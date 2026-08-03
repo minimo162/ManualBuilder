@@ -7,10 +7,10 @@
 
 Set-StrictMode -Version 2.0
 
-Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Project.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Capture.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Recorder.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Dictation.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Project.psm1')
+Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Capture.psm1')
+Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Recorder.psm1')
+Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Dictation.psm1')
 
 $script:MbRecordingJobsRoot = ''
 $script:MbRecordingScriptRoot = ''
