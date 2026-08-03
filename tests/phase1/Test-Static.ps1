@@ -103,7 +103,7 @@ Add-Result (($serverText -match '\$projectReady = \$false') -and ($serverText -m
 Add-Result ($serverText -match '\$storageLayout\.RuntimePath') '二重起動情報をユーザーデータ配下へ置く'
 Add-Result ($serverText -match '\$storageLayout\.ExportJobsRoot') 'Office一時ジョブをユーザーデータ配下へ置く'
 Add-Result (($runCommandText -match '%~dp0src\\Start-ManualBuilderLauncher\.ps1') -and ($runCommandText -notmatch '(?im)^cd /d')) 'UNC共有フォルダーから更新ランチャーを起動できる'
-Add-Result ([string]$appVersionManifest.appVersion -eq '0.32.2') '配布用アプリバージョンを0.32.2へ更新する'
+Add-Result ([string]$appVersionManifest.appVersion -eq '0.32.3') '配布用アプリバージョンを0.32.3へ更新する'
 Add-Result ($workspaceModuleText -notmatch "ManualBuilder\.Project\.psm1'\) -Force") 'WorkspaceがProjectコマンドを強制再読込しない'
 Add-Result ($launcherModuleText -match "'ManualBuilder\\app'") 'アプリ実行コードをLocalApplicationDataへキャッシュする'
 Add-Result ($launcherModuleText -match "@\('src', 'web', 'run\.cmd', 'app-version\.json'\)") 'キャッシュ対象からプロジェクトデータを除外する'
@@ -274,7 +274,9 @@ Add-Result (($webModuleText -match '>手順名<') -and ($webModuleText -notmatch
 Add-Result (($webModuleText -match '画像から追加</button>') -and ($webModuleText -match '>文字だけ追加</button>')) '手順追加を画像と文字の選択肢で表示する'
 Add-Result (($webModuleText -match 'step-nav__title--fallback') -and ($jsText -match 'fallbackTitle')) '手順名が空なら説明の先頭をナビへ表示する'
 Add-Result (($cssText -match '\.step-nav--sorting \.step-nav__guide') -and ($cssText -match '\.sheet-nav--sorting \.sheet-nav__guide') -and ($webModuleText -notmatch 'sidebar__hint')) '並べ替えガイドをドラッグ中だけ表示する'
-Add-Result (($cssText -match '\.step-nav__item--complete \.step-nav__status\s*\{[^}]*display:\s*none') -and ($cssText -match 'box-shadow:\s*inset 2px 0 0 var\(--accent\)')) '未完了状態と選択中の手順を優先表示する'
+# 入力済みの手順は目印そのものを出さないため、CSSで隠す指定は持たない。
+# 未入力は「説明未入力」と「画像なし」で直し方が違うので、塗りと輪郭で形でも分ける。
+Add-Result (($webModuleText -match 'step-nav__status" role="img"') -and ($cssText -match '\.step-nav__item--empty \.step-nav__status') -and ($cssText -match 'box-shadow:\s*inset 2px 0 0 var\(--accent\)')) '未完了状態と選択中の手順を優先表示する'
 Add-Result (($webModuleText -match 'step-card--no-image') -and ($cssText -match '\.step-card--no-image \.image-placeholder')) '画像なし手順の空白を縮小する'
 Add-Result (($webModuleText -match 'data-add-image-to-step') -and ($jsText -match 'step-card--active \.image-placeholder')) '空の手順へ画像を直接追加できる'
 Add-Result (($jsText -match "replaceStepImage\(file, emptyCard\.dataset\.stepId, 'paste'\)") -and ($jsText -match "replaceStepImage\(supported\[0\], emptyCard\.dataset\.stepId, 'drop'\)")) '空の手順へ貼り付けとドロップで画像を設定する'

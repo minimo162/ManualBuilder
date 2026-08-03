@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const appVersion = '0.32.2';
+  const appVersion = '0.32.3';
   // 番号注釈はSVG属性で指定するためCSS変数を参照できない。
   // 編集画面とExcel・Word出力（New-MbAnnotatedImage）で同じ見た目にするため、基準フォントを揃える。
   const ANNOTATION_NUMBER_FONT = '"BIZ UDPGothic", "BIZ UDPゴシック", "BIZ UDGothic", "BIZ UDゴシック", Meiryo, "Yu Gothic UI", "MS Pゴシック", sans-serif';
@@ -39,14 +39,29 @@
     target.textContent = `${state === 'error' ? '!' : '◌'} ${message}`;
   };
 
+  // 通知は積んで出す。以前は1件だけを差し替えていたため、続けて起きた出来事のうち
+  // 先に出たほうが読まれないまま消えていた。エラーは読み終える時間が要るので長めに残し、
+  // どの通知もその場で閉じられるようにする。
+  const TOAST_LIMIT = 3;
+  const TOAST_TIMEOUT_MS = { error: 12000, success: 5000, info: 6000 };
   const showToast = (message, tone = 'error') => {
     const region = document.getElementById('toast-region');
     if (!region) return;
     const toast = document.createElement('div');
     toast.className = `toast toast--${tone}`;
-    toast.textContent = message;
-    region.replaceChildren(toast);
-    window.setTimeout(() => toast.remove(), 5000);
+    const text = document.createElement('span');
+    text.className = 'toast__text';
+    text.textContent = message;
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'toast__close';
+    close.setAttribute('aria-label', '通知を閉じる');
+    close.textContent = '×';
+    close.addEventListener('click', () => toast.remove());
+    toast.append(text, close);
+    region.appendChild(toast);
+    while (region.children.length > TOAST_LIMIT) region.firstElementChild?.remove();
+    window.setTimeout(() => toast.remove(), TOAST_TIMEOUT_MS[tone] || TOAST_TIMEOUT_MS.info);
   };
 
   const replaceProjectLibrary = (html) => {
@@ -308,6 +323,10 @@
 
   const activeStepKey = () => `manualbuilder.activeStep.${selectedSheetId()}`;
 
+  // scrollIntoView に behavior を明示すると、CSSの prefers-reduced-motion 指定を上書きしてしまう。
+  // 動きを減らす設定のときは即座に移動させる。
+  const prefersReducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+
   const setActiveStep = (stepId, options = {}) => {
     const cards = stepCards();
     let active = cards.find((card) => card.dataset.stepId === stepId) || cards[0] || null;
@@ -322,7 +341,9 @@
     if (!active) return;
     sessionStorage.setItem(activeStepKey(), active.dataset.stepId);
     window.requestAnimationFrame(() => renderCardAnnotations(active));
-    if (options.scroll !== false) active.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    if (options.scroll !== false) {
+      active.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'start' });
+    }
     if (options.focusDescription) active.querySelector('textarea[name="description"]')?.focus();
   };
 
@@ -350,8 +371,8 @@
       drag.className = 'step-nav__drag';
       drag.draggable = true;
       drag.dataset.stepNavDragHandle = '';
-      drag.title = 'ドラッグして並べ替え';
-      drag.setAttribute('aria-label', `手順 ${index + 1} をドラッグして並べ替え`);
+      drag.title = 'ドラッグ、または ↑↓ キーで並べ替え';
+      drag.setAttribute('aria-label', `手順 ${index + 1} の並べ替え。ドラッグするか、↑↓ キーで移動`);
       drag.textContent = '⠿';
       const button = document.createElement('button');
       button.type = 'button';
@@ -363,11 +384,16 @@
       const titleElement = document.createElement('span');
       titleElement.className = `step-nav__title${enteredTitle ? '' : ' step-nav__title--fallback'}`;
       titleElement.textContent = title;
-      const dot = document.createElement('span');
-      dot.className = 'step-nav__status';
-      dot.title = statusLabel;
-      dot.setAttribute('aria-label', statusLabel);
-      button.append(number, titleElement, dot);
+      button.append(number, titleElement);
+      // 未完了の目印だけを出す。role="img" が無いと aria-label が読み上げへ届かない。
+      if (status !== 'complete') {
+        const dot = document.createElement('span');
+        dot.className = 'step-nav__status';
+        dot.setAttribute('role', 'img');
+        dot.title = statusLabel;
+        dot.setAttribute('aria-label', statusLabel);
+        button.append(dot);
+      }
       const actions = document.createElement('div');
       actions.className = 'step-nav__actions';
       const remove = document.createElement('button');
@@ -489,6 +515,8 @@
     dialog = document.createElement('dialog');
     dialog.id = 'image-preview-dialog';
     dialog.className = 'image-preview-dialog';
+    // showModal で開くダイアログは、名前が無いと読み上げが「ダイアログ」としか伝えない。
+    dialog.setAttribute('aria-label', 'スクリーンショットの拡大表示');
     dialog.innerHTML = '<div class="image-preview-dialog__bar"><span>スクリーンショット</span><button type="button" class="image-preview-dialog__close" aria-label="閉じる">×</button></div><div class="image-preview-dialog__canvas"><div class="image-preview-dialog__stage"><img alt="拡大したスクリーンショット"><svg viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true"></svg></div></div>';
     dialog.querySelector('.image-preview-dialog__close').addEventListener('click', () => dialog.close());
     dialog.addEventListener('click', (event) => {
@@ -794,6 +822,7 @@
     if (annotationEditor.dialog) return annotationEditor.dialog;
     const dialog = document.createElement('dialog');
     dialog.className = 'annotation-editor';
+    dialog.setAttribute('aria-label', '画像を編集');
     dialog.innerHTML = '<header class="annotation-editor__header"><div><strong>画像を編集</strong><span>ツールを選んで画像上をドラッグします。作成した注釈はそのまま移動・サイズ変更できます。</span></div><button type="button" class="button button--primary annotation-editor__done" data-annotation-close>完了</button></header><div class="annotation-editor__toolbar" role="toolbar" aria-label="画像編集ツール"><div class="annotation-editor__tool-group"><span>基本</span><button type="button" data-annotation-tool="select">選択・移動</button><button type="button" data-annotation-tool="crop">切り抜き</button></div><div class="annotation-editor__tool-group"><span>注釈</span><button type="button" data-annotation-tool="rect">赤枠</button><button type="button" data-annotation-tool="arrow">赤矢印</button><button type="button" data-annotation-tool="number">番号</button><button type="button" data-annotation-tool="blackout">黒塗り</button></div><div class="annotation-editor__tool-group"><span>番号の値</span><div class="annotation-number-field"><input type="number" inputmode="numeric" min="1" max="99" step="1" data-annotation-number aria-label="選択した番号注釈の値" title="番号注釈を選ぶと1〜99へ変更できます" disabled><span class="annotation-number-field__hint" data-annotation-number-hint>番号を選ぶ</span></div></div><div class="annotation-editor__tool-group annotation-editor__tool-group--commands"><span>編集</span><button type="button" data-annotation-undo title="元に戻す">↶ 戻す</button><button type="button" data-annotation-redo title="やり直す">↷ やり直す</button><button type="button" data-annotation-remove>選択を削除</button><button type="button" data-crop-reset>切り抜きを戻す</button><button type="button" data-annotation-clear>注釈をすべて削除</button></div></div><div class="annotation-editor__canvas"><div class="annotation-editor__stage"><img alt="編集対象のスクリーンショット"><svg class="annotation-editor__svg" viewBox="0 0 1000 1000" preserveAspectRatio="none"></svg></div></div><footer class="annotation-editor__footer"><span data-image-edit-status class="annotation-editor__save-status annotation-editor__save-status--saved">自動保存済み</span><span>黒塗りと切り抜きは元画像を変更しません。機密情報の完全削除機能ではありません。</span></footer>';
     document.body.appendChild(dialog);
     annotationEditor.dialog = dialog;
@@ -1481,6 +1510,7 @@
     const dialog = document.createElement('dialog');
     dialog.id = 'video-frame-dialog';
     dialog.className = 'video-dialog';
+    dialog.setAttribute('aria-label', '動画から手順を作る');
     dialog.innerHTML = '<header class="video-dialog__header"><div><strong>動画から手順を作る</strong><span>自動で場面に分けるか、場面を選んで追加します</span></div><button type="button" class="video-dialog__close" data-video-close aria-label="閉じる">×</button></header><div class="video-dialog__content"><video class="video-dialog__player" data-video-player playsinline preload="metadata"></video><p class="video-dialog__error" data-video-error hidden></p><div class="video-dialog__controls"><button type="button" class="button button--ghost" data-video-play>再生</button><button type="button" class="button button--ghost" data-video-step="-1" aria-label="0.1秒戻す">◀ 0.1秒</button><input type="range" class="video-dialog__seek" data-video-seek min="0" max="0" step="0.01" value="0" aria-label="再生位置"><button type="button" class="button button--ghost" data-video-step="1" aria-label="0.1秒進める">0.1秒 ▶</button><span class="video-dialog__time" data-video-time>0:00.0 / 0:00.0</span></div></div><footer class="video-dialog__footer"><label class="video-dialog__quality"><input type="checkbox" data-video-original>元の解像度で取り込む</label><span class="video-dialog__spacer"></span><span class="video-dialog__count" data-video-status role="status" aria-live="polite">追加: 0件</span><button type="button" class="button button--ghost" data-video-capture-with-movie title="この場面を手順にしたうえで、動画をその手順へ添付します">動画つきで手順にする</button><button type="button" class="button button--ghost" data-video-capture>この場面を手順にする</button><button type="button" class="button button--primary" data-video-auto title="画面が切り替わる場面を自動で探し、押された場所に赤枠を付けて手順にします">自動で手順に分ける</button><button type="button" class="button button--ghost" data-video-close>閉じる</button></footer>';
 
     const player = dialog.querySelector('[data-video-player]');
@@ -1612,6 +1642,7 @@
     const dialog = document.createElement('dialog');
     dialog.id = 'excel-export-dialog';
     dialog.className = 'excel-export-dialog';
+    dialog.setAttribute('aria-label', 'Excelで作成');
     dialog.innerHTML = '<header class="excel-export-dialog__header"><div><strong>Excelで作成</strong><span>現在の内容を専用プロセスで出力します</span></div><button type="button" class="excel-export-dialog__close" data-export-close aria-label="閉じる">×</button></header><div class="excel-export-dialog__content"><div class="excel-export-dialog__state" role="status" aria-live="polite"><span class="excel-export-dialog__mark" data-export-mark aria-hidden="true"></span><div><strong data-export-message>準備しています</strong><span data-export-detail>プロジェクトを保存しています</span></div></div><div class="excel-export-progress" role="progressbar" aria-label="Excel作成の進捗" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span data-export-progress></span></div><p class="excel-export-dialog__path" data-export-path hidden></p><p class="excel-export-dialog__note" data-export-video-note hidden></p><details class="excel-export-dialog__mappings" data-export-mappings hidden><summary>出力シート名を確認</summary><ul></ul></details><p class="excel-export-dialog__error" data-export-error hidden></p></div><footer class="excel-export-dialog__footer"><button type="button" class="button button--ghost" data-export-cancel>中止</button><span class="excel-export-dialog__spacer"></span><button type="button" class="button button--ghost" data-export-open="folder" hidden>保存先を開く</button><button type="button" class="button button--primary" data-export-open="file" hidden>Excelを開く</button><button type="button" class="button button--ghost" data-export-close data-export-done hidden>閉じる</button></footer>';
     dialog.querySelectorAll('[data-export-close]').forEach((button) => {
       button.addEventListener('click', () => dialog.close());
@@ -1781,6 +1812,7 @@
     const dialog = document.createElement('dialog');
     dialog.id = 'word-export-dialog';
     dialog.className = 'excel-export-dialog word-export-dialog';
+    dialog.setAttribute('aria-label', 'Wordで作成');
     dialog.innerHTML = '<header class="excel-export-dialog__header"><div><strong>Wordで作成</strong><span>縦型の操作マニュアルを専用プロセスで出力します</span></div><button type="button" class="excel-export-dialog__close" data-word-export-close aria-label="閉じる">×</button></header><div class="excel-export-dialog__content"><div class="excel-export-dialog__state" role="status" aria-live="polite"><span class="excel-export-dialog__mark" data-word-export-mark aria-hidden="true"></span><div><strong data-word-export-message>準備しています</strong><span data-word-export-detail>プロジェクトを保存しています</span></div></div><div class="excel-export-progress" role="progressbar" aria-label="Word作成の進捗" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span data-word-export-progress></span></div><p class="excel-export-dialog__path" data-word-export-path hidden></p><p class="excel-export-dialog__error" data-word-export-error hidden></p></div><footer class="excel-export-dialog__footer"><button type="button" class="button button--ghost" data-word-export-cancel>中止</button><button type="button" class="button button--ghost" data-word-export-fallback hidden>Excelで作成</button><span class="excel-export-dialog__spacer"></span><button type="button" class="button button--ghost" data-word-export-open="folder" hidden>保存先を開く</button><button type="button" class="button button--primary" data-word-export-open="file" hidden>Wordを開く</button><button type="button" class="button button--ghost" data-word-export-close data-word-export-done hidden>閉じる</button></footer>';
     dialog.querySelectorAll('[data-word-export-close]').forEach((button) => button.addEventListener('click', () => dialog.close()));
     dialog.querySelector('[data-word-export-cancel]').addEventListener('click', async () => {
@@ -1901,6 +1933,7 @@
     const dialog = document.createElement('dialog');
     dialog.id = 'html-export-dialog';
     dialog.className = 'excel-export-dialog html-export-dialog';
+    dialog.setAttribute('aria-label', 'HTMLで作成');
     dialog.innerHTML = '<header class="excel-export-dialog__header"><div><strong>HTMLで作成</strong><span>ブラウザーで開けるマニュアルをフォルダーごと作ります</span></div><button type="button" class="excel-export-dialog__close" data-html-export-close aria-label="閉じる">×</button></header><div class="excel-export-dialog__content"><div class="excel-export-dialog__state" role="status" aria-live="polite"><span class="excel-export-dialog__mark" data-html-export-mark aria-hidden="true"></span><div><strong data-html-export-message>作成しています</strong><span data-html-export-detail>画像に注釈を焼き込んでいます</span></div></div><p class="excel-export-dialog__path" data-html-export-path hidden></p><p class="excel-export-dialog__note" data-html-publish-note hidden></p><p class="excel-export-dialog__error" data-html-export-error hidden></p></div><footer class="excel-export-dialog__footer"><button type="button" class="button button--secondary" data-html-publish hidden>共有フォルダーへ反映</button><span class="excel-export-dialog__spacer"></span><button type="button" class="button button--ghost" data-html-export-open="folder" hidden>フォルダーを開く</button><button type="button" class="button button--primary" data-html-export-open="file" hidden>マニュアルを開く</button><button type="button" class="button button--ghost" data-html-export-close data-html-export-done hidden>閉じる</button></footer>';
     dialog.querySelectorAll('[data-html-export-close]').forEach((button) => button.addEventListener('click', () => dialog.close()));
     dialog.querySelectorAll('[data-html-export-open]').forEach((button) => {
@@ -2032,11 +2065,40 @@
     if (sheetId) sessionStorage.setItem(`manualbuilder.scroll.${sheetId}`, String(window.scrollY));
   };
 
+  // シートを切り替えて戻ったとき、前に見ていた位置へ戻す。
+  // 記録だけして呼び出していなかったため、切替のたびに先頭へ跳ねていた。
+  //
+  // 差し替えた直後は画像がまだ読み込まれておらず、文書が視野より短い。その状態で
+  // 位置を指定しても先頭へ丸められるため、届く高さになるまで数フレームだけ試す。
+  // 途中で本人が動かしたら、そちらを優先して打ち切る。
+  const SCROLL_RESTORE_ATTEMPTS = 12;
+  const SCROLL_RESTORE_INTERVAL_MS = 50;
   const restoreScroll = () => {
     const sheetId = selectedSheetId();
     if (!sheetId) return;
-    const saved = Number(sessionStorage.getItem(`manualbuilder.scroll.${sheetId}`));
-    if (Number.isFinite(saved)) window.scrollTo(0, saved);
+    const stored = sessionStorage.getItem(`manualbuilder.scroll.${sheetId}`);
+    if (stored === null) return;
+    const target = Number(stored);
+    if (!Number.isFinite(target) || target <= 0) return;
+
+    let attempts = 0;
+    let timer = 0;
+    const userEvents = ['wheel', 'touchstart', 'keydown', 'pointerdown'];
+    const stop = () => {
+      window.clearTimeout(timer);
+      userEvents.forEach((name) => window.removeEventListener(name, stop));
+    };
+    userEvents.forEach((name) => window.addEventListener(name, stop, { passive: true }));
+    const apply = () => {
+      window.scrollTo(0, target);
+      attempts += 1;
+      if (Math.abs(window.scrollY - target) <= 1 || attempts >= SCROLL_RESTORE_ATTEMPTS) {
+        stop();
+        return;
+      }
+      timer = window.setTimeout(apply, SCROLL_RESTORE_INTERVAL_MS);
+    };
+    apply();
   };
 
   document.addEventListener('DOMContentLoaded', () => {
@@ -2545,6 +2607,80 @@
     if (changed) queueStepOrderSave();
   });
 
+  // ---------------------------------------------------------------
+  // キーボードだけで並べ替える
+  //
+  // 取っ手はドラッグ専用で、キーボードだけを使う人は順序を変えられなかった（UX-08）。
+  // 取っ手はもともとフォーカスできるボタンなので、そこへ ↑↓ を割り当てる。
+  // 保存経路はドラッグと同じものを使い、片方だけが直る状態を作らない。
+  // ---------------------------------------------------------------
+  // 手順とシートは別々に数える。1つの控えで足りると、片方を動かした直後にもう片方を
+  // 動かしたとき、先に出した案内が消えないまま残る。
+  const sortGuideResetTimers = new Map();
+  const announceSortGuide = (setter, message) => {
+    setter(message);
+    window.clearTimeout(sortGuideResetTimers.get(setter));
+    sortGuideResetTimers.set(setter, window.setTimeout(() => setter(), 2500));
+  };
+
+  const moveNavItemBy = (list, item, offset, itemSelector) => {
+    const items = [...list.querySelectorAll(itemSelector)];
+    const index = items.indexOf(item);
+    const next = index + offset;
+    if (index < 0 || next < 0 || next >= items.length) return 0;
+    if (offset < 0) list.insertBefore(item, items[next]);
+    else items[next].after(item);
+    return next + 1;
+  };
+
+  const moveStepByKeyboard = (item, offset) => {
+    const list = document.getElementById('step-nav-list');
+    if (!list) return false;
+    const stepId = item.dataset.stepId || '';
+    const position = moveNavItemBy(list, item, offset, '[data-step-nav-item]');
+    if (!position) return false;
+    // 中央の手順カードもアウトラインと同じ順序へ並べ直す。ドラッグ時と同じ手順。
+    const steps = document.querySelector('.steps');
+    [...list.querySelectorAll('[data-step-nav-item]')].forEach((entry) => {
+      const card = stepCards().find((candidate) => candidate.dataset.stepId === entry.dataset.stepId);
+      if (card) steps?.appendChild(card);
+    });
+    refreshStepControls();
+    setActiveStep(stepId, { scroll: false });
+    queueStepOrderSave();
+    // アウトラインは作り直されるため、同じ手順の取っ手へフォーカスを戻して続けて動かせるようにする。
+    document.querySelector(`[data-step-nav-item][data-step-id="${CSS.escape(stepId)}"] [data-step-nav-drag-handle]`)?.focus();
+    announceSortGuide(setStepSortGuide, `${position}番目へ移動しました`);
+    return true;
+  };
+
+  const moveSheetByKeyboard = (item, offset) => {
+    const list = item.closest('.sheet-nav__list');
+    if (!list) return false;
+    const position = moveNavItemBy(list, item, offset, '[data-sheet-nav-item]');
+    if (!position) return false;
+    queueSheetOrderSave();
+    announceSortGuide(setSheetSortGuide, `${position}番目へ移動しました`);
+    return true;
+  };
+
+  document.body.addEventListener('keydown', (event) => {
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+    if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+    const offset = event.key === 'ArrowUp' ? -1 : 1;
+    const stepHandle = event.target.closest?.('[data-step-nav-drag-handle]');
+    if (stepHandle) {
+      const item = stepHandle.closest('[data-step-nav-item]');
+      if (item && moveStepByKeyboard(item, offset)) event.preventDefault();
+      return;
+    }
+    const sheetHandle = event.target.closest?.('[data-sheet-nav-drag-handle]');
+    if (sheetHandle) {
+      const item = sheetHandle.closest('[data-sheet-nav-item]');
+      if (item && moveSheetByKeyboard(item, offset)) event.preventDefault();
+    }
+  });
+
   let dragDepth = 0;
   document.addEventListener('dragenter', (event) => {
     if (stepDragState.item || sheetDragState.item) return;
@@ -2615,6 +2751,7 @@
       if (!ensureCurrentAssets()) return;
       window.requestAnimationFrame(() => {
         initializeWorkspaceView();
+        if (path === '/api/sheets/select') restoreScroll();
       });
       sendHeartbeat();
       if (path.startsWith('/api/projects/')) window.scrollTo(0, 0);
@@ -2852,6 +2989,7 @@
     const dialog = document.createElement('dialog');
     dialog.id = 'recorder-dialog';
     dialog.className = 'copilot-dialog';
+    dialog.setAttribute('aria-label', '操作を記録して手順にする');
     dialog.innerHTML = '<header class="copilot-dialog__header"><div><strong>操作を記録して手順にする</strong><span>クリックのたびに画面と押したボタンの名前を記録します</span></div><button type="button" class="copilot-dialog__close" data-recorder-close aria-label="閉じる">×</button></header>'
       + '<div class="copilot-dialog__content">'
       + '<section data-recorder-view="setup">'
@@ -3082,7 +3220,12 @@ ${review ? current + reason : reason + current}
       if (!response.ok) return;
       const status = await response.json();
       const progress = copilotDraft.dialog?.querySelector('[data-copilot-progress]');
-      if (progress) progress.style.width = `${Math.max(0, Math.min(100, Number(status.percent) || 0))}%`;
+      if (progress) {
+        const percent = Math.max(0, Math.min(100, Number(status.percent) || 0));
+        progress.style.width = `${percent}%`;
+        // 進捗の現在値を伝えないと、読み上げでは0%のまま止まって見える。
+        progress.closest('[role="progressbar"]')?.setAttribute('aria-valuenow', String(percent));
+      }
       if (status.state === 'queued' || status.state === 'running') {
         setCopilotMessage(String(status.message || '処理しています'), 'Copilotの画面は裏で動いています。編集は続けられます。');
         return;
@@ -3122,6 +3265,7 @@ ${review ? current + reason : reason + current}
     const dialog = document.createElement('dialog');
     dialog.id = 'copilot-draft-dialog';
     dialog.className = 'copilot-dialog';
+    dialog.setAttribute('aria-label', 'Copilotで手順の文章を作る');
     dialog.innerHTML = '<header class="copilot-dialog__header"><div><strong data-copilot-title>Copilotで手順の文章を作る</strong><span data-copilot-subtitle>画面と赤枠をMicrosoft 365 Copilotへ渡し、手順名と説明の下書きを受け取ります</span></div><button type="button" class="copilot-dialog__close" data-copilot-close aria-label="閉じる">×</button></header>'
       + '<div class="copilot-dialog__content">'
       + '<section data-copilot-view="setup">'
@@ -3132,7 +3276,7 @@ ${review ? current + reason : reason + current}
       + '</section>'
       + '<section data-copilot-view="progress" hidden>'
       + '<div class="copilot-dialog__state" role="status" aria-live="polite"><strong data-copilot-message>準備しています</strong><span data-copilot-detail></span></div>'
-      + '<div class="excel-export-progress" role="progressbar" aria-label="下書きの進捗" aria-valuemin="0" aria-valuemax="100"><span data-copilot-progress></span></div>'
+      + '<div class="excel-export-progress" role="progressbar" aria-label="下書きの進捗" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span data-copilot-progress></span></div>'
       + '</section>'
       + '<section data-copilot-view="review" hidden>'
       + '<div class="copilot-dialog__state"><strong data-copilot-message></strong><span data-copilot-detail></span></div>'
@@ -3193,8 +3337,9 @@ ${review ? current + reason : reason + current}
     setCopilotMessage('', '');
 
     const review = mode === 'review';
-    dialog.querySelector('[data-copilot-title]').textContent = review
-      ? 'Copilotで文章を整える' : 'Copilotで手順の文章を作る';
+    const dialogTitle = review ? 'Copilotで文章を整える' : 'Copilotで手順の文章を作る';
+    dialog.setAttribute('aria-label', dialogTitle);
+    dialog.querySelector('[data-copilot-title]').textContent = dialogTitle;
     dialog.querySelector('[data-copilot-subtitle]').textContent = review
       ? '敬体の統一、表記ゆれ、用語の不統一、誤字を確認します'
       : '画面と赤枠をMicrosoft 365 Copilotへ渡し、手順名と説明の下書きを受け取ります';

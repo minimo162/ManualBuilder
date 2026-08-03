@@ -55,11 +55,25 @@ summary {
   outline: none;
 }
 
+/* 影だけのフォーカス表示は薄いうえ、Windowsのハイコントラストでは影が描かれず消える。
+   輪郭線を主にし、影は補助として残す。 */
 button:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
 summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
   box-shadow: 0 0 0 3px rgba(108, 139, 211, 0.28);
+}
+
+@media (forced-colors: active) {
+  button:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible,
+  summary:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 1px;
+  }
 }
 
 button,
@@ -72,12 +86,15 @@ button:disabled {
   opacity: 0.48;
 }
 
+/* 読み上げ専用の文字。レイアウト用の指定（`.editor > *` の幅など）に負けて
+   実寸へ戻ると、見えないまま横スクロールを作るため、幅と位置は必ずここで決める。 */
 .sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  max-width: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
   overflow: hidden;
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
@@ -815,15 +832,20 @@ button:disabled {
   font-weight: 400;
 }
 
+/* 「説明未入力」と「画像なし」は直し方が違うため、一目で区別できるようにする。
+   色だけに頼らないよう、塗りつぶし（説明未入力）と輪郭だけ（画像なし）で形も変える。
+   入力済みの手順には目印を出さない。 */
 .step-nav__status {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
+  border: 2px solid #d99b19;
   border-radius: 50%;
   background: #d99b19;
 }
 
-.step-nav__item--complete .step-nav__status {
-  display: none;
+.step-nav__item--empty .step-nav__status {
+  border-color: var(--danger);
+  background: transparent;
 }
 
 .sidebar__footer {
@@ -1466,16 +1488,51 @@ kbd {
   right: 16px;
   bottom: 16px;
   z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
 }
 
 .toast {
   max-width: 420px;
-  padding: 10px 12px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 8px 10px 12px;
   color: #fff;
   background: #30343b;
   border-radius: 6px;
   box-shadow: 0 8px 24px rgba(28, 32, 39, 0.18);
   font-size: 13px;
+}
+
+.toast__text {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 直前の通知を押し出さずに積むため、1件ずつ閉じられるようにする。
+   とくにエラーは読み終える前に消えると、何が起きたか分からなくなる。 */
+.toast__close {
+  flex: 0 0 auto;
+  width: 22px;
+  min-height: 22px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0.75;
+}
+
+.toast__close:hover {
+  background: rgba(255, 255, 255, 0.18);
+  opacity: 1;
 }
 
 .toast--error {
@@ -2664,10 +2721,14 @@ kbd {
     gap: 4px;
   }
 
+  /* 以前は要素ごと幅で切っていたため、文言が途中で欠けて状態が読めなかった。
+     文言だけを畳み、アイコンとツールチップで状態が分かるようにする。 */
   .watch-status {
-    max-width: 32px;
-    overflow: hidden;
     padding-left: 5px;
+  }
+
+  .watch-status__label {
+    display: none;
   }
 
   .topbar__actions .button--ghost {
