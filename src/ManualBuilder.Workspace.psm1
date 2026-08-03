@@ -448,17 +448,48 @@ function Import-MbCatalogProjectFolder {
     $sourceProject = Get-MbProject -Path $sourceProjectPath
     Test-MbCatalogProjectFiles -Project $sourceProject -ProjectPath $sourceProjectPath
 
+    $sourceRevision = [int]$sourceProject.revision
+    $sourceContentHash = (Get-FileHash -LiteralPath $sourceProjectPath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
     $existing = Find-MbCatalogProjectById -DataRoot $DataRoot -ProjectId ([string]$sourceProject.id)
+    $importStatus = 'imported'
+    $forkProjectId = ''
     if ($existing) {
-        # すでにこのPCにあるマニュアル。共有側が新しいときだけ知らせ、取り込みはしない。
-        return [pscustomobject]@{
-            Status         = 'existing'
-            Key            = [string]$existing.Key
-            Path           = [string]$existing.Path
-            Project        = (Get-MbProject -Path ([string]$existing.Path))
-            SourceRevision = [int]$sourceProject.revision
-            LocalRevision  = [int]$existing.Revision
+        $localContentHash = (Get-FileHash -LiteralPath ([string]$existing.Path) -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+        $contentMatches = $sourceContentHash.Equals($localContentHash, [StringComparison]::OrdinalIgnoreCase)
+        $localRevision = [int]$existing.Revision
+
+        # 同じ内容、またはローカル側が明確に新しい場合は、従来どおり既存を開く。
+        # 共有側が新しい（または同じrevisionなのに内容が違う）場合に既存を開くと、
+        # その後の「共有フォルダーへ反映」で古いローカル版を上書きしてしまう。
+        if ($contentMatches -or $sourceRevision -lt $localRevision) {
+            return [pscustomobject]@{
+                Status         = 'existing'
+                Key            = [string]$existing.Key
+                Path           = [string]$existing.Path
+                Project        = (Get-MbProject -Path ([string]$existing.Path))
+                SourceRevision = $sourceRevision
+                LocalRevision  = $localRevision
+            }
         }
+
+        # 共有版を安全な別項目として取り込む。同じ共有版を何度開いても増えないよう、
+        # 元データのハッシュから安定したプロジェクトIDを作る。
+        $forkProjectId = 'project-' + $sourceContentHash.Substring(0, 32)
+        if ($forkProjectId -eq [string]$sourceProject.id) {
+            $forkProjectId = 'project-' + $sourceContentHash.Substring(32, 32)
+        }
+        $existingFork = Find-MbCatalogProjectById -DataRoot $DataRoot -ProjectId $forkProjectId
+        if ($existingFork) {
+            return [pscustomobject]@{
+                Status         = 'existing'
+                Key            = [string]$existingFork.Key
+                Path           = [string]$existingFork.Path
+                Project        = (Get-MbProject -Path ([string]$existingFork.Path))
+                SourceRevision = $sourceRevision
+                LocalRevision  = [int]$existingFork.Revision
+            }
+        }
+        $importStatus = if ($sourceRevision -gt $localRevision) { 'imported-newer' } else { 'imported-conflict' }
     }
 
     $newKey = 'project-' + [guid]::NewGuid().ToString('N')
@@ -477,6 +508,14 @@ function Import-MbCatalogProjectFolder {
         $stagedPath = Join-Path $stagingDirectory 'project.json'
         $staged = Get-MbProject -Path $stagedPath
         $now = [DateTime]::UtcNow.ToString('o')
+        if ($forkProjectId) {
+            $staged.id = $forkProjectId
+            $suffix = ' - 共有版'
+            $baseLength = [Math]::Max(0, 100 - $suffix.Length)
+            $baseTitle = [string]$staged.title
+            if ($baseTitle.Length -gt $baseLength) { $baseTitle = $baseTitle.Substring(0, $baseLength).TrimEnd() }
+            $staged.title = $baseTitle + $suffix
+        }
         $staged.createdAt = $now
         $staged.updatedAt = $now
         if (Test-Path -LiteralPath "$stagedPath.bak" -PathType Leaf) { Remove-Item -LiteralPath "$stagedPath.bak" -Force }
@@ -484,11 +523,11 @@ function Import-MbCatalogProjectFolder {
         Test-MbCatalogProjectFiles -Project $staged -ProjectPath $stagedPath
         [IO.Directory]::Move($stagingDirectory, $destinationDirectory)
         return [pscustomobject]@{
-            Status         = 'imported'
+            Status         = $importStatus
             Key            = $newKey
             Path           = (Join-Path $destinationDirectory 'project.json')
             Project        = $staged
-            SourceRevision = [int]$staged.revision
+            SourceRevision = $sourceRevision
             LocalRevision  = 0
         }
     } finally {
