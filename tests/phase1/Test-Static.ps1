@@ -44,9 +44,20 @@ $required = @(
     'src\ManualBuilder.PowerPoint.psm1',
     'src\Export-ManualBuilderPowerPoint.ps1',
     'src\ManualBuilder.Html.psm1',
+    'src\ManualBuilder.Ocr.psm1',
+    'src\ManualBuilder.Copilot.psm1',
+    'src\ManualBuilder.CopilotJob.psm1',
+    'src\ManualBuilder.CopilotServer.psm1',
+    'src\Invoke-ManualBuilderCopilotJob.ps1',
+    'src\ManualBuilder.Recorder.psm1',
+    'src\ManualBuilder.RecorderServer.psm1',
+    'src\Invoke-ManualBuilderRecorder.ps1',
+    'src\ManualBuilder.Dictation.psm1',
+    'src\Invoke-ManualBuilderDictation.ps1',
     'web\index.html',
     'web\assets\css\app.css',
     'web\assets\js\app.js',
+    'web\assets\js\video-scenes.js',
     'web\assets\js\heartbeat-worker.js',
     'web\vendor\htmx-2.0.10.min.js',
     'web\vendor\HTMX-LICENSE.txt'
@@ -95,7 +106,7 @@ Add-Result (($serverText -match '\$projectReady = \$false') -and ($serverText -m
 Add-Result ($serverText -match '\$storageLayout\.RuntimePath') '二重起動情報をユーザーデータ配下へ置く'
 Add-Result ($serverText -match '\$storageLayout\.ExportJobsRoot') 'Office一時ジョブをユーザーデータ配下へ置く'
 Add-Result (($runCommandText -match '%~dp0src\\Start-ManualBuilderLauncher\.ps1') -and ($runCommandText -notmatch '(?im)^cd /d')) 'UNC共有フォルダーから更新ランチャーを起動できる'
-Add-Result ([string]$appVersionManifest.appVersion -eq '0.27.3') '配布用アプリバージョンを0.27.3へ更新する'
+Add-Result ([string]$appVersionManifest.appVersion -eq '0.31.0') '配布用アプリバージョンを0.31.0へ更新する'
 Add-Result ($workspaceModuleText -notmatch "ManualBuilder\.Project\.psm1'\) -Force") 'WorkspaceがProjectコマンドを強制再読込しない'
 Add-Result ($launcherModuleText -match "'ManualBuilder\\app'") 'アプリ実行コードをLocalApplicationDataへキャッシュする'
 Add-Result ($launcherModuleText -match "@\('src', 'web', 'run\.cmd', 'app-version\.json'\)") 'キャッシュ対象からプロジェクトデータを除外する'
@@ -349,6 +360,52 @@ Add-Result ($excelModuleText -match '\$requiresCrop') 'Excel出力へ切り抜�
 Add-Result ($excelModuleText -match '\[AllowEmptyCollection\(\)\]\[object\[\]\]\$Annotations') '注釈なしの切り抜き画像を許可する'
 Add-Result ($cssText -match '--accent: #3a5ba0') 'ミニマルUIのアクセントトークンを使用する'
 Add-Result ($cssText -notmatch 'linear-gradient') 'グラデーションを使用しない'
+
+$ocrModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.Ocr.psm1'), [Text.Encoding]::UTF8)
+$copilotModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.Copilot.psm1'), [Text.Encoding]::UTF8)
+$copilotServerText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.CopilotServer.psm1'), [Text.Encoding]::UTF8)
+$copilotJobText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.CopilotJob.psm1'), [Text.Encoding]::UTF8)
+$sceneText = [IO.File]::ReadAllText((Join-Path $repoRoot 'web\assets\js\video-scenes.js'), [Text.Encoding]::UTF8)
+Add-Result ($indexText -match 'video-scenes\.js') '場面分割のスクリプトを読み込む'
+Add-Result ($jsText -match 'data-video-auto') '録画を自動で手順へ分けるボタンがある'
+Add-Result ($sceneText -match 'locateChangeRect') '遷移の入口から操作位置を求める'
+Add-Result ($serverText -match '/api/videos/scenes/import') '場面の取り込み口がある'
+Add-Result ($serverText -match '/api/copilot/draft/start') 'Copilot下書きの開始口がある'
+Add-Result ($serverText -match '/api/copilot/draft/apply') '採用した下書きの反映口がある'
+Add-Result ($webModuleText -match 'data-copilot-draft') 'Copilotでの下書きをメニューから選べる'
+Add-Result ($jsText -match 'copilot-draft-dialog') 'Copilot下書きの確認画面を実装する'
+Add-Result ($copilotModuleText -match 'm365\.cloud\.microsoft') '普段使うM365 Copilotの画面を操作する'
+Add-Result ($copilotModuleText -notmatch '(?i)api[_-]?key') 'APIキーを持たない'
+Add-Result ($copilotJobText -match '\$rendered = New-MbAnnotatedImage') '焼き込み結果の戻り値を捨てない'
+Add-Result ($copilotServerText -match 'Resolve-MbOperationRect') '赤枠を読み取った文字へ寄せる'
+Add-Result ($ocrModuleText -match 'return \$false') '文字認識が使えない環境では機能だけを止める'
+Add-Result ($projectModuleText -match "Add-MbPropertyIfMissing \$step 'capture'") '古い手順にも録画情報の入れ物を補う'
+
+$recorderModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.Recorder.psm1'), [Text.Encoding]::UTF8)
+$recorderServerText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.RecorderServer.psm1'), [Text.Encoding]::UTF8)
+Add-Result ($recorderModuleText -match 'AutomationElement\]::FromPoint') '押した位置のコントロールをUI Automationから取る'
+Add-Result ($recorderModuleText -match 'SetProcessDpiAwarenessContext') '高DPIで座標がずれないようDPI認識にする'
+Add-Result ($recorderModuleText -notmatch 'SetWindowsHookEx') '低レベルフックを使わない'
+Add-Result ($recorderModuleText -match '\$capture = Copy-MbScreenBitmap') '押す直前の画面を先に確保する'
+Add-Result ($recorderModuleText -match 'DWMWA_EXTENDED_FRAME_BOUNDS') '見た目どおりのウィンドウ範囲を使う'
+Add-Result ($recorderServerText -match "Source 'recorder'") '記録した画面を専用の出所として取り込む'
+Add-Result ($serverText -match '/api/recorder/start') '操作記録の開始口がある'
+Add-Result ($serverText -match '/api/recorder/import') '記録した操作の取り込み口がある'
+Add-Result ($serverText -match '\^/images/recording/') '記録した画面をクエリのトークンで表示できる'
+Add-Result ($webModuleText -match 'data-record-operations') '操作の記録をメニューから選べる'
+Add-Result ($jsText -match 'recorder-dialog') '記録の確認画面を実装する'
+$dictationModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.Dictation.psm1'), [Text.Encoding]::UTF8)
+Add-Result ($dictationModuleText -match 'SpeechRecognitionScenario\]::Dictation') 'Win+Hと同じ口述筆記の仕組みを使う'
+Add-Result ($dictationModuleText -match 'PhraseStartTime') '受信時刻ではなく発話の開始時刻で突き合わせる'
+Add-Result ($recorderServerText -match 'Merge-MbNarrationIntoEvents') '話した内容を操作へ振り分ける'
+Add-Result ($jsText -match 'data-recorder-narration') '音声を記録するかを選べる'
+Add-Result ($jsText -match 'Microsoftのオンライン音声認識へ送られます') '音声が端末の外へ出ることを画面に明記する'
+Add-Result ($jsText -match "narrationToggle.checked = false") '音声の記録は既定で行わない'
+$copilotServerText2 = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.CopilotServer.psm1'), [Text.Encoding]::UTF8)
+$sceneText2 = [IO.File]::ReadAllText((Join-Path $repoRoot 'web\assets\js\video-scenes.js'), [Text.Encoding]::UTF8)
+Add-Result ($copilotServerText2 -notmatch 'System\.Speech') '精度の低いローカル音声認識を持たない'
+Add-Result ($serverText -notmatch '/api/narration/transcribe') '録画からの文字起こしの口を持たない'
+Add-Result ($sceneText2 -notmatch 'extractNarration') '録画から音声を取り出さない'
 
 if ($errors.Count -gt 0) {
     Write-Host ''

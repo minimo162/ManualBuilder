@@ -2728,3 +2728,295 @@ kbd {
     animation: none !important;
   }
 }
+
+/* Copilotで手順の文章を作る画面。既存のダイアログと寸法・配色を揃える。 */
+.copilot-dialog {
+  width: min(94vw, 920px);
+  max-width: none;
+  max-height: 88vh;
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: 0 20px 60px rgba(28, 32, 39, 0.2);
+}
+
+.copilot-dialog::backdrop {
+  background: rgba(28, 32, 39, 0.42);
+}
+
+.copilot-dialog__header {
+  min-height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 9px 10px 9px 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.copilot-dialog__header strong,
+.copilot-dialog__header span {
+  display: block;
+}
+
+.copilot-dialog__header span {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.copilot-dialog__close {
+  width: 32px;
+  height: 32px;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.copilot-dialog__close:hover {
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.copilot-dialog__content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px;
+}
+
+.copilot-dialog__state strong {
+  display: block;
+  font-size: 14px;
+}
+
+.copilot-dialog__state span {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.copilot-dialog__error {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--danger, #b3261e);
+}
+
+.copilot-dialog__footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--border);
+}
+
+.copilot-note {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-muted);
+  background: var(--surface-muted, rgba(28, 32, 39, 0.04));
+  border-radius: 6px;
+}
+
+.copilot-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.copilot-capability {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+.copilot-list {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.copilot-empty {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.copilot-draft {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 12px;
+  padding: 12px 40px 12px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.copilot-draft__accept {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.copilot-draft__index {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.copilot-draft__body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.copilot-draft__flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.copilot-flag {
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--surface-muted, rgba(28, 32, 39, 0.04));
+  border-radius: 999px;
+}
+
+.copilot-flag--drop {
+  color: #7a4b00;
+  background: rgba(214, 154, 0, 0.14);
+}
+
+.copilot-flag--unsure {
+  color: #8a3a00;
+  background: rgba(214, 96, 0, 0.14);
+}
+
+.copilot-draft__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.copilot-draft__field input,
+.copilot-draft__field textarea {
+  width: 100%;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  resize: vertical;
+}
+
+.copilot-draft__reason,
+.copilot-draft__current p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+.copilot-draft__current summary {
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+/* 記録した操作の確認一覧。サムネイルで押し間違いを見分けられるようにする。 */
+.recorder-list {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.recorder-event {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto 120px 1fr;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 34px 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.recorder-event:hover {
+  border-color: var(--border-strong);
+}
+
+.recorder-event__shot {
+  width: 120px;
+  height: 68px;
+  object-fit: cover;
+  object-position: top left;
+  background: var(--surface-muted, rgba(28, 32, 39, 0.04));
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.recorder-event__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.recorder-event__body strong {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recorder-event__body span {
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recorder-event__index {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* 端末の外へ出る動作の注意書き。読み飛ばされないよう色で区別する。 */
+.copilot-note--warn {
+  color: #7a4b00;
+  background: rgba(214, 154, 0, 0.12);
+}

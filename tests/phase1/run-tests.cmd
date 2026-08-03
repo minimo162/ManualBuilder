@@ -51,6 +51,21 @@ if errorlevel 1 goto :failed
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-ProjectLibraryServer.ps1"
 if errorlevel 1 goto :failed
 
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-CopilotDraft.ps1"
+if errorlevel 1 goto :failed
+
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-Recorder.ps1"
+if errorlevel 1 goto :failed
+
+rem Scene splitting runs in the browser, so Node checks it. Skipped when Node is absent.
+where node >nul 2>&1
+if errorlevel 1 (
+  echo [SKIP] Node not found. Skipping the video scene tests.
+) else (
+  node "%~dp0Test-VideoScenes.mjs"
+  if errorlevel 1 goto :failed
+)
+
 echo.
 echo All Phase 1 foundation tests passed.
 pause
