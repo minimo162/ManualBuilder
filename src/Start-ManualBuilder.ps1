@@ -1913,13 +1913,15 @@ try {
         $script:ActiveProjectKey = [string]$imported.Key
         $script:ProjectHomeVisible = $false
         Set-MbLastOpenedProject -DataRoot $DataRoot -ProjectKey ([string]$imported.Key)
-        if ([string]$imported.Status -eq 'imported') {
+        if ([string]$imported.Status -in @('imported', 'imported-newer', 'imported-conflict')) {
             Write-MbLog "配布フォルダーの元データを取り込みました: $($imported.Project.title)" 'OK'
+            if ([string]$imported.Status -eq 'imported-newer') {
+                Write-MbLog '共有側がローカルより新しいため、古いローカル版を残して「共有版」として開きます。' 'WARN'
+            } elseif ([string]$imported.Status -eq 'imported-conflict') {
+                Write-MbLog '同じ版数で内容が異なるため、両方を残して「共有版」として開きます。' 'WARN'
+            }
         } else {
             Write-MbLog "このPCにある同じマニュアルを開きます: $($imported.Project.title)" 'INFO'
-            if ([int]$imported.SourceRevision -gt [int]$imported.LocalRevision) {
-                Write-MbLog '配布フォルダー側のほうが新しい可能性があります。内容を確認してください。' 'WARN'
-            }
         }
         if (-not [string]::IsNullOrWhiteSpace($PublishTo)) {
             try {

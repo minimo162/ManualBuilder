@@ -136,6 +136,10 @@ try {
     $distributed = Get-MbProject -Path ([string]$created.Path)
     $distributed.id = 'project-' + [guid]::NewGuid().ToString('N')
     $distributed.title = '配布されたマニュアル'
+    $distributedImageRoot = Join-Path (Split-Path -Parent ([string]$created.Path)) 'images'
+    if (Test-Path -LiteralPath $distributedImageRoot -PathType Container) {
+        Copy-Item -LiteralPath $distributedImageRoot -Destination $sourceFolder -Recurse -Force
+    }
     [void](Save-MbProject -Project $distributed -Path (Join-Path $sourceFolder 'project.json'))
     $beforeCount = @(Get-MbProjectCatalog -DataRoot $testRoot).Count
     $firstImport = Import-MbCatalogProjectFolder -DataRoot $testRoot -SourceFolder $sourceFolder
@@ -145,6 +149,30 @@ try {
     Assert-Mb ([string]$secondImport.Status -eq 'existing') '同じマニュアルは取り込まず既存を返す'
     Assert-Mb ([string]$secondImport.Key -eq [string]$firstImport.Key) '2回目も同じマニュアルを開く'
     Assert-Mb (@(Get-MbProjectCatalog -DataRoot $testRoot).Count -eq ($beforeCount + 1)) '取り込み直しても一覧が増えない'
+
+    # 別PCで共有版が更新された場合、古いローカル版をそのまま開くと再反映で巻き戻る。
+    # 古い版を残したまま、共有版を識別できる別項目として開く。
+    $sourceProjectPath = Join-Path $sourceFolder 'project.json'
+    $newerDistributed = Get-MbProject -Path $sourceProjectPath
+    $newerDistributed.title = '配布されたマニュアル 改訂'
+    for ($revisionAttempt = 0; $revisionAttempt -lt 10 -and
+        [int]$newerDistributed.revision -le [int]$secondImport.LocalRevision; $revisionAttempt++) {
+        $newerDistributed = Save-MbProject -Project $newerDistributed -Path $sourceProjectPath
+    }
+    Assert-Mb ([int]$newerDistributed.revision -gt [int]$secondImport.LocalRevision) '共有側がローカルより新しい状態を再現する'
+    $countBeforeNewerImport = @(Get-MbProjectCatalog -DataRoot $testRoot).Count
+    $newerImport = Import-MbCatalogProjectFolder -DataRoot $testRoot -SourceFolder $sourceFolder
+    Assert-Mb ([string]$newerImport.Status -eq 'imported-newer') '共有側が新しいときは古いローカル版を開かない'
+    Assert-Mb ([string]$newerImport.Key -ne [string]$firstImport.Key) '新しい共有版を安全な別項目として取り込む'
+    Assert-Mb ([string]$newerImport.Project.id -ne [string]$firstImport.Project.id) '共有版コピーへ衝突しないプロジェクトIDを付ける'
+    Assert-Mb ([string]$newerImport.Project.title -eq '配布されたマニュアル 改訂 - 共有版') '共有版コピーを一覧で識別できる'
+    Assert-Mb (Test-Path -LiteralPath ([string]$firstImport.Path) -PathType Leaf) '古いローカル版を削除しない'
+    Assert-Mb (@(Get-MbProjectCatalog -DataRoot $testRoot).Count -eq ($countBeforeNewerImport + 1)) '共有版コピーだけを1件追加する'
+    $newerImportAgain = Import-MbCatalogProjectFolder -DataRoot $testRoot -SourceFolder $sourceFolder
+    Assert-Mb ([string]$newerImportAgain.Status -eq 'existing') '同じ共有版コピーを再度増やさない'
+    Assert-Mb ([string]$newerImportAgain.Key -eq [string]$newerImport.Key) '再度開いた共有版を同じ項目へ戻す'
+    Assert-Mb (@(Get-MbProjectCatalog -DataRoot $testRoot).Count -eq ($countBeforeNewerImport + 1)) '共有版を開き直しても一覧を増やさない'
+
     Assert-Mb ((Find-MbCatalogProjectById -DataRoot $testRoot -ProjectId 'project-00000000000000000000000000000000') -eq $null) '無いIDは見つからない'
     Assert-Mb ((Find-MbCatalogProjectById -DataRoot $testRoot -ProjectId '../etc') -eq $null) '不正なIDは探さない'
     $missingSourceRejected = $false

@@ -292,20 +292,20 @@ function Save-MbProject {
     # 書込みに失敗した場合はメモリとディスクがずれないよう元へ戻す。
     $previousRevision = [int]$Project.revision
     $previousUpdatedAt = [string]$Project.updatedAt
-    $Project.revision = $previousRevision + 1
-    $Project.updatedAt = Get-MbUtcTimestamp
-
     $directory = Split-Path -Parent $Path
-    if (-not (Test-Path -LiteralPath $directory)) {
-        [void](New-Item -ItemType Directory -Path $directory -Force)
-    }
-
     $tempPath = Join-Path $directory ('.project-' + [guid]::NewGuid().ToString('N') + '.tmp')
     $backupPath = "$Path.bak"
     $utf8 = New-Object System.Text.UTF8Encoding($false)
-    $json = $Project | ConvertTo-Json -Depth 12
 
+    $Project.revision = $previousRevision + 1
+    $Project.updatedAt = Get-MbUtcTimestamp
     try {
+        # 保存先の作成やJSON変換も、revisionを進めた後に失敗し得る。
+        # 書込みだけでなく保存準備を含む全工程をロールバック対象にする。
+        if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+            [void](New-Item -ItemType Directory -Path $directory -Force -ErrorAction Stop)
+        }
+        $json = $Project | ConvertTo-Json -Depth 12 -ErrorAction Stop
         [IO.File]::WriteAllText($tempPath, $json, $utf8)
         if (Test-Path -LiteralPath $Path) {
             [IO.File]::Replace($tempPath, $Path, $backupPath, $true)
@@ -317,7 +317,7 @@ function Save-MbProject {
         $Project.updatedAt = $previousUpdatedAt
         throw
     } finally {
-        if (Test-Path -LiteralPath $tempPath) {
+        if (Test-Path -LiteralPath $tempPath -PathType Leaf -ErrorAction SilentlyContinue) {
             Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
         }
     }
