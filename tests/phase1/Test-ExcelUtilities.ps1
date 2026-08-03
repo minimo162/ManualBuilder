@@ -81,6 +81,59 @@ try {
     Assert-Mb ($fileName -eq '経費_申請___.xlsx') 'Excelファイル名の禁止文字を置換する'
     Assert-Mb ((Get-MbSafeExcelFileName -Name 'CON' -Directory $testRoot) -eq '_CON.xlsx') 'Windows予約名を安全なファイル名へ変換する'
 
+    # --- 動画つきのフォルダー出力 ---
+    Assert-Mb ((Get-MbSafeExcelFolderName -Name '経費/申請:*?' -Directory $testRoot) -eq '経費_申請___') '出力フォルダー名の禁止文字を置換する'
+    Assert-Mb ((Get-MbSafeExcelFolderName -Name 'CON' -Directory $testRoot) -eq '_CON') 'Windows予約名を安全なフォルダー名へ変換する'
+    [void](New-Item -ItemType Directory -Path (Join-Path $testRoot '重複マニュアル') -Force)
+    Assert-Mb ((Get-MbSafeExcelFolderName -Name '重複マニュアル' -Directory $testRoot) -eq '重複マニュアル_2') '同名フォルダーがあれば連番を付ける'
+
+    $videoProjectPath = Join-Path $testRoot 'video-project\project.json'
+    $videoDirectory = Join-Path $testRoot 'video-project\videos'
+    [void](New-Item -ItemType Directory -Path $videoDirectory -Force)
+    $videoAName = 'video-' + ('a' * 32) + '.mp4'
+    $videoBName = 'video-' + ('b' * 32) + '.webm'
+    [IO.File]::WriteAllBytes((Join-Path $videoDirectory $videoAName), ([byte[]](1, 2, 3)))
+    [IO.File]::WriteAllBytes((Join-Path $videoDirectory $videoBName), ([byte[]](4, 5, 6)))
+    $videoProject = [pscustomobject]@{
+        videos = @(
+            [pscustomobject]@{ id = 'video-a'; fileName = $videoAName },
+            [pscustomobject]@{ id = 'video-b'; fileName = $videoBName }
+        )
+        sheets = @(
+            [pscustomobject]@{ steps = @(
+                [pscustomobject]@{ id = 'step-1'; videoId = 'video-a' },
+                [pscustomobject]@{ id = 'step-2'; videoId = '' },
+                [pscustomobject]@{ id = 'step-3'; videoId = 'video-a' }
+            ) },
+            [pscustomobject]@{ steps = @(
+                [pscustomobject]@{ id = 'step-4'; videoId = 'video-b' }
+            ) }
+        )
+    }
+    $plan = Get-MbExcelVideoPlan -Project $videoProject -ProjectPath $videoProjectPath
+    Assert-Mb ([int]$plan.Count -eq 2) '同じ動画を複数の手順へ付けてもファイルは1本にする'
+    Assert-Mb ($plan.StepLinks['step-1'] -eq '動画\動画001.mp4') '動画つきの手順へ相対パスのリンクを作る'
+    Assert-Mb ($plan.StepLinks['step-3'] -eq '動画\動画001.mp4') '同じ動画の手順は同じファイルを指す'
+    Assert-Mb ($plan.StepLinks['step-4'] -eq '動画\動画002.webm') '拡張子は元の動画に合わせる'
+    Assert-Mb (-not $plan.StepLinks.ContainsKey('step-2')) '動画の無い手順にはリンクを作らない'
+    # 相対パスでなければ、フォルダーごとコピーしたときにリンクが切れる。
+    Assert-Mb (@($plan.StepLinks.Values | Where-Object { $_ -match '^[A-Za-z]:\\|^\\\\' }).Count -eq 0) 'リンクへ絶対パスを使わない'
+
+    $noVideoProject = [pscustomobject]@{
+        videos = @()
+        sheets = @([pscustomobject]@{ steps = @([pscustomobject]@{ id = 'step-1'; videoId = '' }) })
+    }
+    Assert-Mb ([int](Get-MbExcelVideoPlan -Project $noVideoProject -ProjectPath $videoProjectPath).Count -eq 0) '動画が無ければフォルダー出力にしない'
+
+    $missingVideoProject = [pscustomobject]@{
+        videos = @([pscustomobject]@{ id = 'video-c'; fileName = 'video-' + ('c' * 32) + '.mp4' })
+        sheets = @([pscustomobject]@{ steps = @([pscustomobject]@{ id = 'step-1'; videoId = 'video-c' }) })
+    }
+    $missingRejected = $false
+    try { [void](Get-MbExcelVideoPlan -Project $missingVideoProject -ProjectPath $videoProjectPath) }
+    catch { $missingRejected = ([string]$_.Exception.Message -match '動画ファイルが見つかりません') }
+    Assert-Mb $missingRejected '動画ファイルが無ければ出力しない'
+
     $wideLayout = Get-MbExcelStepCardLayout -Description '短い説明' -ImageWidth 1920 -ImageHeight 500
     $screenLayout = Get-MbExcelStepCardLayout -Description '短い説明' -ImageWidth 1920 -ImageHeight 1080
     $portraitLayout = Get-MbExcelStepCardLayout -Description '短い説明' -ImageWidth 1080 -ImageHeight 1920

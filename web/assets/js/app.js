@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const appVersion = '0.25.0';
+  const appVersion = '0.27.0';
   // 番号注釈はSVG属性で指定するためCSS変数を参照できない。
   // 編集画面とExcel・Word出力（New-MbAnnotatedImage）で同じ見た目にするため、基準フォントを揃える。
   const ANNOTATION_NUMBER_FONT = '"BIZ UDPGothic", "BIZ UDPゴシック", "BIZ UDGothic", "BIZ UDゴシック", Meiryo, "Yu Gothic UI", "MS Pゴシック", sans-serif';
@@ -1520,7 +1520,7 @@
     const dialog = document.createElement('dialog');
     dialog.id = 'excel-export-dialog';
     dialog.className = 'excel-export-dialog';
-    dialog.innerHTML = '<header class="excel-export-dialog__header"><div><strong>Excelで作成</strong><span>現在の内容を専用プロセスで出力します</span></div><button type="button" class="excel-export-dialog__close" data-export-close aria-label="閉じる">×</button></header><div class="excel-export-dialog__content"><div class="excel-export-dialog__state" role="status" aria-live="polite"><span class="excel-export-dialog__mark" data-export-mark aria-hidden="true"></span><div><strong data-export-message>準備しています</strong><span data-export-detail>プロジェクトを保存しています</span></div></div><div class="excel-export-progress" role="progressbar" aria-label="Excel作成の進捗" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span data-export-progress></span></div><p class="excel-export-dialog__path" data-export-path hidden></p><details class="excel-export-dialog__mappings" data-export-mappings hidden><summary>出力シート名を確認</summary><ul></ul></details><p class="excel-export-dialog__error" data-export-error hidden></p></div><footer class="excel-export-dialog__footer"><button type="button" class="button button--ghost" data-export-cancel>中止</button><span class="excel-export-dialog__spacer"></span><button type="button" class="button button--ghost" data-export-open="folder" hidden>保存先を開く</button><button type="button" class="button button--primary" data-export-open="file" hidden>Excelを開く</button><button type="button" class="button button--ghost" data-export-close data-export-done hidden>閉じる</button></footer>';
+    dialog.innerHTML = '<header class="excel-export-dialog__header"><div><strong>Excelで作成</strong><span>現在の内容を専用プロセスで出力します</span></div><button type="button" class="excel-export-dialog__close" data-export-close aria-label="閉じる">×</button></header><div class="excel-export-dialog__content"><div class="excel-export-dialog__state" role="status" aria-live="polite"><span class="excel-export-dialog__mark" data-export-mark aria-hidden="true"></span><div><strong data-export-message>準備しています</strong><span data-export-detail>プロジェクトを保存しています</span></div></div><div class="excel-export-progress" role="progressbar" aria-label="Excel作成の進捗" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span data-export-progress></span></div><p class="excel-export-dialog__path" data-export-path hidden></p><p class="excel-export-dialog__note" data-export-video-note hidden></p><details class="excel-export-dialog__mappings" data-export-mappings hidden><summary>出力シート名を確認</summary><ul></ul></details><p class="excel-export-dialog__error" data-export-error hidden></p></div><footer class="excel-export-dialog__footer"><button type="button" class="button button--ghost" data-export-cancel>中止</button><span class="excel-export-dialog__spacer"></span><button type="button" class="button button--ghost" data-export-open="folder" hidden>保存先を開く</button><button type="button" class="button button--primary" data-export-open="file" hidden>Excelを開く</button><button type="button" class="button button--ghost" data-export-close data-export-done hidden>閉じる</button></footer>';
     dialog.querySelectorAll('[data-export-close]').forEach((button) => {
       button.addEventListener('click', () => dialog.close());
     });
@@ -1586,7 +1586,16 @@
     dialog.querySelector('[data-export-progress]').style.width = `${percent}%`;
     const path = dialog.querySelector('[data-export-path]');
     path.hidden = state !== 'completed';
-    path.textContent = status.outputName || '';
+    path.textContent = status.outputFolderName
+      ? `${status.outputFolderName}\\${status.outputName || ''}`
+      : (status.outputName || '');
+    // 動画つきの手順があるとフォルダー出力になる。ブックだけコピーするとリンクが切れるので必ず伝える。
+    const videoNote = dialog.querySelector('[data-export-video-note]');
+    const outputFolderName = state === 'completed' ? String(status.outputFolderName || '') : '';
+    videoNote.hidden = !outputFolderName;
+    videoNote.textContent = outputFolderName
+      ? `動画つきのため、ブックと動画をフォルダーにまとめました。配るときは「${outputFolderName}」をフォルダーごとコピーしてください。Excelファイルだけコピーすると動画が開けません。`
+      : '';
     const mappings = dialog.querySelector('[data-export-mappings]');
     const mappingItems = Array.isArray(status.sheetNameMappings) ? status.sheetNameMappings : [];
     mappings.hidden = state !== 'completed' || !mappingItems.length;
@@ -1920,14 +1929,14 @@
 
   // HTML出力はCOMを使わないため、進捗のポーリングも中止の仕組みも要らない。
   // 応答を待つ間だけダイアログを出す。
-  const htmlExport = { dialog: null, busy: false };
+  const htmlExport = { dialog: null, busy: false, publishTarget: '' };
 
   const ensureHtmlExportDialog = () => {
     if (htmlExport.dialog) return htmlExport.dialog;
     const dialog = document.createElement('dialog');
     dialog.id = 'html-export-dialog';
     dialog.className = 'excel-export-dialog html-export-dialog';
-    dialog.innerHTML = '<header class="excel-export-dialog__header"><div><strong>HTMLで作成</strong><span>ブラウザーで開けるマニュアルをフォルダーごと作ります</span></div><button type="button" class="excel-export-dialog__close" data-html-export-close aria-label="閉じる">×</button></header><div class="excel-export-dialog__content"><div class="excel-export-dialog__state" role="status" aria-live="polite"><span class="excel-export-dialog__mark" data-html-export-mark aria-hidden="true"></span><div><strong data-html-export-message>作成しています</strong><span data-html-export-detail>画像に注釈を焼き込んでいます</span></div></div><p class="excel-export-dialog__path" data-html-export-path hidden></p><p class="excel-export-dialog__error" data-html-export-error hidden></p></div><footer class="excel-export-dialog__footer"><span class="excel-export-dialog__spacer"></span><button type="button" class="button button--ghost" data-html-export-open="folder" hidden>保存先を開く</button><button type="button" class="button button--primary" data-html-export-open="file" hidden>マニュアルを開く</button><button type="button" class="button button--ghost" data-html-export-close data-html-export-done hidden>閉じる</button></footer>';
+    dialog.innerHTML = '<header class="excel-export-dialog__header"><div><strong>HTMLで作成</strong><span>ブラウザーで開けるマニュアルをフォルダーごと作ります</span></div><button type="button" class="excel-export-dialog__close" data-html-export-close aria-label="閉じる">×</button></header><div class="excel-export-dialog__content"><div class="excel-export-dialog__state" role="status" aria-live="polite"><span class="excel-export-dialog__mark" data-html-export-mark aria-hidden="true"></span><div><strong data-html-export-message>作成しています</strong><span data-html-export-detail>画像に注釈を焼き込んでいます</span></div></div><p class="excel-export-dialog__path" data-html-export-path hidden></p><p class="excel-export-dialog__note" data-html-publish-note hidden></p><p class="excel-export-dialog__error" data-html-export-error hidden></p></div><footer class="excel-export-dialog__footer"><button type="button" class="button button--secondary" data-html-publish hidden>共有フォルダーへ反映</button><span class="excel-export-dialog__spacer"></span><button type="button" class="button button--ghost" data-html-export-open="folder" hidden>保存先を開く</button><button type="button" class="button button--primary" data-html-export-open="file" hidden>マニュアルを開く</button><button type="button" class="button button--ghost" data-html-export-close data-html-export-done hidden>閉じる</button></footer>';
     dialog.querySelectorAll('[data-html-export-close]').forEach((button) => button.addEventListener('click', () => dialog.close()));
     dialog.querySelectorAll('[data-html-export-open]').forEach((button) => {
       button.addEventListener('click', async () => {
@@ -1948,6 +1957,28 @@
           button.disabled = false;
         }
       });
+    });
+    dialog.querySelector('[data-html-publish]').addEventListener('click', async () => {
+      const button = dialog.querySelector('[data-html-publish]');
+      const note = dialog.querySelector('[data-html-publish-note]');
+      if (!window.confirm(`共有フォルダーの次の場所を、いま作ったマニュアルで置き換えます。\n\n${htmlExport.publishTarget}\n\n続けますか？`)) return;
+      button.disabled = true;
+      note.hidden = false;
+      note.textContent = '共有フォルダーへコピーしています…';
+      try {
+        const response = await fetch('/api/export/html/publish', {
+          method: 'POST',
+          headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }),
+          body: ''
+        });
+        const result = await response.json().catch(() => null);
+        if (!response.ok) throw new Error(result?.message || `HTTP ${response.status}`);
+        note.textContent = `共有フォルダーへ反映しました（${result?.fileCount || 0} ファイル · ${result?.totalMb || 0}MB）`;
+        showToast('共有フォルダーへ反映しました。');
+      } catch (error) {
+        note.textContent = `共有フォルダーへ反映できませんでした: ${error.message || ''}`;
+        button.disabled = false;
+      }
     });
     dialog.addEventListener('cancel', (event) => { if (htmlExport.busy) event.preventDefault(); });
     document.body.appendChild(dialog);
@@ -1975,6 +2006,15 @@
     const path = dialog.querySelector('[data-html-export-path]');
     path.hidden = state !== 'completed';
     path.textContent = status.folderName || '';
+    // 配布先は「編集する.cmd」から起動したときだけ分かる。分からないうちはボタンを出さず、
+    // エクスプローラーで手でコピーしてもらう（最初の1回だけ）。
+    htmlExport.publishTarget = state === 'completed' ? String(status.publishTarget || '') : '';
+    const publishButton = dialog.querySelector('[data-html-publish]');
+    publishButton.hidden = !htmlExport.publishTarget;
+    publishButton.disabled = false;
+    const publishNote = dialog.querySelector('[data-html-publish-note]');
+    publishNote.hidden = !htmlExport.publishTarget;
+    publishNote.textContent = htmlExport.publishTarget ? `反映先: ${htmlExport.publishTarget}` : '';
     const error = dialog.querySelector('[data-html-export-error]');
     error.hidden = state !== 'failed';
     error.textContent = state === 'failed' ? '内容を確認して、もう一度実行してください。' : '';
@@ -1988,14 +2028,26 @@
     });
   };
 
-  const startHtmlExport = async () => {
+  const startHtmlExport = async (overwrite = false) => {
     const dialog = ensureHtmlExportDialog();
     updateHtmlExportDialog('running');
     if (!dialog.open) dialog.showModal();
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     try {
-      const response = await fetch('/api/export/html', { method: 'POST', headers: sessionHeaders() });
+      const response = await fetch('/api/export/html', {
+        method: 'POST',
+        headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }),
+        body: overwrite ? new URLSearchParams({ overwrite: '1' }).toString() : ''
+      });
       const result = await response.json().catch(() => null);
+      // フォルダー名に日付を付けないため、同じ名前があれば作り直してよいか本人に確認する。
+      if (response.status === 409 && result?.errorCode === 'FOLDER_EXISTS') {
+        updateHtmlExportDialog('idle');
+        dialog.close();
+        const message = `「${result.folderName}」はすでにあります。\n最新の内容で作り直しますか？\n\n前に作ったHTMLマニュアルは置き換わります。共有フォルダーへコピー済みのものはそのまま残ります。`;
+        if (window.confirm(message)) startHtmlExport(true);
+        return;
+      }
       if (!response.ok) throw new Error(result?.message || `HTTP ${response.status}`);
       updateHtmlExportDialog('completed', result || {});
     } catch (error) {

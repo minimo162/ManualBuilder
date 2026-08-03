@@ -6,6 +6,10 @@ param(
     [string]$DataRoot,
     [string]$ProjectPath,
     [string]$LegacyAppRoot,
+    # HTMLマニュアルに同梱した元データ（_source フォルダー）。起動時に取り込んでそのマニュアルを開く。
+    [string]$ImportFrom,
+    # そのHTMLマニュアルが置かれているフォルダー。「共有フォルダーへ反映」の宛先として覚える。
+    [string]$PublishTo,
     # ブラウザーは非表示タブのタイマーを1分に1回まで間引く（Chrome/Edgeの集中スロットリング）。
     # 撮影中はManualBuilderのタブが必ず裏へ回るため、30秒では正常なタブでも失効する。
     [ValidateRange(10, 600)][int]$HeartbeatTimeoutSec = 90,
@@ -389,6 +393,7 @@ function Read-MbExcelExportStatus {
         return [pscustomobject]@{
             jobId = ''; state = 'idle'; phase = 'idle'; message = 'Excel出力を開始できます'; percent = 0
             currentStep = 0; totalSteps = 0; outputPath = ''; outputName = ''
+            outputFolder = ''; outputFolderName = ''; videoCount = 0
             outputDirectory = (Get-MbExcelOutputDirectory); sheetNameMappings = @()
             startedAt = ''; updatedAt = ''; completedAt = ''; errorCode = ''
         }
@@ -409,6 +414,7 @@ function Read-MbExcelExportStatus {
             jobId = [string]$script:ExcelExportJob.JobId; state = 'queued'; phase = 'queued'
             message = 'Excel出力を開始しています'; percent = 0; currentStep = 0
             totalSteps = [int]$script:ExcelExportJob.TotalSteps; outputPath = ''; outputName = ''
+            outputFolder = ''; outputFolderName = ''; videoCount = 0
             outputDirectory = [string]$script:ExcelExportJob.OutputDirectory
             sheetNameMappings = @()
             ownedExcelPid = 0; ownedExcelStartTimeUtc = ''; ownershipMode = ''; ownershipProven = $false
@@ -491,9 +497,34 @@ function Start-MbExcelExportJob {
         [IO.File]::Copy($sourcePath, (Join-Path $snapshotImageDirectory $fileName), $true)
     }
 
+    # 動画つきの手順があるとExcelはフォルダー出力になり、別プロセスが動画を読む。
+    # 出力中に元が差し替わっても影響しないよう、画像と同じくスナップショットへ複製する。
+    $referencedVideoIds = New-Object 'System.Collections.Generic.HashSet[string]'
+    foreach ($sheet in @($project.sheets)) {
+        foreach ($step in @($sheet.steps)) {
+            if ($step.PSObject.Properties.Name -contains 'videoId' -and -not [string]::IsNullOrWhiteSpace([string]$step.videoId)) {
+                [void]$referencedVideoIds.Add([string]$step.videoId)
+            }
+        }
+    }
+    if ($referencedVideoIds.Count -gt 0) {
+        $sourceVideoDirectory = Join-Path (Split-Path -Parent $ProjectPath) 'videos'
+        $snapshotVideoDirectory = Join-Path $jobDirectory 'videos'
+        [void](New-Item -ItemType Directory -Path $snapshotVideoDirectory -Force)
+        foreach ($video in @($project.videos)) {
+            if (-not $referencedVideoIds.Contains([string]$video.id)) { continue }
+            $fileName = [string]$video.fileName
+            if ($fileName -notmatch '^video-[a-f0-9]{32}\.(mp4|webm)$') { throw "動画ファイル名が不正です: $fileName" }
+            $sourcePath = Join-Path $sourceVideoDirectory $fileName
+            if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) { throw "動画ファイルが見つかりません: $fileName" }
+            [IO.File]::Copy($sourcePath, (Join-Path $snapshotVideoDirectory $fileName), $true)
+        }
+    }
+
     $queuedStatus = [pscustomobject]@{
         jobId = $jobId; state = 'queued'; phase = 'queued'; message = 'Excel出力を開始しています'; percent = 0
         currentStep = 0; totalSteps = $totalSteps; outputPath = ''; outputName = ''; outputDirectory = $outputDirectory
+        outputFolder = ''; outputFolderName = ''; videoCount = 0
         sheetNameMappings = @()
         ownedExcelPid = 0; ownedExcelStartTimeUtc = ''; ownershipMode = ''; ownershipProven = $false
         startedAt = [DateTime]::UtcNow.ToString('o'); updatedAt = [DateTime]::UtcNow.ToString('o'); completedAt = ''; errorCode = ''
@@ -543,8 +574,21 @@ function Open-MbExcelExportResult {
         throw '出力ファイルの場所を確認できません。'
     }
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw '出力したExcelファイルが見つかりません。' }
-    if ($Mode -eq 'file') { Start-Process -FilePath $path }
-    else { Start-Process -FilePath $root }
+    if ($Mode -eq 'file') {
+        Start-Process -FilePath $path
+        return $status
+    }
+    # 動画つきはフォルダー出力になる。その場合は保存先の親ではなく、そのフォルダー自体を開く。
+    $folderPath = $root
+    $outputFolder = if ($status.PSObject.Properties.Name -contains 'outputFolder') { [string]$status.outputFolder } else { '' }
+    if (-not [string]::IsNullOrWhiteSpace($outputFolder)) {
+        $candidate = [IO.Path]::GetFullPath($outputFolder)
+        if ($candidate.StartsWith($root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -and
+            (Test-Path -LiteralPath $candidate -PathType Container)) {
+            $folderPath = $candidate
+        }
+    }
+    Start-Process -FilePath $folderPath
     return $status
 }
 
@@ -1036,6 +1080,13 @@ function ConvertTo-MbCurrentProjectLibraryHtml {
         -LastOpenedProjectKey ([string]$settings.lastOpenedProjectKey)
 }
 
+function Get-MbCurrentPublishTarget {
+    # 「編集する.cmd」から起動したときに覚えた、共有フォルダー上の配布フォルダー。
+    if ($usesExplicitProjectPath) { return '' }
+    if ([string]::IsNullOrWhiteSpace($script:ActiveProjectKey)) { return '' }
+    try { return [string](Get-MbPublishTarget -DataRoot $DataRoot -ProjectKey $script:ActiveProjectKey) } catch { return '' }
+}
+
 function Test-MbOfficeExportActive {
     $excel = Read-MbExcelExportStatus
     $word = Read-MbWordExportStatus
@@ -1062,6 +1113,8 @@ function Reset-MbActiveProjectSession {
     $script:PowerPointExportJob = $null
     $script:PowerPointExportCancelRequestedAt = $null
     $script:PowerPointExportCancelReason = ''
+    # マニュアルを切り替えたら、前のマニュアルの出力先を「共有フォルダーへ反映」の対象に残さない。
+    $script:HtmlExportResult = $null
     $script:CaptureVersion++
 }
 
@@ -1293,34 +1346,6 @@ function Invoke-MbRoute {
         return
     }
 
-    if ($path -eq '/api/export/html') {
-        # COMを使わないため、Excel・Word・PowerPointのような別プロセスと進捗の仕組みは要らない。
-        try {
-            if (Test-MbOfficeExportActive) { throw 'Office出力中です。完了または中止してからHTMLを作成してください。' }
-            $project = Get-MbProject -Path $ProjectPath
-            [void](Save-MbProject -Project $project -Path $ProjectPath)
-            $outputDirectory = Get-MbExcelOutputDirectory
-            $result = Invoke-MbHtmlExport -Project $project -ProjectPath $ProjectPath -OutputDirectory $outputDirectory
-            $script:HtmlExportResult = $result
-            $megaBytes = [Math]::Round([long]$result.TotalBytes / 1MB, 1)
-            $body = [pscustomobject]@{
-                state      = 'completed'
-                message    = 'HTMLマニュアルを作成しました。'
-                folderName = [string]$result.FolderName
-                stepCount  = [int]$result.StepCount
-                imageCount = [int]$result.ImageCount
-                videoCount = [int]$result.VideoCount
-                totalMb    = $megaBytes
-            } | ConvertTo-Json -Compress
-            Write-MbLog "HTMLマニュアルを作成しました: $($result.FolderName) / $($result.StepCount)手順 / ${megaBytes}MB" 'OK'
-            Write-MbResponse $Context $body 200 'application/json; charset=utf-8'
-        } catch {
-            $body = [pscustomobject]@{ state = 'failed'; message = $_.Exception.Message } | ConvertTo-Json -Compress
-            Write-MbResponse $Context $body 400 'application/json; charset=utf-8'
-        }
-        return
-    }
-
     if ($path -eq '/api/videos/attach') {
         # 動画は手順へ添付するだけで、ブラウザーへは返さない。PowerPoint出力のときだけ読む。
         $bytes = $null
@@ -1405,6 +1430,78 @@ function Invoke-MbRoute {
     }
 
     $form = Read-MbForm -Request $request
+
+    if ($path -eq '/api/export/html') {
+        # COMを使わないため、Excel・Word・PowerPointのような別プロセスと進捗の仕組みは要らない。
+        try {
+            if (Test-MbOfficeExportActive) { throw 'Office出力中です。完了または中止してからHTMLを作成してください。' }
+            $project = Get-MbProject -Path $ProjectPath
+            [void](Save-MbProject -Project $project -Path $ProjectPath)
+            $outputDirectory = Get-MbExcelOutputDirectory
+            if (-not (Test-Path -LiteralPath $outputDirectory)) { [void](New-Item -ItemType Directory -Path $outputDirectory -Force) }
+            $folderName = Get-MbHtmlExportFolderName -Project $project -OutputDirectory $outputDirectory
+            $overwrite = (Get-MbFormValue $form 'overwrite') -eq '1'
+            if (-not $overwrite -and (Test-Path -LiteralPath (Join-Path $outputDirectory $folderName))) {
+                # 日付を付けずに同じ名前で作るため、上書きしてよいかは必ず本人に確認する。
+                $body = [pscustomobject]@{
+                    state      = 'confirm'
+                    errorCode  = 'FOLDER_EXISTS'
+                    message    = '同じ名前のフォルダーがすでにあります。'
+                    folderName = $folderName
+                } | ConvertTo-Json -Compress
+                Write-MbResponse $Context $body 409 'application/json; charset=utf-8'
+                return
+            }
+            $result = Invoke-MbHtmlExport -Project $project -ProjectPath $ProjectPath -OutputDirectory $outputDirectory -Overwrite:$overwrite
+            $script:HtmlExportResult = $result
+            $megaBytes = [Math]::Round([long]$result.TotalBytes / 1MB, 1)
+            $publishTarget = Get-MbCurrentPublishTarget
+            $body = [pscustomobject]@{
+                state         = 'completed'
+                message       = if ([bool]$result.Replaced) { 'HTMLマニュアルを作り直しました。' } else { 'HTMLマニュアルを作成しました。' }
+                folderName    = [string]$result.FolderName
+                stepCount     = [int]$result.StepCount
+                imageCount    = [int]$result.ImageCount
+                videoCount    = [int]$result.VideoCount
+                totalMb       = $megaBytes
+                replaced      = [bool]$result.Replaced
+                publishTarget = $publishTarget
+            } | ConvertTo-Json -Compress
+            Write-MbLog "HTMLマニュアルを作成しました: $($result.FolderName) / $($result.StepCount)手順 / ${megaBytes}MB" 'OK'
+            Write-MbResponse $Context $body 200 'application/json; charset=utf-8'
+        } catch {
+            $body = [pscustomobject]@{ state = 'failed'; message = $_.Exception.Message } | ConvertTo-Json -Compress
+            Write-MbResponse $Context $body 400 'application/json; charset=utf-8'
+        }
+        return
+    }
+
+    if ($path -eq '/api/export/html/publish') {
+        # ローカルで作ったフォルダーを、そのまま共有フォルダーへコピーする。
+        # ManualBuilderが共有フォルダーへ書くのはここだけで、それも本人が押したときだけ。
+        try {
+            if (-not $script:HtmlExportResult) { throw '先に「HTMLで作成」を実行してください。' }
+            $target = Get-MbCurrentPublishTarget
+            if ([string]::IsNullOrWhiteSpace($target)) { throw '反映先がわかりません。配布フォルダーの「編集する.cmd」から起動すると覚えます。' }
+            $result = Copy-MbHtmlManualFolder -SourceFolder ([string]$script:HtmlExportResult.OutputPath) -DestinationFolder $target
+            $megaBytes = [Math]::Round([long]$result.TotalBytes / 1MB, 1)
+            $body = [pscustomobject]@{
+                state      = 'completed'
+                message    = '共有フォルダーへ反映しました。'
+                targetPath = [string]$result.DestinationPath
+                folderName = [string]$result.FolderName
+                replaced   = [bool]$result.Replaced
+                fileCount  = [int]$result.FileCount
+                totalMb    = $megaBytes
+            } | ConvertTo-Json -Compress
+            Write-MbLog "共有フォルダーへ反映しました: $($result.DestinationPath)" 'OK'
+            Write-MbResponse $Context $body 200 'application/json; charset=utf-8'
+        } catch {
+            $body = [pscustomobject]@{ state = 'failed'; message = $_.Exception.Message } | ConvertTo-Json -Compress
+            Write-MbResponse $Context $body 400 'application/json; charset=utf-8'
+        }
+        return
+    }
 
     if ($path -eq '/api/projects/export') {
         $packagePath = Join-Path ([IO.Path]::GetTempPath()) ('ManualBuilder-export-' + [guid]::NewGuid().ToString('N') + '.zip')
@@ -1808,6 +1905,34 @@ try {
         Write-MbLog "既存プロジェクトをユーザーのローカル保存先へコピーしました: $ProjectPath" 'OK'
         Write-MbLog "移行元は削除していません: $($storageState.LegacyProjectPath)" 'INFO'
     }
+    if (-not [string]::IsNullOrWhiteSpace($ImportFrom)) {
+        # 「編集する.cmd」からの起動。配布したHTMLマニュアルの元データを取り込んで、そのまま編集できるようにする。
+        if ($usesExplicitProjectPath) { throw '明示プロジェクト指定中は元データを取り込めません。' }
+        $imported = Import-MbCatalogProjectFolder -DataRoot $DataRoot -SourceFolder $ImportFrom
+        $script:ProjectPath = [string]$imported.Path
+        $ProjectPath = $script:ProjectPath
+        $script:ActiveProjectKey = [string]$imported.Key
+        $script:ProjectHomeVisible = $false
+        Set-MbLastOpenedProject -DataRoot $DataRoot -ProjectKey ([string]$imported.Key)
+        if ([string]$imported.Status -eq 'imported') {
+            Write-MbLog "配布フォルダーの元データを取り込みました: $($imported.Project.title)" 'OK'
+        } else {
+            Write-MbLog "このPCにある同じマニュアルを開きます: $($imported.Project.title)" 'INFO'
+            if ([int]$imported.SourceRevision -gt [int]$imported.LocalRevision) {
+                Write-MbLog '配布フォルダー側のほうが新しい可能性があります。内容を確認してください。' 'WARN'
+            }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($PublishTo)) {
+            try {
+                $publishFullPath = [IO.Path]::GetFullPath($PublishTo).TrimEnd([IO.Path]::DirectorySeparatorChar)
+                Set-MbPublishTarget -DataRoot $DataRoot -ProjectKey ([string]$imported.Key) -Path $publishFullPath
+                Write-MbLog "反映先を覚えました: $publishFullPath" 'INFO'
+            } catch {
+                Write-MbLog "反映先を覚えられませんでした: $($_.Exception.Message)" 'WARN'
+            }
+        }
+    }
+
     $initialProject = Get-MbProject -Path $ProjectPath
     $projectReady = $true
     $orphanedImagePaths = @(

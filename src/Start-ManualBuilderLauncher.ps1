@@ -1,7 +1,12 @@
 ﻿# ManualBuilder shared-folder launcher and local-cache updater.
 
 [CmdletBinding()]
-param()
+param(
+    # HTMLマニュアルに同梱した元データ（_source フォルダー）。「編集する.cmd」から渡される。
+    [string]$ImportFrom,
+    # そのHTMLマニュアルが置かれているフォルダー。次回の「共有フォルダーへ反映」先として覚える。
+    [string]$PublishTo
+)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
@@ -44,7 +49,11 @@ function Test-MbApplicationIsRunning {
 }
 
 function Show-MbAlreadyRunningNotice {
-    $message = "ManualBuilderはすでに起動しています。`r`n既存のブラウザータブへ戻ってください。"
+    $message = if ($ImportFrom) {
+        "ManualBuilderはすでに起動しています。`r`n既存のブラウザータブでManualBuilderを終了してから、もう一度「編集する」を実行してください。"
+    } else {
+        "ManualBuilderはすでに起動しています。`r`n既存のブラウザータブへ戻ってください。"
+    }
     try {
         Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
         [void][System.Windows.Forms.MessageBox]::Show(
@@ -58,8 +67,12 @@ function Show-MbAlreadyRunningNotice {
     }
 }
 
+$startArguments = @{}
+if (-not [string]::IsNullOrWhiteSpace($ImportFrom)) { $startArguments['ImportFrom'] = $ImportFrom }
+if (-not [string]::IsNullOrWhiteSpace($PublishTo)) { $startArguments['PublishTo'] = $PublishTo }
+
 if ($sourceRoot.Equals($cacheRoot, [StringComparison]::OrdinalIgnoreCase)) {
-    & (Join-Path $sourceRoot 'src\Start-ManualBuilder.ps1')
+    & (Join-Path $sourceRoot 'src\Start-ManualBuilder.ps1') @startArguments
     return
 }
 
@@ -117,4 +130,4 @@ if (-not $startScript -or -not (Test-Path -LiteralPath $startScript -PathType Le
     exit 1
 }
 Write-MbLauncherLog "ローカル版から起動します: $startScript" 'INFO'
-& $startScript -LegacyAppRoot $sourceRoot
+& $startScript -LegacyAppRoot $sourceRoot @startArguments

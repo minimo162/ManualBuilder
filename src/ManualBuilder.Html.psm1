@@ -35,13 +35,17 @@ function Get-MbSafeHtmlFolderName {
     while ((Join-Path $Directory $safe).Length -gt 200 -and $safe.Length -gt 8) {
         $safe = $safe.Substring(0, $safe.Length - 8)
     }
-    $candidate = $safe
-    $suffix = 2
-    while (Test-Path -LiteralPath (Join-Path $Directory $candidate)) {
-        $candidate = "${safe}_$suffix"
-        $suffix++
-    }
-    return $candidate
+    # 日付や連番は付けない。同じマニュアルは毎回同じフォルダー名にして、
+    # 共有フォルダー側も同じ場所を上書きできるようにする。
+    return $safe
+}
+
+function Get-MbHtmlExportFolderName {
+    param(
+        [Parameter(Mandatory = $true)][object]$Project,
+        [Parameter(Mandatory = $true)][string]$OutputDirectory
+    )
+    return Get-MbSafeHtmlFolderName -Name ([string]$Project.title) -Directory $OutputDirectory
 }
 
 function Get-MbHtmlStyle {
@@ -267,26 +271,120 @@ function ConvertTo-MbManualHtml {
     return $sb.ToString()
 }
 
+function Get-MbHtmlCommandEncoding {
+    # cmdは既定でANSIコードページ（日本語版は932）として読む。UTF-8で書くと日本語のメッセージが化ける。
+    try { [Text.Encoding]::RegisterProvider([Text.CodePagesEncodingProvider]::Instance) } catch { }
+    try { return [Text.Encoding]::GetEncoding(932) } catch { return (New-Object Text.UTF8Encoding($false)) }
+}
+
+function Get-MbHtmlOpenCommandText {
+    # 共有フォルダー上の.htmlは、組織のポリシーでInternet Explorerモードへ回されることがある。
+    # Edgeを明示的に指定して開くことで、そこを避ける。見つからなければ既定のブラウザーに任せる。
+    return @'
+@echo off
+setlocal
+set "MB_INDEX=%~dp0index.html"
+if not exist "%MB_INDEX%" goto :missing
+set "MB_EDGE=%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"
+if exist "%MB_EDGE%" goto :edge
+set "MB_EDGE=%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"
+if exist "%MB_EDGE%" goto :edge
+start "" "%MB_INDEX%"
+exit /b 0
+:edge
+start "" "%MB_EDGE%" "%MB_INDEX%"
+exit /b 0
+:missing
+echo index.html が見つかりません。フォルダーごとコピーしてください。
+pause
+exit /b 1
+'@ -replace "`r?`n", "`r`n"
+}
+
+function Get-MbHtmlEditCommandText {
+    # 元データ（_source）を取り込んだ状態でManualBuilderを起動する。
+    # 配布先（このフォルダー）も一緒に渡し、次回は「共有フォルダーへ反映」だけで更新できるようにする。
+    return @'
+@echo off
+setlocal
+set "MB_LAUNCHER=%LOCALAPPDATA%\ManualBuilder\app\src\Start-ManualBuilderLauncher.ps1"
+if exist "%MB_LAUNCHER%" goto :run
+set "MB_LAUNCHER=%LOCALAPPDATA%\ManualBuilder\app.previous\src\Start-ManualBuilderLauncher.ps1"
+if exist "%MB_LAUNCHER%" goto :run
+echo このPCにはManualBuilderがまだ入っていません。
+echo 共有フォルダーの run.cmd から一度ManualBuilderを起動してから、もう一度実行してください。
+pause
+exit /b 1
+:run
+if not exist "%~dp0_source\project.json" goto :nosource
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%MB_LAUNCHER%" -ImportFrom "%~dp0_source" -PublishTo "%~dp0."
+if errorlevel 1 pause
+exit /b %ERRORLEVEL%
+:nosource
+echo 元データ（_source フォルダー）が見つかりません。フォルダーごとコピーしてください。
+pause
+exit /b 1
+'@ -replace "`r?`n", "`r`n"
+}
+
+function New-MbHtmlSourceFolder {
+    param(
+        [Parameter(Mandatory = $true)][object]$Project,
+        [Parameter(Mandatory = $true)][string]$ProjectPath,
+        [Parameter(Mandatory = $true)][string]$StagingPath
+    )
+    # 出力フォルダーの中へ元データを同梱する。マニュアル1つ＝フォルダー1つになり、
+    # 「見る人が消したら元も消える」ので、容量の管理が普通のフォルダーと同じ感覚になる。
+    $sourceDirectory = Join-Path $StagingPath '_source'
+    [void](New-Item -ItemType Directory -Path $sourceDirectory -Force)
+    [IO.File]::Copy($ProjectPath, (Join-Path $sourceDirectory 'project.json'), $true)
+
+    $projectDirectory = Split-Path -Parent $ProjectPath
+    foreach ($pair in @(
+        [pscustomobject]@{ Name = 'images'; Items = @($Project.images) },
+        [pscustomobject]@{ Name = 'videos'; Items = @($Project.videos) }
+    )) {
+        if ($pair.Items.Count -eq 0) { continue }
+        $destination = Join-Path $sourceDirectory $pair.Name
+        [void](New-Item -ItemType Directory -Path $destination -Force)
+        foreach ($item in $pair.Items) {
+            $fileName = [string]$item.fileName
+            $sourceFile = Join-Path (Join-Path $projectDirectory $pair.Name) $fileName
+            if (-not (Test-Path -LiteralPath $sourceFile -PathType Leaf)) { throw "元データのファイルが見つかりません: $fileName" }
+            [IO.File]::Copy($sourceFile, (Join-Path $destination $fileName), $true)
+        }
+    }
+
+    # 隠し属性にして、読む人の目に触れないようにする（読み取りは妨げないのでHTMLから動画を参照できる）。
+    try {
+        $entry = Get-Item -LiteralPath $sourceDirectory -Force
+        $entry.Attributes = $entry.Attributes -bor [IO.FileAttributes]::Hidden
+    } catch { }
+    return $sourceDirectory
+}
+
 function Invoke-MbHtmlExport {
     param(
         [Parameter(Mandatory = $true)][object]$Project,
         [Parameter(Mandatory = $true)][string]$ProjectPath,
         [Parameter(Mandatory = $true)][string]$OutputDirectory,
-        [AllowEmptyString()][string]$NumberFontName = ''
+        [AllowEmptyString()][string]$NumberFontName = '',
+        [switch]$Overwrite
     )
 
     $sheets = @(Get-MbHtmlContentSheets -Project $Project)
     if ($sheets.Count -eq 0) { throw 'HTMLへ出力する手順がありません。' }
     if (-not (Test-Path -LiteralPath $OutputDirectory)) { [void](New-Item -ItemType Directory -Path $OutputDirectory -Force) }
 
-    $folderName = Get-MbSafeHtmlFolderName -Name (([string]$Project.title) + '_' + (Get-Date -Format 'yyyyMMdd_HHmmss')) -Directory $OutputDirectory
+    $folderName = Get-MbHtmlExportFolderName -Project $Project -OutputDirectory $OutputDirectory
     $stagingPath = Join-Path $OutputDirectory ('.mb-html-' + [guid]::NewGuid().ToString('N'))
     $outputPath = Join-Path $OutputDirectory $folderName
+    $replacedPath = Join-Path $OutputDirectory ('.mb-old-' + [guid]::NewGuid().ToString('N'))
+    $replacedMoved = $false
 
     try {
         [void](New-Item -ItemType Directory -Path $stagingPath -Force)
         $imageDirectory = Join-Path $stagingPath 'images'
-        $videoDirectory = Join-Path $stagingPath 'videos'
 
         $imageNames = @{}
         $videoNames = @{}
@@ -317,39 +415,124 @@ function Invoke-MbHtmlExport {
                 if ($step.PSObject.Properties.Name -contains 'videoId' -and -not [string]::IsNullOrWhiteSpace([string]$step.videoId)) {
                     $videoSourcePath = Get-MbVideoFilePath -Project $Project -ProjectPath $ProjectPath -VideoId ([string]$step.videoId)
                     if (-not $videoSourcePath -or -not (Test-Path -LiteralPath $videoSourcePath -PathType Leaf)) { throw "動画が見つかりません: $($step.videoId)" }
-                    if (-not (Test-Path -LiteralPath $videoDirectory)) { [void](New-Item -ItemType Directory -Path $videoDirectory -Force) }
-                    $videoCount++
                     $extension = [IO.Path]::GetExtension($videoSourcePath).ToLowerInvariant()
                     if ($extension -notin @('.mp4', '.webm')) { throw "対応しない動画形式です: $extension" }
-                    $videoFileName = ("step-{0:d4}" -f $stepCount) + $extension
-                    [IO.File]::Copy($videoSourcePath, (Join-Path $videoDirectory $videoFileName), $true)
-                    $videoNames[$stepId] = 'videos/' + $videoFileName
+                    $videoCount++
+                    # 動画は _source の中の1本だけを参照する。同じ動画をフォルダー内に二重に持たない。
+                    $videoNames[$stepId] = '_source/videos/' + [IO.Path]::GetFileName($videoSourcePath)
                 }
             }
         }
 
+        [void](New-MbHtmlSourceFolder -Project $Project -ProjectPath $ProjectPath -StagingPath $stagingPath)
+
         $html = ConvertTo-MbManualHtml -Project $Project -ImageNames $imageNames -VideoNames $videoNames
         # BOM付きにする。file:// で開いたときに文字化けしないよう、charset指定に加えて念のため付ける。
         [IO.File]::WriteAllText((Join-Path $stagingPath 'index.html'), $html, (New-Object Text.UTF8Encoding($true)))
+        $commandEncoding = Get-MbHtmlCommandEncoding
+        [IO.File]::WriteAllText((Join-Path $stagingPath 'マニュアルを開く.cmd'), (Get-MbHtmlOpenCommandText), $commandEncoding)
+        [IO.File]::WriteAllText((Join-Path $stagingPath '編集する.cmd'), (Get-MbHtmlEditCommandText), $commandEncoding)
 
-        if (Test-Path -LiteralPath $outputPath) { throw '同じ名前の出力フォルダーがすでにあります。' }
-        [IO.Directory]::Move($stagingPath, $outputPath)
+        $replaced = $false
+        if (Test-Path -LiteralPath $outputPath) {
+            if (-not $Overwrite) { throw '同じ名前の出力フォルダーがすでにあります。' }
+            # 先に新しい方を作り終えてから差し替える。差し替えに失敗しても、前のフォルダーを戻せるようにする。
+            [IO.Directory]::Move($outputPath, $replacedPath)
+            $replacedMoved = $true
+            $replaced = $true
+        }
+        try {
+            [IO.Directory]::Move($stagingPath, $outputPath)
+        } catch {
+            if ($replacedMoved) {
+                [IO.Directory]::Move($replacedPath, $outputPath)
+                $replacedMoved = $false
+            }
+            throw
+        }
 
         $totalBytes = [long]0
-        foreach ($file in @(Get-ChildItem -LiteralPath $outputPath -Recurse -File)) { $totalBytes += [long]$file.Length }
+        foreach ($file in @(Get-ChildItem -LiteralPath $outputPath -Recurse -File -Force)) { $totalBytes += [long]$file.Length }
         return [pscustomobject]@{
-            OutputPath = $outputPath
-            FolderName = $folderName
-            IndexPath  = Join-Path $outputPath 'index.html'
-            StepCount  = $stepCount
-            ImageCount = $imageCount
-            VideoCount = $videoCount
-            TotalBytes = $totalBytes
+            OutputPath  = $outputPath
+            FolderName  = $folderName
+            IndexPath   = Join-Path $outputPath 'index.html'
+            SourcePath  = Join-Path $outputPath '_source'
+            StepCount   = $stepCount
+            ImageCount  = $imageCount
+            VideoCount  = $videoCount
+            TotalBytes  = $totalBytes
+            Replaced    = $replaced
         }
     } finally {
         # 途中で失敗した場合、未完成のフォルダーを残さない。
         if (Test-Path -LiteralPath $stagingPath) {
             Remove-Item -LiteralPath $stagingPath -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        if ($replacedMoved -and (Test-Path -LiteralPath $replacedPath)) {
+            Remove-Item -LiteralPath $replacedPath -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Copy-MbHtmlManualFolder {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceFolder,
+        [Parameter(Mandatory = $true)][string]$DestinationFolder
+    )
+    # 共有フォルダーへの反映。コピー途中のフォルダーを他の人に見せないよう、
+    # 別名で全部コピーしてから、最後に名前の差し替えだけで切り替える。
+    $source = [IO.Path]::GetFullPath($SourceFolder).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    $destination = [IO.Path]::GetFullPath($DestinationFolder).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    if (-not (Test-Path -LiteralPath $source -PathType Container)) { throw '反映するマニュアルのフォルダーが見つかりません。' }
+    if ($source.Equals($destination, [StringComparison]::OrdinalIgnoreCase)) { throw '反映元と反映先が同じフォルダーです。' }
+    if ($destination.StartsWith($source + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        throw '反映先を反映元の中へは指定できません。'
+    }
+
+    $parent = Split-Path -Parent $destination
+    if ([string]::IsNullOrWhiteSpace($parent)) { throw '反映先の場所を確認できません。' }
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) { throw '反映先の共有フォルダーが見つかりません。ネットワークの接続を確認してください。' }
+
+    $stagingPath = Join-Path $parent ('.mb-publish-' + [guid]::NewGuid().ToString('N'))
+    $replacedPath = Join-Path $parent ('.mb-old-' + [guid]::NewGuid().ToString('N'))
+    $replacedMoved = $false
+    try {
+        Copy-Item -LiteralPath $source -Destination $stagingPath -Recurse -Force -ErrorAction Stop
+        $replaced = $false
+        if (Test-Path -LiteralPath $destination) {
+            [IO.Directory]::Move($destination, $replacedPath)
+            $replacedMoved = $true
+            $replaced = $true
+        }
+        try {
+            [IO.Directory]::Move($stagingPath, $destination)
+        } catch {
+            if ($replacedMoved) {
+                [IO.Directory]::Move($replacedPath, $destination)
+                $replacedMoved = $false
+            }
+            throw
+        }
+        $fileCount = 0
+        $totalBytes = [long]0
+        foreach ($file in @(Get-ChildItem -LiteralPath $destination -Recurse -File -Force)) {
+            $fileCount++
+            $totalBytes += [long]$file.Length
+        }
+        return [pscustomobject]@{
+            DestinationPath = $destination
+            FolderName      = Split-Path -Leaf $destination
+            Replaced        = $replaced
+            FileCount       = $fileCount
+            TotalBytes      = $totalBytes
+        }
+    } finally {
+        if (Test-Path -LiteralPath $stagingPath) {
+            Remove-Item -LiteralPath $stagingPath -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        if ($replacedMoved -and (Test-Path -LiteralPath $replacedPath)) {
+            Remove-Item -LiteralPath $replacedPath -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 }
@@ -357,6 +540,10 @@ function Invoke-MbHtmlExport {
 Export-ModuleMember -Function @(
     'ConvertTo-MbManualHtml',
     'Get-MbSafeHtmlFolderName',
+    'Get-MbHtmlExportFolderName',
     'Get-MbHtmlContentSheets',
-    'Invoke-MbHtmlExport'
+    'Get-MbHtmlOpenCommandText',
+    'Get-MbHtmlEditCommandText',
+    'Invoke-MbHtmlExport',
+    'Copy-MbHtmlManualFolder'
 )
