@@ -24,6 +24,9 @@ if errorlevel 1 goto :failed
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-CaptureStore.ps1"
 if errorlevel 1 goto :failed
 
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-CaptureHeartbeat.ps1"
+if errorlevel 1 goto :failed
+
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-WebRender.ps1"
 if errorlevel 1 goto :failed
 

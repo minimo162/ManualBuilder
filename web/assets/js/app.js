@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const appVersion = '0.22.0';
+  const appVersion = '0.22.1';
   // 番号注釈はSVG属性で指定するためCSS変数を参照できない。
   // 編集画面とExcel・Word出力（New-MbAnnotatedImage）で同じ見た目にするため、基準フォントを揃える。
   const ANNOTATION_NUMBER_FONT = '"BIZ UDPGothic", "BIZ UDPゴシック", "BIZ UDGothic", "BIZ UDゴシック", Meiryo, "Yu Gothic UI", "MS Pゴシック", sans-serif';
@@ -1206,9 +1206,11 @@
     }
   };
 
+  let heartbeatStartedAt = 0;
   const sendHeartbeat = async () => {
     const sheetId = selectedSheetId();
     if (!sheetId) return;
+    heartbeatStartedAt = Date.now();
     try {
       const response = await fetch('/api/capture/heartbeat', {
         method: 'POST',
@@ -2114,12 +2116,48 @@
     resizeTimer = window.setTimeout(renderAllCardAnnotations, 100);
   });
 
-  window.setInterval(sendHeartbeat, 10000);
+  // 撮影中はManualBuilderのタブが裏へ回る。裏のタブでは画面側のタイマーが
+  // 1分に1回まで間引かれるため、ハートビートはWorkerのタイマーで送る。
+  // Workerを作れない環境（ファイル配置ミスなど）では従来のタイマーへ戻す。
+  const HEARTBEAT_INTERVAL_MS = 10000;
+  let heartbeatFallbackTimer = 0;
+  const startHeartbeatFallback = () => {
+    if (heartbeatFallbackTimer) return;
+    heartbeatFallbackTimer = window.setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
+  };
+  const startHeartbeatTimer = () => {
+    if (typeof window.Worker !== 'function') {
+      startHeartbeatFallback();
+      return;
+    }
+    try {
+      const worker = new Worker(`/assets/js/heartbeat-worker.js?v=${appVersion}`);
+      worker.onmessage = () => sendHeartbeat();
+      worker.onerror = () => {
+        try { worker.terminate(); } catch { }
+        startHeartbeatFallback();
+      };
+      worker.postMessage({ type: 'start', intervalMs: HEARTBEAT_INTERVAL_MS });
+    } catch {
+      startHeartbeatFallback();
+    }
+  };
+  startHeartbeatTimer();
+
+  // タブが凍結・復帰した直後は、次のタイマーを待たずに生存を知らせる。
+  const wakeHeartbeat = () => {
+    if (Date.now() - heartbeatStartedAt < 2000) return;
+    sendHeartbeat();
+  };
+
   window.setInterval(pollCaptures, 1500);
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) {
-      sendHeartbeat();
+      wakeHeartbeat();
       pollCaptures();
     }
   });
+  window.addEventListener('focus', wakeHeartbeat);
+  window.addEventListener('pageshow', wakeHeartbeat);
+  document.addEventListener('resume', wakeHeartbeat);
 })();
