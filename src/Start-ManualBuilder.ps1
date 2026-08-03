@@ -6,7 +6,11 @@ param(
     [string]$DataRoot,
     [string]$ProjectPath,
     [string]$LegacyAppRoot,
-    [ValidateRange(10, 120)][int]$HeartbeatTimeoutSec = 30,
+    # ブラウザーは非表示タブのタイマーを1分に1回まで間引く（Chrome/Edgeの集中スロットリング）。
+    # 撮影中はManualBuilderのタブが必ず裏へ回るため、30秒では正常なタブでも失効する。
+    [ValidateRange(10, 600)][int]$HeartbeatTimeoutSec = 90,
+    # 失効後も、この秒数までは保存先の新着を保留して、タブが戻った時点で取り込む。
+    [ValidateRange(0, 3600)][int]$CaptureStandbySec = 900,
     [ValidateRange(60, 1800)][int]$ExcelExportTimeoutSec = 300,
     [ValidateRange(60, 1800)][int]$WordExportTimeoutSec = 300,
     [switch]$DisableScreenshotWatcher,
@@ -40,6 +44,8 @@ $script:WatcherState = 'disabled'
 $script:WatchDirectory = if ($DisableScreenshotWatcher) { $null } else { Resolve-MbScreenshotDirectory }
 $script:ImportWatermark = Get-Date
 $script:PendingImages = New-Object System.Collections.ArrayList
+# 保留が積み上がり続けないよう上限を設ける（超えたぶんは古い順に捨てる）。
+$script:PendingImageLimit = 200
 $script:WatcherEventIds = @('ManualBuilder.Capture.Created.' + $PID, 'ManualBuilder.Capture.Renamed.' + $PID)
 $script:ExcelExportJob = $null
 $script:ExcelExportCancelRequestedAt = $null
@@ -120,16 +126,42 @@ function Update-MbCaptureHeartbeatState {
         $script:WatcherState = 'disabled'
         return
     }
-    $alive = $script:CaptureOwnerTab -and $script:CaptureOwnerLastHeartbeat -and
-        ((Get-Date) - $script:CaptureOwnerLastHeartbeat).TotalSeconds -le $HeartbeatTimeoutSec
-    if ($alive) {
-        if ($script:WatcherState -ne 'active') {
+    if (-not $script:CaptureOwnerTab -or -not $script:CaptureOwnerLastHeartbeat) {
+        $script:WatcherState = 'suspended'
+        return
+    }
+
+    $silenceSec = ((Get-Date) - $script:CaptureOwnerLastHeartbeat).TotalSeconds
+    if ($silenceSec -le $HeartbeatTimeoutSec) {
+        if ($script:WatcherState -eq 'standby') {
+            # 保留中の新着は破棄せず、そのまま取り込みへ戻す。取り込み基準時刻も動かさない。
+            $script:WatcherState = 'active'
+            $heldCount = $script:PendingImages.Count
+            if ($heldCount -gt 0) {
+                Write-MbLog "ブラウザーが戻ったため、保留していたスクリーンショットを取り込みます: ${heldCount}件" 'OK'
+            } else {
+                Write-MbLog 'ブラウザーが戻ったためスクリーンショット監視を再開しました。' 'OK'
+            }
+        } elseif ($script:WatcherState -ne 'active') {
             $script:WatcherState = 'active'
             $script:ImportWatermark = Get-Date
             Write-MbLog "スクリーンショット監視を開始しました: $script:WatchDirectory" 'OK'
         }
-    } elseif ($script:WatcherState -eq 'active') {
+        return
+    }
+
+    if ($silenceSec -le ($HeartbeatTimeoutSec + $CaptureStandbySec)) {
+        if ($script:WatcherState -eq 'active') {
+            $script:WatcherState = 'standby'
+            Write-MbLog 'ブラウザーのハートビートが届きません。新しいスクリーンショットは取り込まず保留します。' 'WARN'
+        }
+        return
+    }
+
+    if ($script:WatcherState -ne 'suspended') {
         $script:WatcherState = 'suspended'
+        $script:PendingImages.Clear()
+        $script:ImportWatermark = Get-Date
         Write-MbLog 'ブラウザーのハートビートが途絶えたため監視を一時停止しました。' 'WARN'
     }
 }
@@ -140,6 +172,11 @@ function Set-MbCaptureHeartbeat {
     $ownerExpired = -not $script:CaptureOwnerLastHeartbeat -or
         ((Get-Date) - $script:CaptureOwnerLastHeartbeat).TotalSeconds -gt $HeartbeatTimeoutSec
     if (-not $script:CaptureOwnerTab -or $ownerExpired) {
+        if ($script:CaptureOwnerTab -and $script:CaptureOwnerTab -ne $TabId) {
+            # 別タブへ撮影対象が移ったときだけ、前のタブ向けの保留を捨てて基準時刻を引き直す。
+            $script:PendingImages.Clear()
+            $script:ImportWatermark = Get-Date
+        }
         $script:CaptureOwnerTab = $TabId
         $script:CaptureOwnerLastHeartbeat = Get-Date
         if ($SheetId) { $script:CaptureOwnerSheetId = $SheetId }
@@ -189,13 +226,20 @@ function Invoke-MbWatcherFlush {
             try { $path = [string]$eventItem.SourceEventArgs.FullPath } catch { }
             Remove-Event -EventIdentifier $eventItem.EventIdentifier -ErrorAction SilentlyContinue
             if (-not $path -or -not (Test-MbWatchCandidate -Path $path)) { continue }
-            if ($script:WatcherState -ne 'active') { continue }
+            # standbyでも受け付ける。裏へ回ったタブのハートビートが遅れただけの可能性があるため、
+            # ここで捨てると撮影したスクリーンショットが二度と取り込めなくなる。
+            if ($script:WatcherState -notin @('active', 'standby')) { continue }
             if (@($script:PendingImages | Where-Object { $_.Path -eq $path }).Count -eq 0) {
                 [void]$script:PendingImages.Add([pscustomobject]@{ Path = $path; Size = [long]-1; Tries = 0 })
             }
         }
     }
+    while ($script:PendingImages.Count -gt $script:PendingImageLimit) {
+        $script:PendingImages.RemoveAt(0)
+    }
 
+    # 保留中は取り込まない。再試行回数も進めず、タブが戻るまでそのまま待つ。
+    if ($script:WatcherState -ne 'active') { return }
     if ($script:PendingImages.Count -eq 0) { return }
     $completed = New-Object System.Collections.ArrayList
     foreach ($pending in @($script:PendingImages)) {
@@ -884,6 +928,7 @@ function Invoke-MbRoute {
             }
             '/assets/css/app.css' { Write-MbFile $Context (Join-Path $webRoot 'assets\css\app.css') 'text/css; charset=utf-8'; return }
             '/assets/js/app.js' { Write-MbFile $Context (Join-Path $webRoot 'assets\js\app.js') 'application/javascript; charset=utf-8'; return }
+            '/assets/js/heartbeat-worker.js' { Write-MbFile $Context (Join-Path $webRoot 'assets\js\heartbeat-worker.js') 'application/javascript; charset=utf-8'; return }
             '/vendor/htmx-2.0.10.min.js' { Write-MbFile $Context (Join-Path $webRoot 'vendor\htmx-2.0.10.min.js') 'application/javascript; charset=utf-8'; return }
             '/api/health' { Write-MbResponse $Context '{"status":"ok"}' 200 'application/json; charset=utf-8'; return }
             '/ui/workspace' {

@@ -44,6 +44,7 @@ $required = @(
     'web\index.html',
     'web\assets\css\app.css',
     'web\assets\js\app.js',
+    'web\assets\js\heartbeat-worker.js',
     'web\vendor\htmx-2.0.10.min.js',
     'web\vendor\HTMX-LICENSE.txt'
 )
@@ -89,7 +90,7 @@ Add-Result (($serverText -match '\$projectReady = \$false') -and ($serverText -m
 Add-Result ($serverText -match '\$storageLayout\.RuntimePath') '二重起動情報をユーザーデータ配下へ置く'
 Add-Result ($serverText -match '\$storageLayout\.ExportJobsRoot') 'Office一時ジョブをユーザーデータ配下へ置く'
 Add-Result (($runCommandText -match '%~dp0src\\Start-ManualBuilderLauncher\.ps1') -and ($runCommandText -notmatch '(?im)^cd /d')) 'UNC共有フォルダーから更新ランチャーを起動できる'
-Add-Result ([string]$appVersionManifest.appVersion -eq '0.22.0') '配布用アプリバージョンを0.22.0へ更新する'
+Add-Result ([string]$appVersionManifest.appVersion -eq '0.22.1') '配布用アプリバージョンを0.22.1へ更新する'
 Add-Result ($workspaceModuleText -notmatch "ManualBuilder\.Project\.psm1'\) -Force") 'WorkspaceがProjectコマンドを強制再読込しない'
 Add-Result ($launcherModuleText -match "'ManualBuilder\\app'") 'アプリ実行コードをLocalApplicationDataへキャッシュする'
 Add-Result ($launcherModuleText -match "@\('src', 'web', 'run\.cmd', 'app-version\.json'\)") 'キャッシュ対象からプロジェクトデータを除外する'
@@ -105,6 +106,12 @@ Add-Result ($serverText -match '/api/images/import') '生バイト画像取込�
 Add-Result ($serverText -match '/api/images/replace') '画像差し替えAPIを実装する'
 Add-Result ($serverText -match '/api/images/replace/undo') '画像差し替えの復元APIを実装する'
 Add-Result ($serverText -match '/api/capture/heartbeat') '撮影対象タブのハートビートを実装する'
+Add-Result ($serverText -match '\$HeartbeatTimeoutSec = 90') '裏タブのタイマー間引きを見込んだハートビート猶予にする'
+Add-Result (($serverText -match '\$CaptureStandbySec') -and ($serverText -match "'standby'")) 'ハートビート失効後も新着を保留する状態を持つ'
+Add-Result ($serverText -match "-notin @\('active', 'standby'\)") '保留中も保存先の新着を取りこぼさない'
+Add-Result ($serverText -match '/assets/js/heartbeat-worker\.js') 'ハートビート用Workerを配信する'
+Add-Result ($jsText -match 'heartbeat-worker\.js') '画面がハートビートをWorkerタイマーで送る'
+Add-Result ($jsText -match "addEventListener\('focus', wakeHeartbeat\)") '復帰時にハートビートを送り直す'
 Add-Result ($serverText -match '/api/steps/reorder') '手順並べ替えAPIを実装する'
 Add-Result ($serverText -match '/api/sheets/reorder') 'シート並べ替えAPIを実装する'
 Add-Result ($serverText -match '/api/steps/move') '手順のシート移動APIを実装する'
