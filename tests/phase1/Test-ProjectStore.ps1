@@ -68,6 +68,17 @@ try {
     [void](Save-MbProject -Project $loaded -Path $projectPath)
     Assert-Mb (Test-Path -LiteralPath "$projectPath.bak") '2回目の保存で直前バックアップが残る'
 
+    # 保存先の作成に失敗しても、ディスクへ書けていないrevisionをメモリだけ進めない。
+    $revisionBeforeFailedSave = [int]$loaded.revision
+    $updatedAtBeforeFailedSave = [string]$loaded.updatedAt
+    $failedSaveRejected = $false
+    $invalidProjectPath = Join-Path $testRoot 'invalid<folder>\project.json'
+    try { [void](Save-MbProject -Project $loaded -Path $invalidProjectPath) }
+    catch { $failedSaveRejected = $true }
+    Assert-Mb $failedSaveRejected '作成できない保存先を安全に拒否する'
+    Assert-Mb ([int]$loaded.revision -eq $revisionBeforeFailedSave) '保存準備の失敗時にrevisionを元へ戻す'
+    Assert-Mb ([string]$loaded.updatedAt -eq $updatedAtBeforeFailedSave) '保存準備の失敗時にupdatedAtを元へ戻す'
+
     $tempFiles = @(Get-ChildItem -LiteralPath $testRoot -Filter '.project-*.tmp' -File -ErrorAction SilentlyContinue)
     Assert-Mb ($tempFiles.Count -eq 0) '保存後に一時ファイルが残らない'
     Write-Host ''
