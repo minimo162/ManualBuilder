@@ -10,6 +10,7 @@
 - Excel COMによる主出力: 単発、10回連続、キャンセル、異常分岐を実機確認済み
 - 既存の未保存Excelブックへ影響しないことを実機確認済み
 - Word COMによる副出力の安全性と基本レイアウトを確認済み
+- Phase 1基盤 v0.25.0: HTML出力を追加。ブラウザーで開けるマニュアルをフォルダーごと作る。COMを使わないためOfficeの有無に依存せず一瞬で終わる。Ctrl+Fで全文検索、Ctrl+PでPDF化でき、動画つきの手順はその場で再生できる
 - Phase 1基盤 v0.24.2: PowerPoint出力が `Presentation.SaveAs : 失敗しました` で終わる不具合を修正。PowerPointはウィンドウ無しの状態では保存できないため、ウィンドウを作って最小化する方式へ変更。COM由来の失敗はHRESULTと発生位置を残すようにした
 - Phase 1基盤 v0.24.1: 動画ダイアログでmp4を選んでも「再生できません」と出る不具合を修正。CSPに `media-src` が無く `default-src 'self'` へフォールバックしていたため、ブラウザー内で作ったblob:の動画がすべて止められていた
 - Phase 1基盤 v0.24.0: PowerPoint出力を追加。手順ごとに1枚のスライドを作り、動画つきの手順は動画をpptxの中へ取り込むため、受け取った人はファイル1つで再生できる。動画が不要な場合は従来どおりExcel・Wordで出力する
@@ -63,6 +64,9 @@ Windowsでリポジトリ直下の `run.cmd` をダブルクリックします�
 - 動画つきの手順は動画をpptxの中へ取り込むため、受け取った人はファイル1つで再生できる（ExcelとWordは静止画のみ）
 - PowerPoint起動中もWordと同じく安全停止し、閉じて再実行するよう案内
 - PowerPoint作成中は専用プロセスのウィンドウが最小化状態で現れる（PowerPointは非表示で動かせないため）
+- その他メニューの「HTMLで作成（ブラウザー用）」から、index.htmlと画像・動画を持つフォルダーを作成
+- HTML出力はCOMを使わないためOfficeが不要で、既存のブック・文書へ一切影響しない
+- 出力したHTMLはJavaScriptを使わないため、共有フォルダーのゾーン判定に左右されずに開ける
 
 マニュアルごとのプロジェクトは `%LOCALAPPDATA%\ManualBuilder\data\projects\<マニュアルID>\project.json` に保存されます。
 従来の `default` プロジェクトも一覧の最初のマニュアルとしてそのまま利用できます。アーカイブした項目は
@@ -79,7 +83,7 @@ v0.14.1以前のアプリ配下に `data\projects\default` がある場合、v0.
 
 初回は `tests\phase1\run-tests.cmd` を実行し、PowerShell 5.1構文、プロジェクト保存、localhostサーバーを確認してください。詳しくは [docs/PHASE1-FOUNDATION.md](docs/PHASE1-FOUNDATION.md) を参照してください。
 
-Phase 1 v0.24.0の再確認手順は [docs/RETEST-PHASE1-v0.24.0.md](docs/RETEST-PHASE1-v0.24.0.md)、v0.23.0は [docs/RETEST-PHASE1-v0.23.0.md](docs/RETEST-PHASE1-v0.23.0.md)、v0.22.1は [docs/RETEST-PHASE1-v0.22.1.md](docs/RETEST-PHASE1-v0.22.1.md)、v0.22.0は [docs/RETEST-PHASE1-v0.22.0.md](docs/RETEST-PHASE1-v0.22.0.md) にまとめています。
+Phase 1 v0.25.0の再確認手順は [docs/RETEST-PHASE1-v0.25.0.md](docs/RETEST-PHASE1-v0.25.0.md)、v0.24.0は [docs/RETEST-PHASE1-v0.24.0.md](docs/RETEST-PHASE1-v0.24.0.md)、v0.23.0は [docs/RETEST-PHASE1-v0.23.0.md](docs/RETEST-PHASE1-v0.23.0.md)、v0.22.1は [docs/RETEST-PHASE1-v0.22.1.md](docs/RETEST-PHASE1-v0.22.1.md)、v0.22.0は [docs/RETEST-PHASE1-v0.22.0.md](docs/RETEST-PHASE1-v0.22.0.md) にまとめています。
 
 ## 製品方針
 
@@ -89,7 +93,8 @@ Phase 1 v0.24.0の再確認手順は [docs/RETEST-PHASE1-v0.24.0.md](docs/RETEST
 - 1手順を「画像・手順名・説明・補足」のカードとして扱い、Excelでは画像比率と文章量に応じて高さを調整する
 - Excelでは画像を左、説明を右に配置し、PCの横長画面で見やすくする
 - Wordは同じプロジェクトデータから生成できる副出力とする
-- 動画を見せたい場合はPowerPointを使う。ExcelとWordは動画を再生できる形で持てないため、静止画のまま出力する
+- 動画を見せたい場合はPowerPointかHTMLを使う。ExcelとWordは動画を再生できる形で持てないため、静止画のまま出力する
+- HTML出力はJavaScriptを使わない。共有フォルダー上のファイルはゾーン判定でスクリプトが制限されることがあるため
 - ユーザーが開いている未保存のExcel・Wordを変更または終了しない
 
 詳しい要件は [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md)、UI/UX方針は [docs/UIUX-DIRECTION.md](docs/UIUX-DIRECTION.md) を参照してください。

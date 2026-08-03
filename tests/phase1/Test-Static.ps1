@@ -43,6 +43,7 @@ $required = @(
     'src\Export-ManualBuilderWord.ps1',
     'src\ManualBuilder.PowerPoint.psm1',
     'src\Export-ManualBuilderPowerPoint.ps1',
+    'src\ManualBuilder.Html.psm1',
     'web\index.html',
     'web\assets\css\app.css',
     'web\assets\js\app.js',
@@ -71,6 +72,7 @@ $webModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.
 $excelModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.Excel.psm1'), [Text.Encoding]::UTF8)
 $wordModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.Word.psm1'), [Text.Encoding]::UTF8)
 $powerPointModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.PowerPoint.psm1'), [Text.Encoding]::UTF8)
+$htmlModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.Html.psm1'), [Text.Encoding]::UTF8)
 $cssText = [IO.File]::ReadAllText((Join-Path $repoRoot 'web\assets\css\app.css'), [Text.Encoding]::UTF8)
 $jsText = [IO.File]::ReadAllText((Join-Path $repoRoot 'web\assets\js\app.js'), [Text.Encoding]::UTF8)
 $indexText = [IO.File]::ReadAllText((Join-Path $repoRoot 'web\index.html'), [Text.Encoding]::UTF8)
@@ -93,7 +95,7 @@ Add-Result (($serverText -match '\$projectReady = \$false') -and ($serverText -m
 Add-Result ($serverText -match '\$storageLayout\.RuntimePath') '二重起動情報をユーザーデータ配下へ置く'
 Add-Result ($serverText -match '\$storageLayout\.ExportJobsRoot') 'Office一時ジョブをユーザーデータ配下へ置く'
 Add-Result (($runCommandText -match '%~dp0src\\Start-ManualBuilderLauncher\.ps1') -and ($runCommandText -notmatch '(?im)^cd /d')) 'UNC共有フォルダーから更新ランチャーを起動できる'
-Add-Result ([string]$appVersionManifest.appVersion -eq '0.24.2') '配布用アプリバージョンを0.24.2へ更新する'
+Add-Result ([string]$appVersionManifest.appVersion -eq '0.25.0') '配布用アプリバージョンを0.25.0へ更新する'
 Add-Result ($workspaceModuleText -notmatch "ManualBuilder\.Project\.psm1'\) -Force") 'WorkspaceがProjectコマンドを強制再読込しない'
 Add-Result ($launcherModuleText -match "'ManualBuilder\\app'") 'アプリ実行コードをLocalApplicationDataへキャッシュする'
 Add-Result ($launcherModuleText -match "@\('src', 'web', 'run\.cmd', 'app-version\.json'\)") 'キャッシュ対象からプロジェクトデータを除外する'
@@ -136,6 +138,12 @@ Add-Result (($powerPointModuleText -match 'GetWindowThreadProcessId') -and ($pow
 Add-Result ($powerPointModuleText -match 'ppSaveAsOpenXMLPresentation|SaveAs\(\$temporaryPath, 24\)') 'pptx形式で保存する'
 Add-Result (($powerPointModuleText -match '\$presentations\.Add\(-1\)') -and ($powerPointModuleText -match 'WindowState = 2')) 'PowerPointはウィンドウを作って最小化する（ウィンドウ無しでは保存できない）'
 Add-Result ($powerPointModuleText -match 'Get-MbPowerPointErrorDetail') 'COMの失敗理由をHRESULTごと残す'
+Add-Result ($serverText -match "/api/export/html'") 'HTML出力APIを実装する'
+Add-Result ($webModuleText -match 'data-export-html') 'HTML出力の入口を画面へ置く'
+Add-Result ($htmlModuleText -notmatch '(?i)ComObject') 'HTML出力はCOMを使わない'
+Add-Result ($htmlModuleText -match 'New-MbAnnotatedImage') 'HTMLも注釈を画像へ焼き込む'
+Add-Result ($htmlModuleText -match '@media print') 'HTMLに印刷用の指定を入れる'
+Add-Result ($htmlModuleText -match 'HtmlEncode') 'HTMLへ出す文字列をエスケープする'
 Add-Result ($serverText -match '/api/steps/reorder') '手順並べ替えAPIを実装する'
 Add-Result ($serverText -match '/api/sheets/reorder') 'シート並べ替えAPIを実装する'
 Add-Result ($serverText -match '/api/steps/move') '手順のシート移動APIを実装する'
