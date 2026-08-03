@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const appVersion = '0.24.2';
+  const appVersion = '0.25.0';
   // 番号注釈はSVG属性で指定するためCSS変数を参照できない。
   // 編集画面とExcel・Word出力（New-MbAnnotatedImage）で同じ見た目にするため、基準フォントを揃える。
   const ANNOTATION_NUMBER_FONT = '"BIZ UDPGothic", "BIZ UDPゴシック", "BIZ UDGothic", "BIZ UDゴシック", Meiryo, "Yu Gothic UI", "MS Pゴシック", sans-serif';
@@ -1918,6 +1918,91 @@
     catch (error) { updatePowerPointExportDialog({ state: 'failed', message: error.message || 'PowerPointファイルを作成できませんでした', errorCode: error.code, percent: 0 }); }
   };
 
+  // HTML出力はCOMを使わないため、進捗のポーリングも中止の仕組みも要らない。
+  // 応答を待つ間だけダイアログを出す。
+  const htmlExport = { dialog: null, busy: false };
+
+  const ensureHtmlExportDialog = () => {
+    if (htmlExport.dialog) return htmlExport.dialog;
+    const dialog = document.createElement('dialog');
+    dialog.id = 'html-export-dialog';
+    dialog.className = 'excel-export-dialog html-export-dialog';
+    dialog.innerHTML = '<header class="excel-export-dialog__header"><div><strong>HTMLで作成</strong><span>ブラウザーで開けるマニュアルをフォルダーごと作ります</span></div><button type="button" class="excel-export-dialog__close" data-html-export-close aria-label="閉じる">×</button></header><div class="excel-export-dialog__content"><div class="excel-export-dialog__state" role="status" aria-live="polite"><span class="excel-export-dialog__mark" data-html-export-mark aria-hidden="true"></span><div><strong data-html-export-message>作成しています</strong><span data-html-export-detail>画像に注釈を焼き込んでいます</span></div></div><p class="excel-export-dialog__path" data-html-export-path hidden></p><p class="excel-export-dialog__error" data-html-export-error hidden></p></div><footer class="excel-export-dialog__footer"><span class="excel-export-dialog__spacer"></span><button type="button" class="button button--ghost" data-html-export-open="folder" hidden>保存先を開く</button><button type="button" class="button button--primary" data-html-export-open="file" hidden>マニュアルを開く</button><button type="button" class="button button--ghost" data-html-export-close data-html-export-done hidden>閉じる</button></footer>';
+    dialog.querySelectorAll('[data-html-export-close]').forEach((button) => button.addEventListener('click', () => dialog.close()));
+    dialog.querySelectorAll('[data-html-export-open]').forEach((button) => {
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        try {
+          const response = await fetch('/api/export/html/open', {
+            method: 'POST',
+            headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }),
+            body: new URLSearchParams({ mode: button.dataset.htmlExportOpen }).toString()
+          });
+          if (!response.ok) {
+            const result = await response.json().catch(() => null);
+            throw new Error(result?.message || `HTTP ${response.status}`);
+          }
+        } catch (error) {
+          showToast(error.message || '出力先を開けませんでした。');
+        } finally {
+          button.disabled = false;
+        }
+      });
+    });
+    dialog.addEventListener('cancel', (event) => { if (htmlExport.busy) event.preventDefault(); });
+    document.body.appendChild(dialog);
+    htmlExport.dialog = dialog;
+    return dialog;
+  };
+
+  const updateHtmlExportDialog = (state, status = {}) => {
+    const dialog = ensureHtmlExportDialog();
+    const busy = state === 'running';
+    htmlExport.busy = busy;
+    dialog.dataset.state = state;
+    dialog.querySelector('[data-html-export-message]').textContent = busy
+      ? '作成しています'
+      : (status.message || 'HTMLマニュアルを作成できませんでした');
+    const detail = dialog.querySelector('[data-html-export-detail]');
+    if (busy) {
+      detail.textContent = '画像に注釈を焼き込んでいます。手順が多いと時間がかかります';
+    } else if (state === 'completed') {
+      const videoText = Number(status.videoCount) > 0 ? ` · 動画 ${status.videoCount} 本` : '';
+      detail.textContent = `${status.stepCount || 0} 手順 · 画像 ${status.imageCount || 0} 枚${videoText} · 合計 ${status.totalMb || 0}MB`;
+    } else {
+      detail.textContent = 'ManualBuilderの入力内容は変更されていません';
+    }
+    const path = dialog.querySelector('[data-html-export-path]');
+    path.hidden = state !== 'completed';
+    path.textContent = status.folderName || '';
+    const error = dialog.querySelector('[data-html-export-error]');
+    error.hidden = state !== 'failed';
+    error.textContent = state === 'failed' ? '内容を確認して、もう一度実行してください。' : '';
+    dialog.querySelector('.excel-export-dialog__close').disabled = busy;
+    dialog.querySelectorAll('[data-html-export-open]').forEach((button) => { button.hidden = state !== 'completed'; });
+    dialog.querySelector('[data-html-export-done]').hidden = busy;
+    dialog.querySelector('[data-html-export-mark]').textContent = state === 'completed' ? '✓' : state === 'failed' ? '!' : '';
+    document.querySelectorAll('[data-export-html]').forEach((button) => {
+      button.disabled = busy;
+      button.setAttribute('aria-busy', String(busy));
+    });
+  };
+
+  const startHtmlExport = async () => {
+    const dialog = ensureHtmlExportDialog();
+    updateHtmlExportDialog('running');
+    if (!dialog.open) dialog.showModal();
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    try {
+      const response = await fetch('/api/export/html', { method: 'POST', headers: sessionHeaders() });
+      const result = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(result?.message || `HTTP ${response.status}`);
+      updateHtmlExportDialog('completed', result || {});
+    } catch (error) {
+      updateHtmlExportDialog('failed', { message: error.message || 'HTMLマニュアルを作成できませんでした' });
+    }
+  };
+
   document.body.addEventListener('htmx:configRequest', (event) => {
     event.detail.headers['X-Tab-Id'] = tabId;
   });
@@ -1953,6 +2038,13 @@
     const projectImportButton = event.target.closest('[data-import-project-package]');
     if (projectImportButton) {
       document.getElementById('project-package-input')?.click();
+      return;
+    }
+    const htmlExportButton = event.target.closest('[data-export-html]');
+    if (htmlExportButton) {
+      const menu = htmlExportButton.closest('details');
+      if (menu) menu.open = false;
+      startHtmlExport();
       return;
     }
     const powerPointExportButton = event.target.closest('[data-export-powerpoint]');

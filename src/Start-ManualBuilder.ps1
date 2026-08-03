@@ -30,6 +30,8 @@ Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Project.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Workspace.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Capture.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Web.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Excel.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Html.psm1') -Force
 
 $storageLayout = Get-MbStorageLayout -AppRoot $appRoot -DataRoot $DataRoot -ProjectPath $ProjectPath -LegacyAppRoot $LegacyAppRoot
 $DataRoot = [string]$storageLayout.DataRoot
@@ -64,6 +66,7 @@ $script:PowerPointExportCancelReason = ''
 $script:PowerPointExportJobsRoot = [string]$storageLayout.ExportJobsRoot
 $script:PowerPointExportWorkerPath = Join-Path $PSScriptRoot 'Export-ManualBuilderPowerPoint.ps1'
 $script:ImageReplacementHistory = @{}
+$script:HtmlExportResult = $null
 $script:ProjectHomeVisible = -not $usesExplicitProjectPath
 $script:ActiveProjectKey = if ($usesExplicitProjectPath) { '' } else { 'default' }
 
@@ -1290,6 +1293,34 @@ function Invoke-MbRoute {
         return
     }
 
+    if ($path -eq '/api/export/html') {
+        # COMを使わないため、Excel・Word・PowerPointのような別プロセスと進捗の仕組みは要らない。
+        try {
+            if (Test-MbOfficeExportActive) { throw 'Office出力中です。完了または中止してからHTMLを作成してください。' }
+            $project = Get-MbProject -Path $ProjectPath
+            [void](Save-MbProject -Project $project -Path $ProjectPath)
+            $outputDirectory = Get-MbExcelOutputDirectory
+            $result = Invoke-MbHtmlExport -Project $project -ProjectPath $ProjectPath -OutputDirectory $outputDirectory
+            $script:HtmlExportResult = $result
+            $megaBytes = [Math]::Round([long]$result.TotalBytes / 1MB, 1)
+            $body = [pscustomobject]@{
+                state      = 'completed'
+                message    = 'HTMLマニュアルを作成しました。'
+                folderName = [string]$result.FolderName
+                stepCount  = [int]$result.StepCount
+                imageCount = [int]$result.ImageCount
+                videoCount = [int]$result.VideoCount
+                totalMb    = $megaBytes
+            } | ConvertTo-Json -Compress
+            Write-MbLog "HTMLマニュアルを作成しました: $($result.FolderName) / $($result.StepCount)手順 / ${megaBytes}MB" 'OK'
+            Write-MbResponse $Context $body 200 'application/json; charset=utf-8'
+        } catch {
+            $body = [pscustomobject]@{ state = 'failed'; message = $_.Exception.Message } | ConvertTo-Json -Compress
+            Write-MbResponse $Context $body 400 'application/json; charset=utf-8'
+        }
+        return
+    }
+
     if ($path -eq '/api/videos/attach') {
         # 動画は手順へ添付するだけで、ブラウザーへは返さない。PowerPoint出力のときだけ読む。
         $bytes = $null
@@ -1541,6 +1572,25 @@ function Invoke-MbRoute {
         Write-MbResponse $Context ($status | ConvertTo-Json -Depth 8 -Compress) 202 'application/json; charset=utf-8'
         return
     }
+    if ($path -eq '/api/export/html/open') {
+        try {
+            if (-not $script:HtmlExportResult) { throw '作成したHTMLマニュアルがありません。' }
+            $mode = Get-MbFormValue $form 'mode'
+            if ($mode -notin @('file', 'folder')) { throw '開く対象が不正です。' }
+            $root = [IO.Path]::GetFullPath((Get-MbExcelOutputDirectory)).TrimEnd([IO.Path]::DirectorySeparatorChar)
+            $target = if ($mode -eq 'file') { [string]$script:HtmlExportResult.IndexPath } else { [string]$script:HtmlExportResult.OutputPath }
+            $target = [IO.Path]::GetFullPath($target)
+            if (-not $target.StartsWith($root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw '出力先の場所を確認できません。' }
+            if (-not (Test-Path -LiteralPath $target)) { throw '作成したHTMLマニュアルが見つかりません。' }
+            Start-Process -FilePath $target
+            Write-MbResponse $Context '{"state":"opened"}' 200 'application/json; charset=utf-8'
+        } catch {
+            $body = [pscustomobject]@{ state = 'failed'; message = $_.Exception.Message } | ConvertTo-Json -Compress
+            Write-MbResponse $Context $body 400 'application/json; charset=utf-8'
+        }
+        return
+    }
+
     if ($path -eq '/api/export/powerpoint/open') {
         try {
             $mode = Get-MbFormValue $form 'mode'
