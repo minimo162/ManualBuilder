@@ -264,9 +264,9 @@ function Remove-MbUnreferencedImages {
     return @($paths)
 }
 
-# --- 動画（PowerPoint出力への埋め込み用） ---------------------------------
+# --- 動画（ExcelとHTMLの出力から再生する） ---------------------------------
 # 動画はブラウザーへ配信しない。手順カードにはコマから作った静止画を出し、
-# 動画本体はPowerPoint出力のときだけファイルとして読む。
+# 動画本体はExcelとHTMLの出力のときだけファイルとして読む。
 # これにより単一スレッドのHttpListenerで大きな配信が走らず、Range要求も不要になる。
 
 $script:MbVideoMaxBytes = 30 * 1024 * 1024

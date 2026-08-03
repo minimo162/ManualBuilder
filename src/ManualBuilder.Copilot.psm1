@@ -42,6 +42,8 @@ function Get-MbCopilotDefaultSettings {
         # 1回の依頼で渡す手順の数。画像はこの数だけ添付される。
         # 多いほど前後の文脈が効くが、添付とトークンの上限に当たりやすくなる。
         steps_per_packet     = 6
+        # 校正は画像を渡さないぶん軽い。表記ゆれは広く見ないと気付けないのでまとめて渡す。
+        review_steps_per_packet = 25
         copilot_model        = 'GPT 5.6 Think deeper,Opus,Think Deeper'
         browser_display_mode = 'minimized'
         poll_interval_ms     = 2000

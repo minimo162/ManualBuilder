@@ -3020,3 +3020,25 @@ kbd {
   color: #7a4b00;
   background: rgba(214, 154, 0, 0.12);
 }
+
+/* 校正では「今の内容」を畳まずに出す。何がどう変わるかが要点のため。 */
+.copilot-draft__before {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+.copilot-draft__before span {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 6px;
+  font-size: 11px;
+  background: var(--surface-muted, rgba(28, 32, 39, 0.04));
+  border-radius: 4px;
+}
+
+.copilot-flag--kind {
+  color: #244a7a;
+  background: rgba(58, 91, 160, 0.14);
+}

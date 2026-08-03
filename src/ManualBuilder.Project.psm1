@@ -258,7 +258,7 @@ function Test-MbProject {
         if (-not $imageIds.Contains($imageId)) { throw "手順が参照する画像が見つかりません: $imageId" }
     }
 
-    # 動画はPowerPoint出力にだけ埋め込む。共有フォルダーへ置ける大きさに収めるため、
+    # 動画はExcelとHTMLの出力から再生する。共有フォルダーへ置ける大きさに収めるため、
     # 1本30MB・1マニュアル50本までとする。
     if (@($Project.videos).Count -gt 50) { throw '動画は1マニュアル50本までです。' }
     $videoIds = New-Object 'System.Collections.Generic.HashSet[string]'

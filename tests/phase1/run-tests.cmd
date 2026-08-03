@@ -39,9 +39,6 @@ if errorlevel 1 goto :failed
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-WordUtilities.ps1"
 if errorlevel 1 goto :failed
 
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-PowerPointUtilities.ps1"
-if errorlevel 1 goto :failed
-
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-HtmlExport.ps1"
 if errorlevel 1 goto :failed
 
@@ -63,6 +60,8 @@ if errorlevel 1 (
   echo [SKIP] Node not found. Skipping the video scene tests.
 ) else (
   node "%~dp0Test-VideoScenes.mjs"
+  if errorlevel 1 goto :failed
+  node "%~dp0Test-WebAssets.mjs"
   if errorlevel 1 goto :failed
 )
 

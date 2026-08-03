@@ -41,8 +41,6 @@ $required = @(
     'src\Export-ManualBuilderExcel.ps1',
     'src\ManualBuilder.Word.psm1',
     'src\Export-ManualBuilderWord.ps1',
-    'src\ManualBuilder.PowerPoint.psm1',
-    'src\Export-ManualBuilderPowerPoint.ps1',
     'src\ManualBuilder.Html.psm1',
     'src\ManualBuilder.Ocr.psm1',
     'src\ManualBuilder.Copilot.psm1',
@@ -82,7 +80,6 @@ $projectModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuil
 $webModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.Web.psm1'), [Text.Encoding]::UTF8)
 $excelModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.Excel.psm1'), [Text.Encoding]::UTF8)
 $wordModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.Word.psm1'), [Text.Encoding]::UTF8)
-$powerPointModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.PowerPoint.psm1'), [Text.Encoding]::UTF8)
 $htmlModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.Html.psm1'), [Text.Encoding]::UTF8)
 $cssText = [IO.File]::ReadAllText((Join-Path $repoRoot 'web\assets\css\app.css'), [Text.Encoding]::UTF8)
 $jsText = [IO.File]::ReadAllText((Join-Path $repoRoot 'web\assets\js\app.js'), [Text.Encoding]::UTF8)
@@ -140,15 +137,6 @@ Add-Result ($serverText -match '/api/videos/detach') '手順から動画を外�
 Add-Result (($captureModuleText -match "'videos'") -and ($projectModuleText -match "'videos'")) '動画を画像とは別に保存する'
 Add-Result ($projectModuleText -match 'videoId') '手順に動画の紐づけを持つ'
 Add-Result ($serverText -match "media-src 'self' blob:") '動画ダイアログのblob:再生をCSPで止めない'
-Add-Result ($serverText -match '/api/export/powerpoint/start') 'PowerPoint出力APIを実装する'
-Add-Result ($webModuleText -match 'data-export-powerpoint') 'PowerPoint出力の入口を画面へ置く'
-Add-Result ($powerPointModuleText -match 'AddMediaObject2') 'PowerPointへ動画を埋め込む'
-Add-Result ($powerPointModuleText -match 'SaveWithDocument') '動画をリンクではなくファイルへ取り込む'
-Add-Result ($powerPointModuleText -match 'MB_POWERPOINT_RUNNING') 'PowerPointが開いているときは作成を始めない'
-Add-Result (($powerPointModuleText -match 'GetWindowThreadProcessId') -and ($powerPointModuleText -match "ownershipMode -eq 'Hwnd'")) '所有を証明したPowerPointだけを終了させる'
-Add-Result ($powerPointModuleText -match 'ppSaveAsOpenXMLPresentation|SaveAs\(\$temporaryPath, 24\)') 'pptx形式で保存する'
-Add-Result (($powerPointModuleText -match '\$presentations\.Add\(-1\)') -and ($powerPointModuleText -match 'WindowState = 2')) 'PowerPointはウィンドウを作って最小化する（ウィンドウ無しでは保存できない）'
-Add-Result ($powerPointModuleText -match 'Get-MbPowerPointErrorDetail') 'COMの失敗理由をHRESULTごと残す'
 Add-Result ($serverText -match "/api/export/html'") 'HTML出力APIを実装する'
 Add-Result ($webModuleText -match 'data-export-html') 'HTML出力の入口を画面へ置く'
 Add-Result ($htmlModuleText -notmatch '(?i)ComObject') 'HTML出力はCOMを使わない'
@@ -183,7 +171,6 @@ Add-Result ($excelModuleText -match '\$videoCell\.Formula = ''=HYPERLINK\(') 'Ex
 $comObjectIfAssignment = '\$\w+\s*=\s*if\s*\([^\r\n]*\)\s*\{[^\r\n]*\.(Range|Cells|Shapes|Slides|Paragraphs|Tables|Worksheets|Hyperlinks|Presentations|Documents)\('
 Add-Result (($excelModuleText -notmatch $comObjectIfAssignment) -and
     ($wordModuleText -notmatch $comObjectIfAssignment) -and
-    ($powerPointModuleText -notmatch $comObjectIfAssignment)) 'COMオブジェクトをif式の値として受け取らない（配列へ展開されるため）'
 Add-Result ($excelModuleText -match '\$usesFolderOutput = \[int\]\$videoPlan\.Count -gt 0') '動画つきのときだけExcelをフォルダー出力にする'
 Add-Result ($excelModuleText -match '\.mb-excel-') 'Excelのフォルダー出力も組み立ててから差し替える'
 Add-Result ($excelModuleText -match '出力した動画数の自己検査に失敗しました') '出力した動画数を自己検査する'
@@ -406,6 +393,13 @@ $sceneText2 = [IO.File]::ReadAllText((Join-Path $repoRoot 'web\assets\js\video-s
 Add-Result ($copilotServerText2 -notmatch 'System\.Speech') '精度の低いローカル音声認識を持たない'
 Add-Result ($serverText -notmatch '/api/narration/transcribe') '録画からの文字起こしの口を持たない'
 Add-Result ($sceneText2 -notmatch 'extractNarration') '録画から音声を取り出さない'
+$copilotJobText2 = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.CopilotJob.psm1'), [Text.Encoding]::UTF8)
+Add-Result ($copilotJobText2 -match 'New-MbCopilotReviewPrompt') '文章を整える依頼文を持つ'
+Add-Result ($copilotJobText2 -match '表記ゆれ') '表記ゆれを見るよう依頼する'
+Add-Result ($webModuleText -match 'data-copilot-review') '文章を整えるをメニューから選べる'
+Add-Result ($jsText -match "copilotDraft.mode === 'review'") '下書きと校正で画面の出し分けをする'
+Add-Result ($serverText -notmatch 'PowerPoint') 'PowerPoint出力を持たない'
+Add-Result ($jsText -notmatch '(?i)powerpoint') '画面にPowerPoint出力が残っていない'
 
 if ($errors.Count -gt 0) {
     Write-Host ''

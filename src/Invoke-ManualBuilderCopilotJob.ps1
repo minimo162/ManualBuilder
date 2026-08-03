@@ -15,6 +15,7 @@ param(
     [Parameter(Mandatory = $true)][string]$ProfileDirectory,
     [AllowEmptyString()][string]$ConfigPath = '',
     [AllowEmptyString()][string]$LogPath = '',
+    [ValidateSet('draft', 'review')][string]$Mode = 'draft',
     [switch]$IncludeWritten
 )
 
@@ -88,14 +89,16 @@ try {
     $settings = Get-MbCopilotSettings -ConfigPath $ConfigPath
     $project = Get-MbProject -Path $ProjectPath
     $allSteps = Get-MbCopilotStepList -Project $project
-    $packets = Get-MbCopilotPackets -Steps $allSteps -StepsPerPacket ([int]$settings.steps_per_packet) -IncludeWritten:$IncludeWritten
+    $stepsPerPacket = [int]$settings.steps_per_packet
+    if ($Mode -eq 'review') { $stepsPerPacket = [int]$settings.review_steps_per_packet }
+    $packets = Get-MbCopilotPackets -Steps $allSteps -StepsPerPacket $stepsPerPacket -IncludeWritten:$IncludeWritten -Mode $Mode
     $totalPackets = @($packets).Count
     $totalSteps = 0
     foreach ($packet in $packets) { $totalSteps += @($packet).Count }
 
     if ($totalPackets -eq 0) {
         Write-MbJobStatus -Fields (New-MbStatusFields -State 'completed' -Phase 'completed' `
-            -Message '下書きが必要な手順がありませんでした' -Percent 100 -CompletedAt ([DateTime]::UtcNow.ToString('o')))
+            -Message $(if ($Mode -eq 'review') { '整える文章がありませんでした' } else { '下書きが必要な手順がありませんでした' }) -Percent 100 -CompletedAt ([DateTime]::UtcNow.ToString('o')))
         [IO.File]::WriteAllText($ResultPath, (([pscustomobject]@{ jobId = $JobId; drafts = @() }) | ConvertTo-Json -Depth 8), $script:Utf8NoBom)
         exit 0
     }
@@ -113,15 +116,20 @@ try {
         # 準備・送信・待機の3段でだいたい進むので、パケット単位で均等に割り当てる。
         $basePercent = 5 + [int](($packetIndex / [double]$totalPackets) * 90)
 
+        $startMessage = "画面をCopilotへ渡しています（{0}/{1}）" -f $packetNumber, $totalPackets
+        if ($Mode -eq 'review') { $startMessage = "文章をCopilotへ渡しています（{0}/{1}）" -f $packetNumber, $totalPackets }
         Write-MbJobStatus -Fields (New-MbStatusFields -State 'running' -Phase 'attaching' `
-            -Message ("画面をCopilotへ渡しています（{0}/{1}）" -f $packetNumber, $totalPackets) `
-            -Percent $basePercent -CurrentPacket $packetNumber -DraftCount $drafts.Count)
+            -Message $startMessage -Percent $basePercent -CurrentPacket $packetNumber -DraftCount $drafts.Count)
 
         # 添付用の画像を作る。赤枠を焼き込んでおくと、Copilotが操作対象を取り違えない。
+        # 校正は文章だけを見るので、画像は作らない。
         $packetDirectory = Join-Path $WorkDirectory ('packet-{0:d3}' -f $packetNumber)
         $attachments = New-Object System.Collections.ArrayList
         $attachmentNames = @{}
         $usableSteps = New-Object System.Collections.ArrayList
+        if ($Mode -eq 'review') {
+            foreach ($step in $packet) { [void]$usableSteps.Add($step) }
+        } else {
         foreach ($step in $packet) {
             $sourcePath = Get-MbImageFilePath -Project $project -ProjectPath $ProjectPath -ImageId ([string]$step.imageId)
             if ([string]::IsNullOrWhiteSpace($sourcePath) -or -not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
@@ -134,19 +142,25 @@ try {
             $attachmentNames[[string]$step.id] = $fileName
             [void]$usableSteps.Add($step)
         }
+        }
         if ($usableSteps.Count -eq 0) {
             Write-MbJobLog ("パケット {0} に使える画像がありませんでした。" -f $packetNumber) 'WARN'
             continue
         }
 
-        $prompt = New-MbCopilotStepPrompt -Project $project -PacketSteps @($usableSteps) `
-            -AttachmentNames $attachmentNames -StyleSamples $styleSamples -TotalSteps @($allSteps).Count -Marker $marker
+        if ($Mode -eq 'review') {
+            $prompt = New-MbCopilotReviewPrompt -Project $project -PacketSteps @($usableSteps) `
+                -TotalSteps @($allSteps).Count -Marker $marker
+        } else {
+            $prompt = New-MbCopilotStepPrompt -Project $project -PacketSteps @($usableSteps) `
+                -AttachmentNames $attachmentNames -StyleSamples $styleSamples -TotalSteps @($allSteps).Count -Marker $marker
+        }
 
         $onPhase = {
             param([string]$Phase)
             $message = switch ($Phase) {
                 'attaching' { "画面をCopilotへ渡しています（{0}/{1}）" -f $packetNumber, $totalPackets }
-                'sending'   { "手順の下書きを依頼しています（{0}/{1}）" -f $packetNumber, $totalPackets }
+                'sending'   { if ($Mode -eq 'review') { "文章の確認を依頼しています（{0}/{1}）" -f $packetNumber, $totalPackets } else { "手順の下書きを依頼しています（{0}/{1}）" -f $packetNumber, $totalPackets } }
                 'waiting'   { "Copilotの回答を待っています（{0}/{1}）" -f $packetNumber, $totalPackets }
                 default     { "Copilotの画面を準備しています（{0}/{1}）" -f $packetNumber, $totalPackets }
             }
@@ -177,7 +191,7 @@ try {
             continue
         }
 
-        $packetDrafts = ConvertFrom-MbCopilotStepAnswer -Answer $response.answer -PacketSteps @($usableSteps)
+        $packetDrafts = ConvertFrom-MbCopilotStepAnswer -Answer $response.answer -PacketSteps @($usableSteps) -Mode $Mode
         foreach ($draft in $packetDrafts) { [void]$drafts.Add($draft) }
         Write-MbJobLog ("パケット {0}/{1} 完了 drafts={2}" -f $packetNumber, $totalPackets, @($packetDrafts).Count)
     }
@@ -197,12 +211,13 @@ try {
     }
 
     $message = "{0} 件の下書きができました" -f $drafts.Count
+    if ($Mode -eq 'review') { $message = "{0} 件の直したい箇所が見つかりました" -f $drafts.Count }
     if ($failures.Count -gt 0) {
         $message += "（{0} 件のまとまりは失敗しました）" -f $failures.Count
     }
     if ($drafts.Count -eq 0) {
         Write-MbJobStatus -Fields (New-MbStatusFields -State 'failed' -Phase 'failed' `
-            -Message 'Copilotから手順の下書きを受け取れませんでした' -Percent 100 -ErrorCode 'NO_DRAFT' `
+            -Message $(if ($Mode -eq 'review') { '直すところは見つかりませんでした' } else { 'Copilotから手順の下書きを受け取れませんでした' }) -Percent 100 -ErrorCode 'NO_DRAFT' `
             -CompletedAt ([DateTime]::UtcNow.ToString('o')))
         exit 1
     }
