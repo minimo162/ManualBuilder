@@ -26,8 +26,11 @@ try {
     Assert-Mb ((Get-MbSafeHtmlFolderName -Name 'a/b:c*d?' -Directory $testRoot) -eq 'a_b_c_d_') '使えない文字を置き換える'
     Assert-Mb ((Get-MbSafeHtmlFolderName -Name 'CON' -Directory $testRoot) -eq '_CON') '予約された名前を避ける'
     Assert-Mb ((Get-MbSafeHtmlFolderName -Name '   ' -Directory $testRoot) -eq 'manual') '空の名前でも出力できる'
+    # 日付も連番も付けない。マニュアル1つ＝フォルダー1つにして、共有フォルダー側も同じ場所を更新できるようにする。
     [void](New-Item -ItemType Directory -Path (Join-Path $testRoot '重複') -Force)
-    Assert-Mb ((Get-MbSafeHtmlFolderName -Name '重複' -Directory $testRoot) -eq '重複_2') '同名フォルダーがあれば連番を付ける'
+    Assert-Mb ((Get-MbSafeHtmlFolderName -Name '重複' -Directory $testRoot) -eq '重複') '同名フォルダーがあっても同じ名前を返す'
+    Assert-Mb ((Get-MbHtmlExportFolderName -Project ([pscustomobject]@{ title = '営業手順' }) -OutputDirectory $testRoot) -eq '営業手順') 'マニュアル名からフォルダー名を決める'
+    Assert-Mb ((Get-MbHtmlExportFolderName -Project ([pscustomobject]@{ title = '営業手順' }) -OutputDirectory $testRoot) -notmatch '\d{8}') 'フォルダー名に日付を付けない'
 
     # --- 出力対象のシート ---
     $project = New-MbProject
@@ -53,7 +56,7 @@ try {
 
     # --- HTML生成 ---
     $imageNames = @{ ([string]$step1.id) = 'images/step-0001.png' }
-    $videoNames = @{ ([string]$step1.id) = 'videos/step-0001.mp4' }
+    $videoNames = @{ ([string]$step1.id) = '_source/videos/video-0123456789abcdef0123456789abcdef.mp4' }
     $html = ConvertTo-MbManualHtml -Project $project -ImageNames $imageNames -VideoNames $videoNames -GeneratedAt '2026年8月3日 10:00'
 
     Assert-Mb ($html.StartsWith('<!doctype html>')) 'HTML文書として始まる'
@@ -68,7 +71,8 @@ try {
     Assert-Mb ($html -match '<style>') 'スタイルを埋め込む'
 
     Assert-Mb ($html -match '<img src="images/step-0001\.png"') '画像を相対パスで参照する'
-    Assert-Mb ($html -match '<video src="videos/step-0001\.mp4"') '動画を相対パスで参照する'
+    # 動画は元データ（_source）の1本だけを参照する。同じ動画をフォルダー内に二重に持たない。
+    Assert-Mb ($html -match '<video src="_source/videos/video-0123456789abcdef0123456789abcdef\.mp4"') '動画は元データの1本を参照する'
     Assert-Mb ($html -match 'poster="images/step-0001\.png"') '動画の再生前は焼き込み済み画像を出す'
     Assert-Mb ($html -match 'controls') '動画に再生操作を付ける'
     Assert-Mb ($html -match 'この手順に画像はありません') '画像の無い手順もその旨を出す'
@@ -121,6 +125,79 @@ try {
 
     # 未完成フォルダーを残さない
     Assert-Mb (@(Get-ChildItem -LiteralPath $outputRoot -Directory -Force | Where-Object { $_.Name -like '.mb-html-*' }).Count -eq 0) '作業用フォルダーを残さない'
+
+    # --- 同梱する元データ（_source） ---
+    $sourcePath = Join-Path $result.OutputPath '_source'
+    Assert-Mb (Test-Path -LiteralPath $sourcePath -PathType Container) '出力フォルダーへ元データを同梱する'
+    Assert-Mb (Test-Path -LiteralPath (Join-Path $sourcePath 'project.json') -PathType Leaf) '元データに project.json を入れる'
+    Assert-Mb ([string]$result.SourcePath -eq $sourcePath) '元データの場所を返す'
+    $sourceItem = Get-Item -LiteralPath $sourcePath -Force
+    $onWindows = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
+    Assert-Mb ((($sourceItem.Attributes -band [IO.FileAttributes]::Hidden) -ne 0) -or -not $onWindows) '元データは隠しフォルダーにする'
+
+    # --- 一緒に配る.cmd ---
+    $openCmd = Join-Path $result.OutputPath 'マニュアルを開く.cmd'
+    $editCmd = Join-Path $result.OutputPath '編集する.cmd'
+    Assert-Mb (Test-Path -LiteralPath $openCmd -PathType Leaf) '「マニュアルを開く.cmd」を一緒に出す'
+    Assert-Mb (Test-Path -LiteralPath $editCmd -PathType Leaf) '「編集する.cmd」を一緒に出す'
+    $openText = Get-MbHtmlOpenCommandText
+    $editText = Get-MbHtmlEditCommandText
+    # 共有フォルダー上の.htmlはInternet Explorerモードへ回されることがあるため、Edgeを明示して開く。
+    Assert-Mb ($openText -match 'msedge\.exe') 'Edgeを明示して開く'
+    Assert-Mb ($openText -match 'start "" "%MB_INDEX%"') 'Edgeが無ければ既定のブラウザーで開く'
+    Assert-Mb ($editText -match '-ImportFrom "%~dp0_source"') '編集時は同梱した元データを取り込む'
+    Assert-Mb ($editText -match '-PublishTo "%~dp0\."') '編集時は反映先も一緒に渡す'
+    # "%~dp0" は末尾が \ のため、そのまま引数にすると引用符が壊れる。
+    Assert-Mb ($editText -notmatch '"%~dp0"') '末尾が区切り文字のままの引数を渡さない'
+    Assert-Mb ($editText -match 'Start-ManualBuilderLauncher\.ps1') 'ローカル実行版のランチャーを起動する'
+    Assert-Mb (($openText -replace "`r`n", '') -notmatch "`n") 'cmdファイルはCRLFで書く'
+
+    # --- 同じ名前のフォルダーは、確認したときだけ作り直す ---
+    $blocked = $false
+    try { [void](Invoke-MbHtmlExport -Project $exportProject -ProjectPath $projectPath -OutputDirectory $outputRoot) }
+    catch { $blocked = ([string]$_.Exception.Message -match 'すでにあります') }
+    Assert-Mb $blocked '同じ名前のフォルダーがあれば黙って上書きしない'
+
+    $markerPath = Join-Path $result.OutputPath 'marker.txt'
+    [IO.File]::WriteAllText($markerPath, 'old')
+    $again = Invoke-MbHtmlExport -Project $exportProject -ProjectPath $projectPath -OutputDirectory $outputRoot -Overwrite
+    Assert-Mb ([string]$again.FolderName -eq [string]$result.FolderName) '作り直しても同じフォルダー名になる'
+    Assert-Mb ([bool]$again.Replaced) '作り直したことを返す'
+    Assert-Mb (-not (Test-Path -LiteralPath $markerPath)) '前のフォルダーの中身を残さない'
+    Assert-Mb (Test-Path -LiteralPath $again.IndexPath -PathType Leaf) '作り直したindex.htmlがある'
+    Assert-Mb (@(Get-ChildItem -LiteralPath $outputRoot -Directory -Force | Where-Object { $_.Name -like '.mb-old-*' }).Count -eq 0) '差し替え用の退避フォルダーを残さない'
+
+    # --- 共有フォルダーへの反映 ---
+    $shareRoot = Join-Path $testRoot 'share'
+    [void](New-Item -ItemType Directory -Path $shareRoot -Force)
+    $shareTarget = Join-Path $shareRoot '出力テスト'
+    $published = Copy-MbHtmlManualFolder -SourceFolder $again.OutputPath -DestinationFolder $shareTarget
+    Assert-Mb (Test-Path -LiteralPath (Join-Path $shareTarget 'index.html') -PathType Leaf) '反映先へindex.htmlをコピーする'
+    Assert-Mb (Test-Path -LiteralPath (Join-Path $shareTarget '_source\project.json') -PathType Leaf) '反映先へ元データもコピーする'
+    Assert-Mb (-not [bool]$published.Replaced) '初回は置き換えではない'
+    Assert-Mb ([int]$published.FileCount -gt 0) '反映したファイル数を返す'
+
+    $staleMarker = Join-Path $shareTarget 'stale.txt'
+    [IO.File]::WriteAllText($staleMarker, 'stale')
+    $republished = Copy-MbHtmlManualFolder -SourceFolder $again.OutputPath -DestinationFolder $shareTarget
+    Assert-Mb ([bool]$republished.Replaced) '2回目は置き換えになる'
+    Assert-Mb (-not (Test-Path -LiteralPath $staleMarker)) '反映先に古いファイルを残さない'
+    Assert-Mb (@(Get-ChildItem -LiteralPath $shareRoot -Directory -Force | Where-Object { $_.Name -like '.mb-publish-*' -or $_.Name -like '.mb-old-*' }).Count -eq 0) 'コピー途中のフォルダーを残さない'
+
+    $selfRejected = $false
+    try { [void](Copy-MbHtmlManualFolder -SourceFolder $again.OutputPath -DestinationFolder $again.OutputPath) }
+    catch { $selfRejected = ([string]$_.Exception.Message -match '同じフォルダー') }
+    Assert-Mb $selfRejected '反映元と反映先が同じなら断る'
+
+    $nestedRejected = $false
+    try { [void](Copy-MbHtmlManualFolder -SourceFolder $again.OutputPath -DestinationFolder (Join-Path $again.OutputPath 'nested')) }
+    catch { $nestedRejected = ([string]$_.Exception.Message -match '中へは指定できません') }
+    Assert-Mb $nestedRejected '反映先を反映元の中へは指定できない'
+
+    $missingRejected = $false
+    try { [void](Copy-MbHtmlManualFolder -SourceFolder $again.OutputPath -DestinationFolder (Join-Path (Join-Path $testRoot 'no-such-share') '出力テスト')) }
+    catch { $missingRejected = ([string]$_.Exception.Message -match '共有フォルダーが見つかりません') }
+    Assert-Mb $missingRejected '共有フォルダーへ届かないときは分かるように断る'
 
     # --- 手順が無ければ出力しない ---
     $emptyProject = New-MbProject

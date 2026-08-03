@@ -1917,10 +1917,19 @@ kbd {
 }
 
 .excel-export-dialog__path,
+.excel-export-dialog__note,
 .excel-export-dialog__error {
   margin: 14px 0 0 46px;
   overflow-wrap: anywhere;
   font-size: 12px;
+}
+
+.excel-export-dialog__note {
+  padding: 9px 10px;
+  color: var(--text-2);
+  background: var(--surface-inset);
+  border: 1px solid var(--border);
+  border-radius: 6px;
 }
 
 .excel-export-dialog__mappings {

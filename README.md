@@ -10,6 +10,7 @@
 - Excel COMによる主出力: 単発、10回連続、キャンセル、異常分岐を実機確認済み
 - 既存の未保存Excelブックへ影響しないことを実機確認済み
 - Word COMによる副出力の安全性と基本レイアウトを確認済み
+- Phase 1基盤 v0.26.0: HTMLマニュアルを「1マニュアル＝1フォルダー」にまとめ、あとから直せるようにした。出力フォルダーへ元データ（隠しの `_source`）と `マニュアルを開く.cmd`／`編集する.cmd` を同梱し、`編集する.cmd` を実行すると元データを取り込んだ状態でManualBuilderが開く。同じマニュアルを何度取り込んでも増えない。共有フォルダーから編集した場合は反映先を覚え、次からは完了画面の「共有フォルダーへ反映」で更新できる。出力フォルダー名の日付を廃止し、同名は確認のうえ作り直す。主要ボタンをExcelとHTMLの2つ並びにし、動画つきの手順があるときはExcelの完了画面で「動画はExcelに入らない」ことを知らせる
 - Phase 1基盤 v0.25.0: HTML出力を追加。ブラウザーで開けるマニュアルをフォルダーごと作る。COMを使わないためOfficeの有無に依存せず一瞬で終わる。Ctrl+Fで全文検索、Ctrl+PでPDF化でき、動画つきの手順はその場で再生できる
 - Phase 1基盤 v0.24.2: PowerPoint出力が `Presentation.SaveAs : 失敗しました` で終わる不具合を修正。PowerPointはウィンドウ無しの状態では保存できないため、ウィンドウを作って最小化する方式へ変更。COM由来の失敗はHRESULTと発生位置を残すようにした
 - Phase 1基盤 v0.24.1: 動画ダイアログでmp4を選んでも「再生できません」と出る不具合を修正。CSPに `media-src` が無く `default-src 'self'` へフォールバックしていたため、ブラウザー内で作ったblob:の動画がすべて止められていた
@@ -83,7 +84,7 @@ v0.14.1以前のアプリ配下に `data\projects\default` がある場合、v0.
 
 初回は `tests\phase1\run-tests.cmd` を実行し、PowerShell 5.1構文、プロジェクト保存、localhostサーバーを確認してください。詳しくは [docs/PHASE1-FOUNDATION.md](docs/PHASE1-FOUNDATION.md) を参照してください。
 
-Phase 1 v0.25.0の再確認手順は [docs/RETEST-PHASE1-v0.25.0.md](docs/RETEST-PHASE1-v0.25.0.md)、v0.24.0は [docs/RETEST-PHASE1-v0.24.0.md](docs/RETEST-PHASE1-v0.24.0.md)、v0.23.0は [docs/RETEST-PHASE1-v0.23.0.md](docs/RETEST-PHASE1-v0.23.0.md)、v0.22.1は [docs/RETEST-PHASE1-v0.22.1.md](docs/RETEST-PHASE1-v0.22.1.md)、v0.22.0は [docs/RETEST-PHASE1-v0.22.0.md](docs/RETEST-PHASE1-v0.22.0.md) にまとめています。
+Phase 1 v0.26.0の再確認手順は [docs/RETEST-PHASE1-v0.26.0.md](docs/RETEST-PHASE1-v0.26.0.md)、v0.25.0は [docs/RETEST-PHASE1-v0.25.0.md](docs/RETEST-PHASE1-v0.25.0.md)、v0.24.0は [docs/RETEST-PHASE1-v0.24.0.md](docs/RETEST-PHASE1-v0.24.0.md)、v0.23.0は [docs/RETEST-PHASE1-v0.23.0.md](docs/RETEST-PHASE1-v0.23.0.md)、v0.22.1は [docs/RETEST-PHASE1-v0.22.1.md](docs/RETEST-PHASE1-v0.22.1.md)、v0.22.0は [docs/RETEST-PHASE1-v0.22.0.md](docs/RETEST-PHASE1-v0.22.0.md) にまとめています。
 
 ## 製品方針
 
@@ -95,6 +96,8 @@ Phase 1 v0.25.0の再確認手順は [docs/RETEST-PHASE1-v0.25.0.md](docs/RETEST
 - Wordは同じプロジェクトデータから生成できる副出力とする
 - 動画を見せたい場合はPowerPointかHTMLを使う。ExcelとWordは動画を再生できる形で持てないため、静止画のまま出力する
 - HTML出力はJavaScriptを使わない。共有フォルダー上のファイルはゾーン判定でスクリプトが制限されることがあるため
+- 出力は必ずローカル（ドキュメント\ManualBuilder）へ作る。共有フォルダーへ書くのは、本人が「共有フォルダーへ反映」を押したときだけ
+- HTMLマニュアルは1マニュアル＝1フォルダーとし、元データも同じフォルダーへ隠しで同梱する。配るときも消すときもフォルダー1つで完結させ、「本体を消しても元が残る」状態を作らない
 - ユーザーが開いている未保存のExcel・Wordを変更または終了しない
 
 詳しい要件は [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md)、UI/UX方針は [docs/UIUX-DIRECTION.md](docs/UIUX-DIRECTION.md) を参照してください。

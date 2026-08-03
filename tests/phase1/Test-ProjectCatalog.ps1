@@ -115,6 +115,44 @@ try {
     Assert-Mb ([string]$settings.lastOpenedProjectKey -eq [string]$copied.Key) '前回開いたマニュアルを安全に記録する'
     Assert-Mb (@(Get-ChildItem -LiteralPath $testRoot -Filter '.settings-*.tmp' -File -Force).Count -eq 0) '設定保存後に一時ファイルを残さない'
 
+    # --- 反映先（共有フォルダー上の配布フォルダー）の記憶 ---
+    Assert-Mb ((Get-MbPublishTarget -DataRoot $testRoot -ProjectKey ([string]$copied.Key)) -eq '') '反映先を知らないうちは空を返す'
+    Set-MbPublishTarget -DataRoot $testRoot -ProjectKey ([string]$copied.Key) -Path '\\share\manuals\営業手順'
+    Assert-Mb ((Get-MbPublishTarget -DataRoot $testRoot -ProjectKey ([string]$copied.Key)) -eq '\\share\manuals\営業手順') '反映先を記録する'
+    # 反映先は前回開いたマニュアルの記録と同じファイルに入る。片方の保存でもう片方が消えてはいけない。
+    Set-MbLastOpenedProject -DataRoot $testRoot -ProjectKey ([string]$created.Key)
+    Assert-Mb ((Get-MbPublishTarget -DataRoot $testRoot -ProjectKey ([string]$copied.Key)) -eq '\\share\manuals\営業手順') '他の設定を保存しても反映先を消さない'
+    Assert-Mb ([string](Get-MbWorkspaceSettings -DataRoot $testRoot).lastOpenedProjectKey -eq [string]$created.Key) '反映先を保存しても前回開いたマニュアルを消さない'
+    Set-MbPublishTarget -DataRoot $testRoot -ProjectKey ([string]$copied.Key) -Path ''
+    Assert-Mb ((Get-MbPublishTarget -DataRoot $testRoot -ProjectKey ([string]$copied.Key)) -eq '') '反映先を取り消せる'
+    $badKeyRejected = $false
+    try { Set-MbPublishTarget -DataRoot $testRoot -ProjectKey '../etc' -Path 'C:\temp' } catch { $badKeyRejected = $true }
+    Assert-Mb $badKeyRejected '不正なマニュアルIDの反映先は受け付けない'
+
+    # --- 配布フォルダーの元データ取り込み（何度取り込んでも増やさない） ---
+    $sourceFolder = Join-Path $testRoot 'distributed-source'
+    [void](New-Item -ItemType Directory -Path $sourceFolder -Force)
+    # 別のPCで作られたマニュアルを配布フォルダーから受け取った状況にする。
+    $distributed = Get-MbProject -Path ([string]$created.Path)
+    $distributed.id = 'project-' + [guid]::NewGuid().ToString('N')
+    $distributed.title = '配布されたマニュアル'
+    [void](Save-MbProject -Project $distributed -Path (Join-Path $sourceFolder 'project.json'))
+    $beforeCount = @(Get-MbProjectCatalog -DataRoot $testRoot).Count
+    $firstImport = Import-MbCatalogProjectFolder -DataRoot $testRoot -SourceFolder $sourceFolder
+    Assert-Mb ([string]$firstImport.Status -eq 'imported') '知らないマニュアルは取り込む'
+    Assert-Mb (@(Get-MbProjectCatalog -DataRoot $testRoot).Count -eq ($beforeCount + 1)) '取り込むと一覧が1件増える'
+    $secondImport = Import-MbCatalogProjectFolder -DataRoot $testRoot -SourceFolder $sourceFolder
+    Assert-Mb ([string]$secondImport.Status -eq 'existing') '同じマニュアルは取り込まず既存を返す'
+    Assert-Mb ([string]$secondImport.Key -eq [string]$firstImport.Key) '2回目も同じマニュアルを開く'
+    Assert-Mb (@(Get-MbProjectCatalog -DataRoot $testRoot).Count -eq ($beforeCount + 1)) '取り込み直しても一覧が増えない'
+    Assert-Mb ((Find-MbCatalogProjectById -DataRoot $testRoot -ProjectId 'project-00000000000000000000000000000000') -eq $null) '無いIDは見つからない'
+    Assert-Mb ((Find-MbCatalogProjectById -DataRoot $testRoot -ProjectId '../etc') -eq $null) '不正なIDは探さない'
+    $missingSourceRejected = $false
+    try { [void](Import-MbCatalogProjectFolder -DataRoot $testRoot -SourceFolder (Join-Path $testRoot 'no-such-source')) }
+    catch { $missingSourceRejected = $true }
+    Assert-Mb $missingSourceRejected '元データが無ければ取り込まない'
+    Assert-Mb (@(Get-ChildItem -LiteralPath (Join-Path $testRoot 'projects') -Directory -Force | Where-Object { $_.Name -like '.import-*' }).Count -eq 0) '取り込み作業用フォルダーを残さない'
+
     Write-Host ''
     Write-Host 'Project catalog tests passed.' -ForegroundColor Cyan
 } finally {
