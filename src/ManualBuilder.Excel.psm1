@@ -676,8 +676,15 @@ function Add-MbExcelStepCard {
     try {
         $headerBand = $Worksheet.Range("A${headerRow}:L${headerRow}")
         $numberCell = $Worksheet.Range("A${headerRow}:A${headerRow}")
-        $titleArea = if ($hasVideoLink) { $Worksheet.Range("B${headerRow}:I${headerRow}") } else { $Worksheet.Range("B${headerRow}:L${headerRow}") }
-        if ($hasVideoLink) { $videoCell = $Worksheet.Range("J${headerRow}:L${headerRow}") }
+        # Rangeはセルの集合として列挙できるため、if式の値として受け取るとパイプラインで
+        # 展開され、Range1個ではなくセルの配列になる。配列にはプロパティを設定できないので、
+        # COMオブジェクトは必ず直接代入で受け取る。
+        if ($hasVideoLink) {
+            $titleArea = $Worksheet.Range("B${headerRow}:I${headerRow}")
+            $videoCell = $Worksheet.Range("J${headerRow}:L${headerRow}")
+        } else {
+            $titleArea = $Worksheet.Range("B${headerRow}:L${headerRow}")
+        }
         if ($hasImage) { $imageArea = $Worksheet.Range("A${contentStart}:G${contentEnd}") }
         $descriptionLabel = $Worksheet.Range("${textColumn}${descriptionLabelRow}:L${descriptionLabelRow}")
         $descriptionArea = $Worksheet.Range("${textColumn}${descriptionStart}:L${descriptionEnd}")

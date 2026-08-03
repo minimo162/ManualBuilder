@@ -95,7 +95,7 @@ Add-Result (($serverText -match '\$projectReady = \$false') -and ($serverText -m
 Add-Result ($serverText -match '\$storageLayout\.RuntimePath') '二重起動情報をユーザーデータ配下へ置く'
 Add-Result ($serverText -match '\$storageLayout\.ExportJobsRoot') 'Office一時ジョブをユーザーデータ配下へ置く'
 Add-Result (($runCommandText -match '%~dp0src\\Start-ManualBuilderLauncher\.ps1') -and ($runCommandText -notmatch '(?im)^cd /d')) 'UNC共有フォルダーから更新ランチャーを起動できる'
-Add-Result ([string]$appVersionManifest.appVersion -eq '0.27.0') '配布用アプリバージョンを0.27.0へ更新する'
+Add-Result ([string]$appVersionManifest.appVersion -eq '0.27.1') '配布用アプリバージョンを0.27.1へ更新する'
 Add-Result ($workspaceModuleText -notmatch "ManualBuilder\.Project\.psm1'\) -Force") 'WorkspaceがProjectコマンドを強制再読込しない'
 Add-Result ($launcherModuleText -match "'ManualBuilder\\app'") 'アプリ実行コードをLocalApplicationDataへキャッシュする'
 Add-Result ($launcherModuleText -match "@\('src', 'web', 'run\.cmd', 'app-version\.json'\)") 'キャッシュ対象からプロジェクトデータを除外する'
@@ -167,6 +167,12 @@ Add-Result ($excelModuleText -match 'Get-MbExcelVideoPlan') '動画つきの手�
 Add-Result ($excelModuleText -match 'MbExcelVideoFolderName') 'Excelの動画を決まったフォルダーへまとめる'
 # Hyperlinks.Addは保存時に絶対パスへ変換されるため、相対パスが保たれる=HYPERLINK()数式を使う。
 Add-Result ($excelModuleText -match '\$videoCell\.Formula = ''=HYPERLINK\(') 'Excelの動画リンクは相対パスが保たれる数式で入れる'
+# COMのRangeやShapesは列挙できるため、if式の値として受け取るとパイプラインで展開され、
+# オブジェクト1個ではなく配列になる。配列にはプロパティを設定できず、出力全体が失敗する。
+$comObjectIfAssignment = '\$\w+\s*=\s*if\s*\([^\r\n]*\)\s*\{[^\r\n]*\.(Range|Cells|Shapes|Slides|Paragraphs|Tables|Worksheets|Hyperlinks|Presentations|Documents)\('
+Add-Result (($excelModuleText -notmatch $comObjectIfAssignment) -and
+    ($wordModuleText -notmatch $comObjectIfAssignment) -and
+    ($powerPointModuleText -notmatch $comObjectIfAssignment)) 'COMオブジェクトをif式の値として受け取らない（配列へ展開されるため）'
 Add-Result ($excelModuleText -match '\$usesFolderOutput = \[int\]\$videoPlan\.Count -gt 0') '動画つきのときだけExcelをフォルダー出力にする'
 Add-Result ($excelModuleText -match '\.mb-excel-') 'Excelのフォルダー出力も組み立ててから差し替える'
 Add-Result ($excelModuleText -match '出力した動画数の自己検査に失敗しました') '出力した動画数を自己検査する'
