@@ -65,6 +65,7 @@ function Get-MbCopilotStepList {
                 annotations  = @($step.annotations)
                 crop         = $step.crop
                 clickLabel   = [string](Get-MbStepCaptureValue -Step $step -Name 'clickLabel')
+                windowTitle  = [string](Get-MbStepCaptureValue -Step $step -Name 'windowTitle')
                 screenText   = [string](Get-MbStepCaptureValue -Step $step -Name 'screenText')
                 narration    = [string](Get-MbStepCaptureValue -Step $step -Name 'narration')
                 videoTimeMs  = [int](Get-MbStepCaptureValue -Step $step -Name 'videoTimeMs' -Default 0)
@@ -137,8 +138,11 @@ function New-MbCopilotStepPrompt {
         if (-not [string]::IsNullOrWhiteSpace($timeCode)) {
             [void]$builder.AppendLine(('録画内の時刻: ' + $timeCode))
         }
+        if (-not [string]::IsNullOrWhiteSpace([string]$step.windowTitle)) {
+            [void]$builder.AppendLine(('操作していた画面: ' + [string]$step.windowTitle))
+        }
         if (-not [string]::IsNullOrWhiteSpace([string]$step.clickLabel)) {
-            [void]$builder.AppendLine(('赤枠の位置から読み取れた操作対象: ' + [string]$step.clickLabel))
+            [void]$builder.AppendLine(('赤枠の位置にあった操作対象: ' + [string]$step.clickLabel))
         }
         if (-not [string]::IsNullOrWhiteSpace([string]$step.narration)) {
             [void]$builder.AppendLine(('録画の音声: ' + [string]$step.narration))

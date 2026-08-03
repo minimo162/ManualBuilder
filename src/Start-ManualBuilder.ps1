@@ -37,6 +37,7 @@ Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Web.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Excel.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Html.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.CopilotServer.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.RecorderServer.psm1') -Force
 
 $storageLayout = Get-MbStorageLayout -AppRoot $appRoot -DataRoot $DataRoot -ProjectPath $ProjectPath -LegacyAppRoot $LegacyAppRoot
 $DataRoot = [string]$storageLayout.DataRoot
@@ -77,6 +78,9 @@ $script:CopilotProfileRoot = Join-Path $DataRoot 'copilot-edge-profile'
 $script:CopilotConfigPath = Join-Path $DataRoot 'copilot.json'
 Initialize-MbCopilotServer -JobsRoot $script:CopilotJobsRoot -ScriptRoot $PSScriptRoot `
     -ProfileRoot $script:CopilotProfileRoot -ConfigPath $script:CopilotConfigPath
+# 操作記録。記録した画面はジョブ配下に置き、取り込んだ時点でプロジェクトへ移る。
+$script:RecordingJobsRoot = Join-Path $DataRoot 'recording-jobs'
+Initialize-MbRecorderServer -JobsRoot $script:RecordingJobsRoot -ScriptRoot $PSScriptRoot
 $script:ImageReplacementHistory = @{}
 $script:HtmlExportResult = $null
 $script:ProjectHomeVisible = -not $usesExplicitProjectPath
@@ -1172,6 +1176,17 @@ function Invoke-MbRoute {
             Write-MbFile -Context $Context -Path $imagePath -ContentType ([string]$image.mimeType)
             return
         }
+        # 記録した操作の確認用サムネイル。imgタグはヘッダーを送れないため、
+        # クエリのトークンが使える /images/ 配下に置く。
+        if ($path -match '^/images/recording/(?<name>event-\d{3}\.jpg)$') {
+            $recordedPath = Get-MbRecordedEventImagePath -FileName ([string]$Matches['name'])
+            if ([string]::IsNullOrWhiteSpace($recordedPath)) {
+                Write-MbResponse $Context 'not found' 404 'text/plain; charset=utf-8'
+                return
+            }
+            Write-MbFile -Context $Context -Path $recordedPath -ContentType 'image/jpeg'
+            return
+        }
         switch ($path) {
             '/' {
                 $templatePath = Join-Path $webRoot 'index.html'
@@ -1230,6 +1245,22 @@ function Invoke-MbRoute {
             '/api/copilot/draft/result' {
                 $result = Get-MbCopilotDraftResult
                 Write-MbResponse $Context ($result | ConvertTo-Json -Depth 8 -Compress) 200 'application/json; charset=utf-8'
+                return
+            }
+            '/api/recorder/status' {
+                $status = Read-MbRecordingStatus
+                Write-MbResponse $Context ($status | ConvertTo-Json -Depth 6 -Compress) 200 'application/json; charset=utf-8'
+                return
+            }
+            '/api/recorder/events' {
+                # 画像そのものは別の口から出す。ここでは一覧だけを返す。
+                $events = @(Get-MbRecordedEvents)
+                Write-MbResponse $Context (([pscustomobject]@{ events = $events } | ConvertTo-Json -Depth 8 -Compress)) 200 'application/json; charset=utf-8'
+                return
+            }
+            '/api/recorder/capabilities' {
+                $capability = Get-MbRecordingCapability
+                Write-MbResponse $Context ($capability | ConvertTo-Json -Depth 4 -Compress) 200 'application/json; charset=utf-8'
                 return
             }
             '/api/copilot/capabilities' {
@@ -1364,6 +1395,61 @@ function Invoke-MbRoute {
         }
         $result = ConvertFrom-MbNarrationWav -Bytes $bytes
         Write-MbResponse $Context ($result | ConvertTo-Json -Depth 4 -Compress) 200 'application/json; charset=utf-8'
+        return
+    }
+
+    # 操作記録。記録そのものは別プロセスが行い、ここでは開始と停止だけを扱う。
+    if ($path -eq '/api/recorder/start') {
+        try {
+            $status = Start-MbRecordingJob
+            Write-MbLog '操作の記録を開始しました。' 'OK'
+            Write-MbResponse $Context ($status | ConvertTo-Json -Depth 6 -Compress) 200 'application/json; charset=utf-8'
+        } catch {
+            Write-MbResponse $Context (([pscustomobject]@{ message = [string]$_.Exception.Message } | ConvertTo-Json -Compress)) 400 'application/json; charset=utf-8'
+        }
+        return
+    }
+
+    if ($path -eq '/api/recorder/stop') {
+        $status = Stop-MbRecordingJob
+        Write-MbResponse $Context ($status | ConvertTo-Json -Depth 6 -Compress) 200 'application/json; charset=utf-8'
+        return
+    }
+
+    # 記録した操作のうち、選ばれたものだけを手順にする。
+    if ($path -eq '/api/recorder/import') {
+        if (-not $tabId) {
+            Write-MbResponse $Context 'tab id required' 400 'text/plain; charset=utf-8'
+            return
+        }
+        $length = [long]$request.ContentLength64
+        if ($length -gt (1024 * 1024)) { Write-MbResponse $Context '取り込む操作が多すぎます。' 400 'text/plain; charset=utf-8'; return }
+        $selectionJson = ''
+        if ($length -gt 0) {
+            $reader = New-Object IO.StreamReader($request.InputStream, [Text.Encoding]::UTF8, $true, 4096, $true)
+            try { $selectionJson = $reader.ReadToEnd() } finally { $reader.Dispose() }
+        }
+        try {
+            $project = Get-MbProject -Path $ProjectPath
+            $sheetId = [string]$request.Headers['X-Sheet-Id']
+            if ([string]::IsNullOrWhiteSpace($sheetId)) { $sheetId = [string]$project.selectedSheetId }
+            $imported = Import-MbRecordedEvents -Project $project -ProjectPath $ProjectPath -SheetId $sheetId -SelectionJson $selectionJson
+            if ([int]$imported.added -gt 0) {
+                [void](Save-MbProject -Project $project -Path $ProjectPath)
+                $script:CaptureVersion++
+            }
+            Remove-MbRecordingJob
+            Write-MbLog "記録した操作を $([int]$imported.added) 件の手順にしました。" 'OK'
+            Write-MbResponse $Context ($imported | ConvertTo-Json -Depth 4 -Compress) 200 'application/json; charset=utf-8'
+        } catch {
+            Write-MbResponse $Context ('記録した操作を取り込めませんでした: ' + $_.Exception.Message) 400 'text/plain; charset=utf-8'
+        }
+        return
+    }
+
+    if ($path -eq '/api/recorder/discard') {
+        Remove-MbRecordingJob
+        Write-MbResponse $Context '{"status":"ok"}' 200 'application/json; charset=utf-8'
         return
     }
 

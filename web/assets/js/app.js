@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const appVersion = '0.28.0';
+  const appVersion = '0.29.0';
   // 番号注釈はSVG属性で指定するためCSS変数を参照できない。
   // 編集画面とExcel・Word出力（New-MbAnnotatedImage）で同じ見た目にするため、基準フォントを揃える。
   const ANNOTATION_NUMBER_FONT = '"BIZ UDPGothic", "BIZ UDPゴシック", "BIZ UDGothic", "BIZ UDゴシック", Meiryo, "Yu Gothic UI", "MS Pゴシック", sans-serif';
@@ -2235,6 +2235,13 @@
       document.getElementById('project-package-input')?.click();
       return;
     }
+    const recorderButton = event.target.closest('[data-record-operations]');
+    if (recorderButton) {
+      const menu = recorderButton.closest('details');
+      if (menu) menu.open = false;
+      openRecorderDialog();
+      return;
+    }
     const copilotDraftButton = event.target.closest('[data-copilot-draft]');
     if (copilotDraftButton) {
       const menu = copilotDraftButton.closest('details');
@@ -2857,6 +2864,226 @@
   const wakeHeartbeat = () => {
     if (Date.now() - heartbeatStartedAt < 2000) return;
     sendHeartbeat();
+  };
+
+  // ---------------------------------------------------------------
+  // 操作を記録して手順にする
+  // ---------------------------------------------------------------
+  const recorder = { dialog: null, timer: null, events: [], busy: false };
+
+  const stopRecorderPolling = () => {
+    if (recorder.timer) {
+      window.clearInterval(recorder.timer);
+      recorder.timer = null;
+    }
+  };
+
+  const setRecorderView = (view) => {
+    const dialog = recorder.dialog;
+    if (!dialog) return;
+    dialog.querySelectorAll('[data-recorder-view]').forEach((section) => {
+      section.hidden = section.dataset.recorderView !== view;
+    });
+    dialog.querySelector('[data-recorder-start]').hidden = view !== 'setup';
+    dialog.querySelector('[data-recorder-stop]').hidden = view !== 'recording';
+    dialog.querySelector('[data-recorder-import]').hidden = view !== 'review';
+  };
+
+  const setRecorderMessage = (message, detail = '') => {
+    const dialog = recorder.dialog;
+    if (!dialog) return;
+    dialog.querySelectorAll('[data-recorder-message]').forEach((node) => { node.textContent = message; });
+    dialog.querySelectorAll('[data-recorder-detail]').forEach((node) => { node.textContent = detail; });
+  };
+
+  // 記録した操作を一覧にする。押し間違いをここで外してから取り込む。
+  const renderRecordedEvents = (events) => {
+    const list = recorder.dialog.querySelector('[data-recorder-list]');
+    if (events.length === 0) {
+      list.innerHTML = '<p class="copilot-empty">記録された操作がありませんでした。</p>';
+      return;
+    }
+    // imgタグはヘッダーを送れないので、画像だけはクエリにトークンを載せる。
+    const token = encodeURIComponent(sessionHeaders()['X-Manual-Token'] || '');
+    list.innerHTML = events.map((item) => {
+      const label = item.targetName || '（名前を取得できませんでした）';
+      const kind = item.kind === 'input' ? '入力' : 'クリック';
+      const src = `/images/recording/${encodeURIComponent(item.image)}?token=${token}`;
+      return `<label class="recorder-event" data-recorder-event data-index="${item.index}">
+<input type="checkbox" data-recorder-accept checked>
+<img class="recorder-event__shot" src="${src}" alt="" loading="lazy">
+<span class="recorder-event__body"><strong>${escapeHtml(label)}</strong><span>${kind}・${escapeHtml(item.windowTitle || '')}</span></span>
+<span class="recorder-event__index">${item.index}</span>
+</label>`;
+    }).join('');
+  };
+
+  const loadRecordedEvents = async () => {
+    const response = await fetch('/api/recorder/events', { headers: sessionHeaders() });
+    const payload = response.ok ? await response.json() : { events: [] };
+    recorder.events = payload.events || [];
+    renderRecordedEvents(recorder.events);
+    const named = recorder.events.filter((item) => item.targetName).length;
+    setRecorderMessage(
+      `${recorder.events.length} 件の操作を記録しました`,
+      recorder.events.length > 0
+        ? `うち ${named} 件は押したボタンの名前まで取得できています。取り込むものを選んでください。`
+        : ''
+    );
+    setRecorderView('review');
+  };
+
+  const pollRecorderStatus = async () => {
+    try {
+      const response = await fetch('/api/recorder/status', { headers: sessionHeaders() });
+      if (!response.ok) return;
+      const status = await response.json();
+      if (status.state === 'recording') {
+        setRecorderMessage(
+          `${status.count} 件の操作を記録中`,
+          status.lastTarget ? `直前: ${status.lastTarget}` : 'この画面は最小化しても記録は続きます。'
+        );
+        return;
+      }
+      if (status.state === 'idle') return;
+      stopRecorderPolling();
+      if (status.state === 'failed') {
+        setRecorderMessage('記録できませんでした', String(status.message || ''));
+        setRecorderView('setup');
+        return;
+      }
+      await loadRecordedEvents();
+    } catch {
+      // 一時的に取れなくても次の巡回で拾う。
+    }
+  };
+
+  const startRecording = async () => {
+    setRecorderMessage('記録の準備をしています', '');
+    setRecorderView('recording');
+    try {
+      const response = await fetch('/api/recorder/start', { method: 'POST', headers: sessionHeaders() });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.message || `HTTP ${response.status}`);
+      stopRecorderPolling();
+      recorder.timer = window.setInterval(pollRecorderStatus, 700);
+    } catch (error) {
+      setRecorderMessage('記録を始められませんでした', error.message || '');
+      setRecorderView('setup');
+    }
+  };
+
+  const stopRecording = async () => {
+    setRecorderMessage('記録を終了しています', '');
+    try {
+      await fetch('/api/recorder/stop', { method: 'POST', headers: sessionHeaders() });
+    } catch {
+      // 停止を伝えられなくても、状態の巡回で終了を拾う。
+    }
+    stopRecorderPolling();
+    await loadRecordedEvents();
+  };
+
+  const importRecordedEvents = async () => {
+    if (recorder.busy) return;
+    const accept = [...recorder.dialog.querySelectorAll('[data-recorder-event]')]
+      .filter((item) => item.querySelector('[data-recorder-accept]').checked)
+      .map((item) => Number(item.dataset.index));
+    if (accept.length === 0) {
+      showToast('取り込む操作を1件以上選んでください。');
+      return;
+    }
+    recorder.busy = true;
+    try {
+      const response = await fetch('/api/recorder/import', {
+        method: 'POST',
+        headers: sessionHeaders({ 'Content-Type': 'application/json; charset=UTF-8', 'X-Sheet-Id': selectedSheetId() }),
+        body: JSON.stringify({ accept })
+      });
+      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      const result = await response.json();
+      recorder.events = [];
+      recorder.dialog.close();
+      await refreshWorkspace();
+      const parts = [`${result.added} 件の手順を作りました`];
+      if (result.skipped > 0) parts.push(`${result.skipped} 件は同じ画面のため除きました`);
+      showToast(`${parts.join('、')}。続けてCopilotで文章を作れます。`, 'info');
+    } catch (error) {
+      showToast(error.message || '記録した操作を取り込めませんでした。');
+    } finally {
+      recorder.busy = false;
+    }
+  };
+
+  const createRecorderDialog = () => {
+    if (recorder.dialog) return recorder.dialog;
+    const dialog = document.createElement('dialog');
+    dialog.id = 'recorder-dialog';
+    dialog.className = 'copilot-dialog';
+    dialog.innerHTML = '<header class="copilot-dialog__header"><div><strong>操作を記録して手順にする</strong><span>クリックのたびに画面と押したボタンの名前を記録します</span></div><button type="button" class="copilot-dialog__close" data-recorder-close aria-label="閉じる">×</button></header>'
+      + '<div class="copilot-dialog__content">'
+      + '<section data-recorder-view="setup">'
+      + '<p class="copilot-note">記録するのは「画面」と「押したコントロールの名前」だけです。<strong>入力した文字は記録しません</strong>ので、パスワードが残ることはありません。記録中は画面全体が写ります。関係のないウィンドウは閉じてから始めてください。</p>'
+      + '<p class="copilot-capability" data-recorder-capability></p>'
+      + '<p class="copilot-dialog__error" data-recorder-detail></p>'
+      + '</section>'
+      + '<section data-recorder-view="recording" hidden>'
+      + '<div class="copilot-dialog__state" role="status" aria-live="polite"><strong data-recorder-message>記録しています</strong><span data-recorder-detail></span></div>'
+      + '<p class="copilot-note">記録したい操作を行ってから、［記録を終了］を押してください。この画面に戻る操作は記録されません。</p>'
+      + '</section>'
+      + '<section data-recorder-view="review" hidden>'
+      + '<div class="copilot-dialog__state"><strong data-recorder-message></strong><span data-recorder-detail></span></div>'
+      + '<div class="recorder-list" data-recorder-list></div>'
+      + '</section>'
+      + '</div>'
+      + '<footer class="copilot-dialog__footer">'
+      + '<span class="excel-export-dialog__spacer"></span>'
+      + '<button type="button" class="button button--ghost" data-recorder-close>閉じる</button>'
+      + '<button type="button" class="button button--primary" data-recorder-start>記録を開始</button>'
+      + '<button type="button" class="button button--primary" data-recorder-stop hidden>記録を終了</button>'
+      + '<button type="button" class="button button--primary" data-recorder-import hidden>選んだ操作を手順にする</button>'
+      + '</footer>';
+    document.body.appendChild(dialog);
+    recorder.dialog = dialog;
+
+    dialog.querySelectorAll('[data-recorder-close]').forEach((button) => {
+      button.addEventListener('click', () => dialog.close());
+    });
+    dialog.querySelector('[data-recorder-start]').addEventListener('click', () => startRecording());
+    dialog.querySelector('[data-recorder-stop]').addEventListener('click', () => stopRecording());
+    dialog.querySelector('[data-recorder-import]').addEventListener('click', () => importRecordedEvents());
+    dialog.addEventListener('close', () => {
+      stopRecorderPolling();
+      // 取り込まずに閉じたら、記録した画面は残さない。
+      if (recorder.events.length > 0) {
+        recorder.events = [];
+        fetch('/api/recorder/discard', { method: 'POST', headers: sessionHeaders() }).catch(() => { });
+      }
+    });
+    return dialog;
+  };
+
+  const openRecorderDialog = async () => {
+    const dialog = createRecorderDialog();
+    recorder.events = [];
+    setRecorderView('setup');
+    setRecorderMessage('', '');
+
+    const capability = dialog.querySelector('[data-recorder-capability]');
+    capability.textContent = '記録できるか確認しています…';
+    let available = false;
+    try {
+      const response = await fetch('/api/recorder/capabilities', { headers: sessionHeaders() });
+      const payload = response.ok ? await response.json() : null;
+      available = Boolean(payload?.available);
+      capability.textContent = available
+        ? '押したボタンの名前と位置をWindowsから直接取得します。赤枠は自動で付きます。'
+        : String(payload?.reason || 'この環境では操作を記録できません。');
+    } catch {
+      capability.textContent = 'この環境で記録できるかを確認できませんでした。';
+    }
+    dialog.querySelector('[data-recorder-start]').disabled = !available;
+    dialog.showModal();
   };
 
   // ---------------------------------------------------------------

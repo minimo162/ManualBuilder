@@ -2950,3 +2950,67 @@ kbd {
   color: var(--text-muted);
   cursor: pointer;
 }
+
+/* 記録した操作の確認一覧。サムネイルで押し間違いを見分けられるようにする。 */
+.recorder-list {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.recorder-event {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto 120px 1fr;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 34px 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.recorder-event:hover {
+  border-color: var(--border-strong);
+}
+
+.recorder-event__shot {
+  width: 120px;
+  height: 68px;
+  object-fit: cover;
+  object-position: top left;
+  background: var(--surface-muted, rgba(28, 32, 39, 0.04));
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.recorder-event__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.recorder-event__body strong {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recorder-event__body span {
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recorder-event__index {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+}

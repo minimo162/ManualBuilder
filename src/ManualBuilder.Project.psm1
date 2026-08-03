@@ -36,7 +36,8 @@ function New-MbStepCapture {
     return [pscustomobject]@{
         kind        = ''   # 'video-scene' なら録画の場面から取り込んだ手順
         videoTimeMs = 0    # 録画のどの時点か
-        clickLabel  = ''   # 操作された場所から読み取れた文字
+        clickLabel  = ''   # 操作された場所から読み取れた文字、または押したコントロールの名前
+        windowTitle = ''   # 操作していたウィンドウの題名
         screenText  = ''   # 画面に出ていた文字
         narration   = ''   # 録画の音声から起こした文
     }
@@ -154,6 +155,7 @@ function Repair-MbProject {
                 Add-MbPropertyIfMissing $step.capture 'kind' ''
                 Add-MbPropertyIfMissing $step.capture 'videoTimeMs' 0
                 Add-MbPropertyIfMissing $step.capture 'clickLabel' ''
+                Add-MbPropertyIfMissing $step.capture 'windowTitle' ''
                 Add-MbPropertyIfMissing $step.capture 'screenText' ''
                 Add-MbPropertyIfMissing $step.capture 'narration' ''
             }
@@ -484,6 +486,7 @@ function Set-MbStepCapture {
         [string]$Kind = 'video-scene',
         [int]$VideoTimeMs = 0,
         [AllowEmptyString()][string]$ClickLabel = '',
+        [AllowEmptyString()][string]$WindowTitle = '',
         [AllowEmptyString()][string]$ScreenText = '',
         [AllowEmptyString()][string]$Narration = ''
     )
@@ -496,6 +499,7 @@ function Set-MbStepCapture {
     $target.capture.kind = Get-MbText -Value $Kind -MaxLength 40 -FieldName '取り込み種別'
     $target.capture.videoTimeMs = [Math]::Max(0, $VideoTimeMs)
     $target.capture.clickLabel = Get-MbText -Value $ClickLabel -MaxLength 200 -FieldName '操作対象'
+    $target.capture.windowTitle = Get-MbText -Value $WindowTitle -MaxLength 300 -FieldName 'ウィンドウの題名'
     $target.capture.screenText = Get-MbText -Value $ScreenText -MaxLength 4000 -FieldName '画面の文字'
     $target.capture.narration = Get-MbText -Value $Narration -MaxLength 2000 -FieldName '録画の音声'
     $target.updatedAt = Get-MbUtcTimestamp

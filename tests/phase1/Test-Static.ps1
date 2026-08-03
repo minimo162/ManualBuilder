@@ -49,6 +49,9 @@ $required = @(
     'src\ManualBuilder.CopilotJob.psm1',
     'src\ManualBuilder.CopilotServer.psm1',
     'src\Invoke-ManualBuilderCopilotJob.ps1',
+    'src\ManualBuilder.Recorder.psm1',
+    'src\ManualBuilder.RecorderServer.psm1',
+    'src\Invoke-ManualBuilderRecorder.ps1',
     'web\index.html',
     'web\assets\css\app.css',
     'web\assets\js\app.js',
@@ -101,7 +104,7 @@ Add-Result (($serverText -match '\$projectReady = \$false') -and ($serverText -m
 Add-Result ($serverText -match '\$storageLayout\.RuntimePath') '二重起動情報をユーザーデータ配下へ置く'
 Add-Result ($serverText -match '\$storageLayout\.ExportJobsRoot') 'Office一時ジョブをユーザーデータ配下へ置く'
 Add-Result (($runCommandText -match '%~dp0src\\Start-ManualBuilderLauncher\.ps1') -and ($runCommandText -notmatch '(?im)^cd /d')) 'UNC共有フォルダーから更新ランチャーを起動できる'
-Add-Result ([string]$appVersionManifest.appVersion -eq '0.28.0') '配布用アプリバージョンを0.28.0へ更新する'
+Add-Result ([string]$appVersionManifest.appVersion -eq '0.29.0') '配布用アプリバージョンを0.29.0へ更新する'
 Add-Result ($workspaceModuleText -notmatch "ManualBuilder\.Project\.psm1'\) -Force") 'WorkspaceがProjectコマンドを強制再読込しない'
 Add-Result ($launcherModuleText -match "'ManualBuilder\\app'") 'アプリ実行コードをLocalApplicationDataへキャッシュする'
 Add-Result ($launcherModuleText -match "@\('src', 'web', 'run\.cmd', 'app-version\.json'\)") 'キャッシュ対象からプロジェクトデータを除外する'
@@ -375,6 +378,20 @@ Add-Result ($copilotJobText -match '\$rendered = New-MbAnnotatedImage') '焼き�
 Add-Result ($copilotServerText -match 'Resolve-MbOperationRect') '赤枠を読み取った文字へ寄せる'
 Add-Result ($ocrModuleText -match 'return \$false') '文字認識が使えない環境では機能だけを止める'
 Add-Result ($projectModuleText -match "Add-MbPropertyIfMissing \$step 'capture'") '古い手順にも録画情報の入れ物を補う'
+
+$recorderModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.Recorder.psm1'), [Text.Encoding]::UTF8)
+$recorderServerText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.RecorderServer.psm1'), [Text.Encoding]::UTF8)
+Add-Result ($recorderModuleText -match 'AutomationElement\]::FromPoint') '押した位置のコントロールをUI Automationから取る'
+Add-Result ($recorderModuleText -match 'SetProcessDpiAwarenessContext') '高DPIで座標がずれないようDPI認識にする'
+Add-Result ($recorderModuleText -notmatch 'SetWindowsHookEx') '低レベルフックを使わない'
+Add-Result ($recorderModuleText -match '\$capture = Copy-MbScreenBitmap') '押す直前の画面を先に確保する'
+Add-Result ($recorderModuleText -match 'DWMWA_EXTENDED_FRAME_BOUNDS') '見た目どおりのウィンドウ範囲を使う'
+Add-Result ($recorderServerText -match "Source 'recorder'") '記録した画面を専用の出所として取り込む'
+Add-Result ($serverText -match '/api/recorder/start') '操作記録の開始口がある'
+Add-Result ($serverText -match '/api/recorder/import') '記録した操作の取り込み口がある'
+Add-Result ($serverText -match '\^/images/recording/') '記録した画面をクエリのトークンで表示できる'
+Add-Result ($webModuleText -match 'data-record-operations') '操作の記録をメニューから選べる'
+Add-Result ($jsText -match 'recorder-dialog') '記録の確認画面を実装する'
 
 if ($errors.Count -gt 0) {
     Write-Host ''
