@@ -346,7 +346,8 @@ function Save-MbBitmapRegion {
         [Parameter(Mandatory = $true)]$Region,
         [Parameter(Mandatory = $true)][string]$Path,
         [int]$MaxEdge = 1600,
-        [long]$Quality = 88
+        [long]$Quality = 88,
+        [AllowNull()]$RedactTarget = $null
     )
 
     Initialize-MbRecorderNative
@@ -366,6 +367,25 @@ function Save-MbBitmapRegion {
     try {
         $rectangle = New-Object Drawing.Rectangle -ArgumentList @($left, $top, $width, $height)
         $cropped = $source.Clone($rectangle, $source.PixelFormat)
+
+        # キー入力の内容は読み取らないだけでなく、入力欄に表示された文字も画像へ残さない。
+        # UI Automation の物理座標を、切り出した画像内の座標へ直して入力欄全体を隠す。
+        if ($null -ne $RedactTarget) {
+            $redactLeft = [Math]::Max(0, [int][Math]::Floor([double]$RedactTarget.left - ($left + [int]$origin.left)))
+            $redactTop = [Math]::Max(0, [int][Math]::Floor([double]$RedactTarget.top - ($top + [int]$origin.top)))
+            $redactRight = [Math]::Min($width, [int][Math]::Ceiling([double]$RedactTarget.left + [double]$RedactTarget.width - ($left + [int]$origin.left)))
+            $redactBottom = [Math]::Min($height, [int][Math]::Ceiling([double]$RedactTarget.top + [double]$RedactTarget.height - ($top + [int]$origin.top)))
+            if ($redactRight -gt $redactLeft -and $redactBottom -gt $redactTop) {
+                $redactionGraphics = $null
+                try {
+                    $redactionGraphics = [Drawing.Graphics]::FromImage($cropped)
+                    $redactionGraphics.FillRectangle([Drawing.Brushes]::Black, $redactLeft, $redactTop,
+                        ($redactRight - $redactLeft), ($redactBottom - $redactTop))
+                } finally {
+                    if ($null -ne $redactionGraphics) { try { $redactionGraphics.Dispose() } catch { } }
+                }
+            }
+        }
 
         $output = $cropped
         $longest = [Math]::Max($width, $height)
@@ -429,9 +449,17 @@ function Get-MbWatchedTypingKeys {
     return $keys.ToArray()
 }
 
-function Test-MbKeyDown {
-    param([int]$VirtualKey)
-    return (([MbRecorderNative]::GetAsyncKeyState($VirtualKey) -band 0x8000) -ne 0)
+# GetAsyncKeyState の上位ビットは「現在押されている」、下位ビットは
+# 「前回の確認後に一度でも押された」を表す。タッチパッドのタップなどは
+# 16ms の巡回間隔より短く、上位ビットだけでは押下を丸ごと見失うことがある。
+function Test-MbAsyncKeyStateDown {
+    param([int]$State)
+    return (($State -band 0x8000) -ne 0)
+}
+
+function Test-MbAsyncKeyStatePressed {
+    param([int]$State)
+    return (($State -band 0x0001) -ne 0)
 }
 
 function Test-MbIgnoredWindow {
@@ -485,12 +513,14 @@ function Save-MbRecordingEvent {
         [Parameter(Mandatory = $true)][string]$EventsPath,
         [AllowNull()]$Target,
         [AllowNull()]$Window,
+        [AllowNull()]$RedactTarget = $null,
         [int]$MaxEdge = 1600
     )
 
     $region = Get-MbCaptureRegion -Window $Window -Target $Target
     $fileName = ('event-{0:d3}.jpg' -f $Index)
-    $saved = Save-MbBitmapRegion -Capture $Capture -Region $region -Path (Join-Path $EventsDirectory $fileName) -MaxEdge $MaxEdge
+    $saved = Save-MbBitmapRegion -Capture $Capture -Region $region -Path (Join-Path $EventsDirectory $fileName) `
+        -MaxEdge $MaxEdge -RedactTarget $RedactTarget
     # 実際に切り出せた範囲で正規化する。画面の端では要求した範囲より狭くなる。
     $rect = ConvertTo-MbRegionRect -Region $saved -Target $Target
 
@@ -540,9 +570,14 @@ function Invoke-MbRecordingLoop {
     $lastStatusMs = -1000
     $lastTarget = ''
 
-    $leftWasDown = Test-MbKeyDown -VirtualKey $script:MbVkLeftButton
+    $leftState = [int][MbRecorderNative]::GetAsyncKeyState($script:MbVkLeftButton)
+    $rightState = [int][MbRecorderNative]::GetAsyncKeyState($script:MbVkRightButton)
+    $leftWasDown = Test-MbAsyncKeyStateDown -State $leftState
+    $rightWasDown = Test-MbAsyncKeyStateDown -State $rightState
     $typingActive = $false
     $typingField = $null
+    $typingWindow = $null
+    $typingCapture = $null
     $lastTypingMs = 0
 
     Write-MbRecordingStatus -StatusPath $StatusPath -JobId $JobId -State 'recording' -Count 0 -Message '操作を記録しています'
@@ -552,45 +587,69 @@ function Invoke-MbRecordingLoop {
         if ($index -ge $MaxEvents) { break }
         if ($watch.Elapsed.TotalMinutes -ge $MaxMinutes) { break }
 
-        $leftDown = Test-MbKeyDown -VirtualKey $script:MbVkLeftButton
-        $clicked = ($leftDown -and -not $leftWasDown)
+        $leftState = [int][MbRecorderNative]::GetAsyncKeyState($script:MbVkLeftButton)
+        $rightState = [int][MbRecorderNative]::GetAsyncKeyState($script:MbVkRightButton)
+        $leftDown = Test-MbAsyncKeyStateDown -State $leftState
+        $rightDown = Test-MbAsyncKeyStateDown -State $rightState
+        $leftClicked = (Test-MbAsyncKeyStatePressed -State $leftState) -or ($leftDown -and -not $leftWasDown)
+        $rightClicked = (Test-MbAsyncKeyStatePressed -State $rightState) -or ($rightDown -and -not $rightWasDown)
+        $clicked = ($leftClicked -or $rightClicked)
         $leftWasDown = $leftDown
+        $rightWasDown = $rightDown
 
         $typingNow = $false
         foreach ($vk in $typingKeys) {
-            if (Test-MbKeyDown -VirtualKey $vk) { $typingNow = $true; break }
+            $keyState = [int][MbRecorderNative]::GetAsyncKeyState($vk)
+            if ((Test-MbAsyncKeyStateDown -State $keyState) -or (Test-MbAsyncKeyStatePressed -State $keyState)) {
+                $typingNow = $true
+                break
+            }
         }
         if ($typingNow) {
             if (-not $typingActive) {
                 $typingActive = $true
-                $typingField = Get-MbUiaFocusedElement
+                # 入力後に撮ると、文字列そのものがスクリーンショットへ残る。
+                # 最初のキーを検出した時点の画面を保持し、保存時には入力欄も黒塗りする。
+                try {
+                    $candidateWindow = Get-MbForegroundWindowInfo
+                    if (-not (Test-MbIgnoredWindow -Window $candidateWindow -IgnoreTitlePatterns $IgnoreTitlePatterns)) {
+                        $typingCapture = Copy-MbScreenBitmap
+                        $typingWindow = $candidateWindow
+                        $typingField = Get-MbUiaFocusedElement
+                    }
+                } catch {
+                    if ($null -ne $typingCapture) { try { $typingCapture.bitmap.Dispose() } catch { } }
+                    $typingCapture = $null
+                    $typingWindow = $null
+                    $typingField = $null
+                }
             }
             $lastTypingMs = [int]$watch.ElapsedMilliseconds
         }
 
-        # 入力が途切れたか、次のクリックが来たら、入力後の画面を1手順にする。
+        # 入力が途切れたか、次のクリックが来たら、保持していた入力開始時の画面を1手順にする。
         $typingFinished = $typingActive -and ($clicked -or (([int]$watch.ElapsedMilliseconds - $lastTypingMs) -ge $TypingIdleMs))
         if ($typingFinished) {
             $typingActive = $false
-            $capture = $null
             try {
-                $capture = Copy-MbScreenBitmap
-                $window = Get-MbForegroundWindowInfo
-                if (-not (Test-MbIgnoredWindow -Window $window -IgnoreTitlePatterns $IgnoreTitlePatterns)) {
+                if ($null -ne $typingCapture -and $index -lt $MaxEvents) {
                     $index++
-                    $record = Save-MbRecordingEvent -Capture $capture -Index $index -ElapsedMs ([int]$watch.ElapsedMilliseconds) `
-                        -Kind 'input' -EventsDirectory $EventsDirectory -EventsPath $EventsPath -Target $typingField -Window $window
+                    $record = Save-MbRecordingEvent -Capture $typingCapture -Index $index -ElapsedMs ([int]$watch.ElapsedMilliseconds) `
+                        -Kind 'input' -EventsDirectory $EventsDirectory -EventsPath $EventsPath -Target $typingField `
+                        -Window $typingWindow -RedactTarget $typingField
                     $lastTarget = [string]$record.targetName
                 }
             } catch {
                 # 1件取り損ねても記録は続ける。
             } finally {
-                if ($null -ne $capture) { try { $capture.bitmap.Dispose() } catch { } }
+                if ($null -ne $typingCapture) { try { $typingCapture.bitmap.Dispose() } catch { } }
             }
             $typingField = $null
+            $typingWindow = $null
+            $typingCapture = $null
         }
 
-        if ($clicked) {
+        if ($clicked -and $index -lt $MaxEvents) {
             $capture = $null
             try {
                 # 押した瞬間の画面を最優先で確保する。UIAはこのあと。
@@ -601,8 +660,9 @@ function Invoke-MbRecordingLoop {
                 if (-not (Test-MbIgnoredWindow -Window $window -IgnoreTitlePatterns $IgnoreTitlePatterns)) {
                     $target = Get-MbUiaTargetAtPoint -X ([int]$point.X) -Y ([int]$point.Y)
                     $index++
+                    $clickKind = if ($rightClicked) { 'right-click' } else { 'click' }
                     $record = Save-MbRecordingEvent -Capture $capture -Index $index -ElapsedMs ([int]$watch.ElapsedMilliseconds) `
-                        -Kind 'click' -EventsDirectory $EventsDirectory -EventsPath $EventsPath -Target $target -Window $window
+                        -Kind $clickKind -EventsDirectory $EventsDirectory -EventsPath $EventsPath -Target $target -Window $window
                     $lastTarget = [string]$record.targetName
                 }
             } catch {
@@ -618,6 +678,25 @@ function Invoke-MbRecordingLoop {
                 -Message '操作を記録しています' -LastTarget $lastTarget
         }
         Start-Sleep -Milliseconds $PollIntervalMs
+    }
+
+    # 停止要求が入力の途中で届いても、保持していた入力前の画面を最後の1手順として残す。
+    if ($typingActive -and $null -ne $typingCapture -and $index -lt $MaxEvents) {
+        try {
+            $index++
+            $record = Save-MbRecordingEvent -Capture $typingCapture -Index $index -ElapsedMs ([int]$watch.ElapsedMilliseconds) `
+                -Kind 'input' -EventsDirectory $EventsDirectory -EventsPath $EventsPath -Target $typingField `
+                -Window $typingWindow -RedactTarget $typingField
+            $lastTarget = [string]$record.targetName
+        } catch {
+            # 最後の1件に失敗しても、それまでの記録は利用できる。
+        } finally {
+            try { $typingCapture.bitmap.Dispose() } catch { }
+            $typingCapture = $null
+        }
+    } elseif ($null -ne $typingCapture) {
+        try { $typingCapture.bitmap.Dispose() } catch { }
+        $typingCapture = $null
     }
 
     $reason = 'stopped'
@@ -648,6 +727,8 @@ Export-ModuleMember -Function @(
     'Test-MbUsableElementInfo',
     'Test-MbIgnoredWindow',
     'Get-MbWatchedTypingKeys',
+    'Test-MbAsyncKeyStateDown',
+    'Test-MbAsyncKeyStatePressed',
     'Invoke-MbRecordingLoop',
     'Write-MbRecordingStatus'
 )

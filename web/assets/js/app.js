@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const appVersion = '0.32.3';
+  const appVersion = '0.32.5';
   // 番号注釈はSVG属性で指定するためCSS変数を参照できない。
   // 編集画面とExcel・Word出力（New-MbAnnotatedImage）で同じ見た目にするため、基準フォントを揃える。
   const ANNOTATION_NUMBER_FONT = '"BIZ UDPGothic", "BIZ UDPゴシック", "BIZ UDGothic", "BIZ UDゴシック", Meiryo, "Yu Gothic UI", "MS Pゴシック", sans-serif';
@@ -2831,7 +2831,7 @@
   // ---------------------------------------------------------------
   // 操作を記録して手順にする
   // ---------------------------------------------------------------
-  const recorder = { dialog: null, timer: null, events: [], busy: false };
+  const recorder = { dialog: null, timer: null, events: [], busy: false, active: false };
 
   const stopRecorderPolling = () => {
     if (recorder.timer) {
@@ -2869,7 +2869,7 @@
     const token = encodeURIComponent(sessionHeaders()['X-Manual-Token'] || '');
     list.innerHTML = events.map((item) => {
       const label = item.targetName || '（名前を取得できませんでした）';
-      const kind = item.kind === 'input' ? '入力' : 'クリック';
+      const kind = item.kind === 'input' ? '入力' : (item.kind === 'right-click' ? '右クリック' : 'クリック');
       const src = `/images/recording/${encodeURIComponent(item.image)}?token=${token}`;
       return `<label class="recorder-event" data-recorder-event data-index="${item.index}">
 <input type="checkbox" data-recorder-accept checked>
@@ -2921,6 +2921,7 @@
   };
 
   const startRecording = async () => {
+    recorder.active = true;
     setRecorderMessage('記録の準備をしています', '');
     setRecorderView('recording');
     try {
@@ -2934,6 +2935,12 @@
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload?.message || `HTTP ${response.status}`);
+      // 開始要求の途中でダイアログを閉じた場合も、記録を裏で走らせたままにしない。
+      if (!recorder.dialog.open) {
+        recorder.active = false;
+        await fetch('/api/recorder/discard', { method: 'POST', headers: sessionHeaders() });
+        return;
+      }
       stopRecorderPolling();
       recorder.timer = window.setInterval(pollRecorderStatus, 700);
     } catch (error) {
@@ -2945,9 +2952,20 @@
   const stopRecording = async () => {
     setRecorderMessage('記録を終了しています', '');
     try {
-      await fetch('/api/recorder/stop', { method: 'POST', headers: sessionHeaders() });
+      const response = await fetch('/api/recorder/stop', { method: 'POST', headers: sessionHeaders() });
+      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      const status = await response.json();
+      if (status.state === 'recording') {
+        setRecorderMessage('記録の終了を待っています', '終了処理が終わると確認画面へ進みます。');
+        stopRecorderPolling();
+        recorder.timer = window.setInterval(pollRecorderStatus, 300);
+        return;
+      }
     } catch {
       // 停止を伝えられなくても、状態の巡回で終了を拾う。
+      stopRecorderPolling();
+      recorder.timer = window.setInterval(pollRecorderStatus, 300);
+      return;
     }
     stopRecorderPolling();
     await loadRecordedEvents();
@@ -2972,10 +2990,11 @@
       if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
       const result = await response.json();
       recorder.events = [];
+      recorder.active = false;
       recorder.dialog.close();
       await refreshWorkspace();
       const parts = [`${result.added} 件の手順を作りました`];
-      if (result.skipped > 0) parts.push(`${result.skipped} 件は同じ画面のため除きました`);
+      if (result.skipped > 0) parts.push(`${result.skipped} 件は画像を読み取れず除きました`);
       showToast(`${parts.join('、')}。続けてCopilotで文章を作れます。`, 'info');
     } catch (error) {
       showToast(error.message || '記録した操作を取り込めませんでした。');
@@ -2990,10 +3009,10 @@
     dialog.id = 'recorder-dialog';
     dialog.className = 'copilot-dialog';
     dialog.setAttribute('aria-label', '操作を記録して手順にする');
-    dialog.innerHTML = '<header class="copilot-dialog__header"><div><strong>操作を記録して手順にする</strong><span>クリックのたびに画面と押したボタンの名前を記録します</span></div><button type="button" class="copilot-dialog__close" data-recorder-close aria-label="閉じる">×</button></header>'
+    dialog.innerHTML = '<header class="copilot-dialog__header"><div><strong>操作を記録して手順にする</strong><span>クリックや入力の画面と操作対象を記録します</span></div><button type="button" class="copilot-dialog__close" data-recorder-close aria-label="閉じる">×</button></header>'
       + '<div class="copilot-dialog__content">'
       + '<section data-recorder-view="setup">'
-      + '<p class="copilot-note">記録するのは「画面」と「押したコントロールの名前」だけです。<strong>入力した文字は記録しません</strong>ので、パスワードが残ることはありません。記録中は画面全体が写ります。関係のないウィンドウは閉じてから始めてください。</p>'
+      + '<p class="copilot-note">記録するのは「画面」と「操作したコントロールの名前」だけです。<strong>キー入力の内容は読み取らず、入力手順の画像では対象欄を黒塗りします</strong>。ただし、ほかの場所に表示済みの情報は画面に写るため、関係のないウィンドウは閉じてから始めてください。</p>'
       + '<label class="copilot-option"><input type="checkbox" data-recorder-narration><span>操作しながら話した内容も記録する</span></label>'
       + '<p class="copilot-note copilot-note--warn" data-recorder-narration-note hidden>マイクを使い、<strong>音声はMicrosoftのオンライン音声認識へ送られます</strong>。Windowsの音声入力（Win+H）と同じ仕組みです。話した内容は手順の手がかりとして使い、そのまま文章にはしません。</p>'
       + '<p class="copilot-capability" data-recorder-capability></p>'
@@ -3029,9 +3048,11 @@
     dialog.querySelector('[data-recorder-import]').addEventListener('click', () => importRecordedEvents());
     dialog.addEventListener('close', () => {
       stopRecorderPolling();
-      // 取り込まずに閉じたら、記録した画面は残さない。
-      if (recorder.events.length > 0) {
-        recorder.events = [];
+      // 開始途中・記録中を含め、取り込まずに閉じたらプロセスと記録画像を片付ける。
+      const shouldDiscard = recorder.active || recorder.events.length > 0;
+      recorder.active = false;
+      recorder.events = [];
+      if (shouldDiscard) {
         fetch('/api/recorder/discard', { method: 'POST', headers: sessionHeaders() }).catch(() => { });
       }
     });

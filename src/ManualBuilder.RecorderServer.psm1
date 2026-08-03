@@ -298,9 +298,12 @@ function Import-MbRecordedEvents {
         if ([string]::IsNullOrWhiteSpace($imagePath)) { $skipped++; continue }
 
         $bytes = [IO.File]::ReadAllBytes($imagePath)
-        $result = Add-MbImageStep -Project $Project -ProjectPath $ProjectPath -SheetId $SheetId -Bytes $bytes -Source 'recorder'
+        # 同じ静止画でも「入力する」「送信を押す」のように別の操作が続くことがある。
+        # 画像ファイルは共有しつつ、選ばれた操作はそれぞれ別の手順として残す。
+        $result = Add-MbImageStep -Project $Project -ProjectPath $ProjectPath -SheetId $SheetId -Bytes $bytes `
+            -Source 'recorder' -AllowDuplicateStep
         if ($result.Status -ne 'added') {
-            # まったく同じ画面が続いた場合。手順を二重に作らない。
+            # 将来別の状態が増えても、不完全な手順は作らない。
             $skipped++
             continue
         }
@@ -326,6 +329,8 @@ function Import-MbRecordedEvents {
         # 入力の手順は「どの欄に入れたか」を示す。入力した文字は記録していない。
         if ($kind -eq 'recorded-input' -and -not [string]::IsNullOrWhiteSpace($targetName)) {
             $targetName = $targetName + '（入力）'
+        } elseif ([string]$record.kind -eq 'right-click' -and -not [string]::IsNullOrWhiteSpace($targetName)) {
+            $targetName = $targetName + '（右クリック）'
         }
         $spoken = ''
         if ($narration.ContainsKey($index)) { $spoken = [string]$narration[$index] }

@@ -73,6 +73,35 @@ Add-Result ($null -eq (ConvertTo-MbRegionRect -Region $capturedRegion -Target $s
 
 Add-Result ($null -eq (ConvertTo-MbRegionRect -Region $capturedRegion -Target $null)) '操作対象が無ければ矩形は作らない'
 
+# 入力欄は画像にも文字を残さない。白い画像の指定範囲だけが黒くなることを確かめる。
+$redactionPath = Join-Path $env:TEMP ('ManualBuilder-RecorderRedaction-' + [guid]::NewGuid().ToString('N') + '.jpg')
+$redactionBitmap = New-Object Drawing.Bitmap 100, 80
+$redactionGraphics = [Drawing.Graphics]::FromImage($redactionBitmap)
+try {
+    $redactionGraphics.Clear([Drawing.Color]::White)
+    $capture = [pscustomobject]@{
+        bitmap = $redactionBitmap
+        origin = [pscustomobject]@{ left = 0; top = 0; width = 100; height = 80 }
+    }
+    $imageRegion = [pscustomobject]@{ left = 0; top = 0; width = 100; height = 80 }
+    $inputField = [pscustomobject]@{ left = 20.0; top = 25.0; width = 40.0; height = 20.0 }
+    [void](Save-MbBitmapRegion -Capture $capture -Region $imageRegion -Path $redactionPath `
+        -MaxEdge 0 -Quality 100 -RedactTarget $inputField)
+    $savedBitmap = New-Object Drawing.Bitmap $redactionPath
+    try {
+        $hidden = $savedBitmap.GetPixel(30, 30)
+        $visible = $savedBitmap.GetPixel(5, 5)
+        Add-Result ($hidden.R -lt 20 -and $hidden.G -lt 20 -and $hidden.B -lt 20) '入力欄を画像上でも黒塗りする'
+        Add-Result ($visible.R -gt 235 -and $visible.G -gt 235 -and $visible.B -gt 235) '入力欄以外の画面は維持する'
+    } finally {
+        $savedBitmap.Dispose()
+    }
+} finally {
+    $redactionGraphics.Dispose()
+    $redactionBitmap.Dispose()
+    Remove-Item -LiteralPath $redactionPath -Force -ErrorAction SilentlyContinue
+}
+
 # ---------------------------------------------------------------------
 # 記録から除くウィンドウ
 # ---------------------------------------------------------------------
@@ -118,6 +147,13 @@ Add-Result ($typingKeys -contains 0x08) 'BackSpaceを見る'
 Add-Result ($typingKeys -notcontains 0x11) 'Ctrlだけでは入力とみなさない'
 Add-Result ($typingKeys -notcontains 0x10) 'Shiftだけでは入力とみなさない'
 Add-Result ($typingKeys -notcontains 0x09) 'Tabだけでは入力とみなさない'
+
+# タッチパッドの短いタップは次の巡回時には離されていることがある。
+# その場合も GetAsyncKeyState の下位ビットから押下を拾う。
+Add-Result ((Test-MbAsyncKeyStateDown -State 0x8000) -eq $true) '押されているキーを上位ビットで検出する'
+Add-Result ((Test-MbAsyncKeyStatePressed -State 0x0001) -eq $true) '巡回の間に終わった短い押下を下位ビットで検出する'
+Add-Result ((Test-MbAsyncKeyStateDown -State 0x0001) -eq $false) '離された短い押下を押下中とは扱わない'
+Add-Result ((Test-MbAsyncKeyStatePressed -State 0x0000) -eq $false) '操作のない状態を押下とは扱わない'
 
 # ---------------------------------------------------------------------
 # 実行環境で記録できるかどうか
