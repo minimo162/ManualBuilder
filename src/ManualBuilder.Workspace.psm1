@@ -48,6 +48,17 @@ function Test-MbCatalogProjectFiles {
             throw "画像ファイルの内容が一致しません: $($image.fileName)"
         }
     }
+    $videoRoot = Join-Path (Split-Path -Parent $ProjectPath) 'videos'
+    foreach ($video in @($Project.videos)) {
+        $videoPath = Join-Path $videoRoot ([string]$video.fileName)
+        if (-not (Test-Path -LiteralPath $videoPath -PathType Leaf)) {
+            throw "動画ファイルが見つかりません: $($video.fileName)"
+        }
+        $hash = (Get-FileHash -LiteralPath $videoPath -Algorithm SHA256 -ErrorAction Stop).Hash
+        if (-not $hash.Equals([string]$video.sha256, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "動画ファイルの内容が一致しません: $($video.fileName)"
+        }
+    }
 }
 
 function Get-MbProjectCatalog {
@@ -249,6 +260,14 @@ function Export-MbCatalogProjectPackage {
                 $archive, $imagePath, ('images/' + [string]$image.fileName), [IO.Compression.CompressionLevel]::Optimal
             )
         }
+        $videoRoot = Join-Path (Split-Path -Parent $projectPath) 'videos'
+        foreach ($video in @($project.videos)) {
+            $videoPath = Join-Path $videoRoot ([string]$video.fileName)
+            # 動画は既に圧縮済みのため、再圧縮せず格納する（書き出し時間だけが延びるため）。
+            [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                $archive, $videoPath, ('videos/' + [string]$video.fileName), [IO.Compression.CompressionLevel]::NoCompression
+            )
+        }
         $archive.Dispose()
         $archive = $null
         if (Test-Path -LiteralPath $fullOutputPath) { throw '同じ名前の書き出しファイルがすでにあります。' }
@@ -291,6 +310,7 @@ function Import-MbCatalogProjectPackage {
         $manifestEntry = $null
         $projectEntry = $null
         $imageEntries = New-Object System.Collections.ArrayList
+        $videoEntries = New-Object System.Collections.ArrayList
         foreach ($entry in @($archive.Entries)) {
             $entryName = [string]$entry.FullName
             if ([string]::IsNullOrWhiteSpace($entryName) -or $entryName.Contains('\')) { throw 'ZIP内のパスが不正です。' }
@@ -306,6 +326,9 @@ function Import-MbCatalogProjectPackage {
             } elseif ($entryName -match '^images/image-[a-f0-9]{32}\.(png|jpg|bmp)$') {
                 if ($entry.Length -lt 1 -or $entry.Length -gt (20 * 1024 * 1024)) { throw 'ZIP内の画像サイズが不正です。' }
                 [void]$imageEntries.Add($entry)
+            } elseif ($entryName -match '^videos/video-[a-f0-9]{32}\.(mp4|webm)$') {
+                if ($entry.Length -lt 1 -or $entry.Length -gt (30 * 1024 * 1024)) { throw 'ZIP内の動画サイズが不正です。' }
+                [void]$videoEntries.Add($entry)
             } else {
                 throw "ZIPに未対応のファイルが含まれています: $entryName"
             }
@@ -333,6 +356,15 @@ function Import-MbCatalogProjectPackage {
             try { $sourceStream.CopyTo($destinationStream) } finally { $destinationStream.Dispose(); $sourceStream.Dispose() }
         }
 
+        if ($videoEntries.Count -gt 0) { [void](New-Item -ItemType Directory -Path (Join-Path $stagingDirectory 'videos')) }
+        foreach ($entry in @($videoEntries)) {
+            $videoName = [IO.Path]::GetFileName([string]$entry.FullName)
+            $destinationVideoPath = Join-Path (Join-Path $stagingDirectory 'videos') $videoName
+            $sourceStream = $entry.Open()
+            $destinationStream = [IO.File]::Open($destinationVideoPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+            try { $sourceStream.CopyTo($destinationStream) } finally { $destinationStream.Dispose(); $sourceStream.Dispose() }
+        }
+
         $packageProject = Get-MbProject -Path $stagedProjectPath
         Test-MbCatalogProjectFiles -Project $packageProject -ProjectPath $stagedProjectPath
         $expectedImageNames = New-Object 'System.Collections.Generic.HashSet[string]'
@@ -341,6 +373,14 @@ function Import-MbCatalogProjectPackage {
         foreach ($entry in @($imageEntries)) {
             if (-not $expectedImageNames.Contains([IO.Path]::GetFileName([string]$entry.FullName).ToLowerInvariant())) {
                 throw 'ZIP内にプロジェクト未登録の画像があります。'
+            }
+        }
+        $expectedVideoNames = New-Object 'System.Collections.Generic.HashSet[string]'
+        foreach ($video in @($packageProject.videos)) { [void]$expectedVideoNames.Add(([string]$video.fileName).ToLowerInvariant()) }
+        if ($expectedVideoNames.Count -ne $videoEntries.Count) { throw 'ZIP内にプロジェクト未登録の動画があります。' }
+        foreach ($entry in @($videoEntries)) {
+            if (-not $expectedVideoNames.Contains([IO.Path]::GetFileName([string]$entry.FullName).ToLowerInvariant())) {
+                throw 'ZIP内にプロジェクト未登録の動画があります。'
             }
         }
 

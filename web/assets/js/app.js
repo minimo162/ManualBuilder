@@ -1221,7 +1221,15 @@
     return /\.(mp4|webm)$/i.test(file.name || '');
   };
 
-  const videoCapture = { dialog: null, player: null, objectUrl: '', added: 0, busy: false };
+  const VIDEO_ATTACH_MAX_BYTES = 30 * 1024 * 1024;
+
+  const videoCapture = { dialog: null, player: null, file: null, objectUrl: '', added: 0, busy: false };
+
+  const formatByteSize = (bytes) => {
+    const value = Number(bytes) || 0;
+    if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)}MB`;
+    return `${Math.max(1, Math.round(value / 1024))}KB`;
+  };
 
   // ダイアログは最上位レイヤーに出るため、背面のトーストは読みにくい。結果はダイアログ内に出す。
   const setVideoStatus = (message = '') => {
@@ -1267,7 +1275,26 @@
     window.setTimeout(settle, 600);
   });
 
-  const captureVideoFrame = async () => {
+  // 動画本体は「動画つきで手順にする」を選んだときだけ送る。PowerPoint出力で埋め込む。
+  const attachVideoToStep = async (stepId) => {
+    const file = videoCapture.file;
+    if (!file || !stepId) return false;
+    const response = await fetch('/api/videos/attach', {
+      method: 'POST',
+      headers: sessionHeaders({
+        'Content-Type': file.type || 'application/octet-stream',
+        'X-Step-Id': stepId,
+        'X-Video-Duration': String(videoCapture.player?.duration || 0)
+      }),
+      body: file
+    });
+    let result = null;
+    try { result = await response.json(); } catch { result = null; }
+    if (!response.ok) throw new Error(result?.message || `HTTP ${response.status}`);
+    return true;
+  };
+
+  const captureVideoFrame = async (attachVideo = false) => {
     const player = videoCapture.player;
     if (!player || videoCapture.busy) return;
     if (!player.videoWidth || !player.videoHeight) {
@@ -1275,9 +1302,14 @@
       return;
     }
     if (!selectedSheetId()) return;
-    const button = videoCapture.dialog.querySelector('[data-video-capture]');
+    if (attachVideo && videoCapture.file && videoCapture.file.size > VIDEO_ATTACH_MAX_BYTES) {
+      setVideoStatus(`この動画は${formatByteSize(videoCapture.file.size)}あります。30MB以下に撮り直してください`);
+      showToast('動画は30MB以下にしてください。短く撮り直すか、ウィンドウだけを録画すると小さくなります。');
+      return;
+    }
+    const buttons = [...videoCapture.dialog.querySelectorAll('[data-video-capture], [data-video-capture-with-movie]')];
     videoCapture.busy = true;
-    button.disabled = true;
+    buttons.forEach((item) => { item.disabled = true; });
     try {
       player.pause();
       await waitForVideoFrame(player);
@@ -1294,20 +1326,30 @@
       if (!blob) throw new Error('この場面を画像にできませんでした。');
       const position = formatVideoTime(player.currentTime);
       const before = document.querySelectorAll('.step-card').length;
+      const beforeIds = new Set([...document.querySelectorAll('.step-card')].map((card) => card.dataset.stepId));
       await importImage(blob, 'video');
-      if (document.querySelectorAll('.step-card').length > before) {
+      const cards = [...document.querySelectorAll('.step-card')];
+      if (cards.length > before) {
         videoCapture.added += 1;
-        setVideoStatus(`${position} の場面を追加しました`);
+        if (attachVideo) {
+          const added = cards.find((card) => !beforeIds.has(card.dataset.stepId));
+          setVideoStatus(`${position} の場面を追加しました。動画を送っています…`);
+          await attachVideoToStep(added?.dataset.stepId || '');
+          await refreshWorkspace(added?.dataset.stepId || '');
+          setVideoStatus(`${position} の場面を動画つきで追加しました`);
+        } else {
+          setVideoStatus(`${position} の場面を追加しました`);
+        }
       } else {
         // 動画は動きの無い区間から2コマ取ると完全に一致し、重複として手順が作られない。
         setVideoStatus('同じ画面のため追加しませんでした');
       }
     } catch (error) {
-      setVideoStatus('取り込めませんでした');
+      setVideoStatus(error.message || '取り込めませんでした');
       showToast(error.message || 'この場面を取り込めませんでした。');
     } finally {
       videoCapture.busy = false;
-      button.disabled = false;
+      buttons.forEach((item) => { item.disabled = false; });
     }
   };
 
@@ -1322,6 +1364,29 @@
       URL.revokeObjectURL(videoCapture.objectUrl);
       videoCapture.objectUrl = '';
     }
+    videoCapture.file = null;
+  };
+
+  const detachStepVideo = async (card, button) => {
+    const stepId = card?.dataset.stepId;
+    if (!stepId) return;
+    button.disabled = true;
+    saveStatus('saving', '動画を外しています…');
+    try {
+      const response = await fetch('/api/videos/detach', {
+        method: 'POST',
+        headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }),
+        body: new URLSearchParams({ stepId }).toString()
+      });
+      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      card.querySelector('[data-step-video]')?.remove();
+      saveStatus('saved', '保存済み');
+      showToast('動画を外しました。', 'info');
+    } catch (error) {
+      button.disabled = false;
+      saveStatus('error', '動画を外せません');
+      showToast(error.message || '動画を外せませんでした。');
+    }
   };
 
   const ensureVideoDialog = () => {
@@ -1329,7 +1394,7 @@
     const dialog = document.createElement('dialog');
     dialog.id = 'video-frame-dialog';
     dialog.className = 'video-dialog';
-    dialog.innerHTML = '<header class="video-dialog__header"><div><strong>動画から手順を作る</strong><span>場面を選んで、その画面を手順に追加します</span></div><button type="button" class="video-dialog__close" data-video-close aria-label="閉じる">×</button></header><div class="video-dialog__content"><video class="video-dialog__player" data-video-player playsinline preload="metadata"></video><p class="video-dialog__error" data-video-error hidden></p><div class="video-dialog__controls"><button type="button" class="button button--ghost" data-video-play>再生</button><button type="button" class="button button--ghost" data-video-step="-1" aria-label="0.1秒戻す">◀ 0.1秒</button><input type="range" class="video-dialog__seek" data-video-seek min="0" max="0" step="0.01" value="0" aria-label="再生位置"><button type="button" class="button button--ghost" data-video-step="1" aria-label="0.1秒進める">0.1秒 ▶</button><span class="video-dialog__time" data-video-time>0:00.0 / 0:00.0</span></div></div><footer class="video-dialog__footer"><label class="video-dialog__quality"><input type="checkbox" data-video-original>元の解像度で取り込む</label><span class="video-dialog__spacer"></span><span class="video-dialog__count" data-video-status role="status" aria-live="polite">追加: 0件</span><button type="button" class="button button--primary" data-video-capture>この場面を手順にする</button><button type="button" class="button button--ghost" data-video-close>閉じる</button></footer>';
+    dialog.innerHTML = '<header class="video-dialog__header"><div><strong>動画から手順を作る</strong><span>場面を選んで、その画面を手順に追加します</span></div><button type="button" class="video-dialog__close" data-video-close aria-label="閉じる">×</button></header><div class="video-dialog__content"><video class="video-dialog__player" data-video-player playsinline preload="metadata"></video><p class="video-dialog__error" data-video-error hidden></p><div class="video-dialog__controls"><button type="button" class="button button--ghost" data-video-play>再生</button><button type="button" class="button button--ghost" data-video-step="-1" aria-label="0.1秒戻す">◀ 0.1秒</button><input type="range" class="video-dialog__seek" data-video-seek min="0" max="0" step="0.01" value="0" aria-label="再生位置"><button type="button" class="button button--ghost" data-video-step="1" aria-label="0.1秒進める">0.1秒 ▶</button><span class="video-dialog__time" data-video-time>0:00.0 / 0:00.0</span></div></div><footer class="video-dialog__footer"><label class="video-dialog__quality"><input type="checkbox" data-video-original>元の解像度で取り込む</label><span class="video-dialog__spacer"></span><span class="video-dialog__count" data-video-status role="status" aria-live="polite">追加: 0件</span><button type="button" class="button button--ghost" data-video-capture-with-movie title="この場面を手順にしたうえで、動画をその手順へ添付します">動画つきで手順にする</button><button type="button" class="button button--primary" data-video-capture>この場面を手順にする</button><button type="button" class="button button--ghost" data-video-close>閉じる</button></footer>';
 
     const player = dialog.querySelector('[data-video-player]');
     videoCapture.dialog = dialog;
@@ -1349,7 +1414,8 @@
     dialog.querySelector('[data-video-seek]').addEventListener('input', (event) => {
       seekVideoTo(Number(event.target.value));
     });
-    dialog.querySelector('[data-video-capture]').addEventListener('click', captureVideoFrame);
+    dialog.querySelector('[data-video-capture]').addEventListener('click', () => captureVideoFrame(false));
+    dialog.querySelector('[data-video-capture-with-movie]').addEventListener('click', () => captureVideoFrame(true));
     dialog.addEventListener('keydown', (event) => {
       if (event.target.matches('[data-video-seek]')) return;
       if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
@@ -1364,7 +1430,7 @@
       const error = dialog.querySelector('[data-video-error]');
       error.textContent = 'この動画は再生できません。mp4（H.264）またはwebmで録画し直してください。';
       error.hidden = false;
-      dialog.querySelector('[data-video-capture]').disabled = true;
+      dialog.querySelectorAll('[data-video-capture], [data-video-capture-with-movie]').forEach((item) => { item.disabled = true; });
     });
     dialog.addEventListener('close', releaseVideoSource);
     document.body.appendChild(dialog);
@@ -1381,10 +1447,14 @@
     releaseVideoSource();
     videoCapture.added = 0;
     setVideoStatus();
-    dialog.querySelector('[data-video-capture]').disabled = false;
+    dialog.querySelectorAll('[data-video-capture], [data-video-capture-with-movie]').forEach((item) => { item.disabled = false; });
     const error = dialog.querySelector('[data-video-error]');
     error.hidden = true;
     error.textContent = '';
+    videoCapture.file = file;
+    setVideoStatus(file.size > VIDEO_ATTACH_MAX_BYTES
+      ? `この動画は ${formatByteSize(file.size)}（動画つきにするには30MB以下が必要）`
+      : `この動画は ${formatByteSize(file.size)}`);
     videoCapture.objectUrl = URL.createObjectURL(file);
     videoCapture.player.src = videoCapture.objectUrl;
     videoCapture.player.load();
@@ -1789,6 +1859,12 @@
       if (hasEdits && !window.confirm('画像を差し替えると、新しい画像の注釈と切り抜きはリセットされます。元の画像へ戻すと編集内容も復元できます。続けますか？')) return;
       replacementStepId = card.dataset.stepId || '';
       document.getElementById('replacement-image-file-input')?.click();
+      return;
+    }
+    const detachVideoButton = event.target.closest('[data-detach-video]');
+    if (detachVideoButton) {
+      const card = detachVideoButton.closest('.step-card');
+      if (card) detachStepVideo(card, detachVideoButton);
       return;
     }
     const undoReplaceButton = event.target.closest('[data-undo-image-replace]');

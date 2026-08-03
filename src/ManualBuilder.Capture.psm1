@@ -264,6 +264,201 @@ function Remove-MbUnreferencedImages {
     return @($paths)
 }
 
+# --- 動画（PowerPoint出力への埋め込み用） ---------------------------------
+# 動画はブラウザーへ配信しない。手順カードにはコマから作った静止画を出し、
+# 動画本体はPowerPoint出力のときだけファイルとして読む。
+# これにより単一スレッドのHttpListenerで大きな配信が走らず、Range要求も不要になる。
+
+$script:MbVideoMaxBytes = 30 * 1024 * 1024
+
+function Get-MbVideoKind {
+    param([Parameter(Mandatory = $true)][byte[]]$Bytes)
+
+    if ($Bytes.Length -ge 12 -and
+        $Bytes[4] -eq 0x66 -and $Bytes[5] -eq 0x74 -and $Bytes[6] -eq 0x79 -and $Bytes[7] -eq 0x70) {
+        return [pscustomobject]@{ Extension = 'mp4'; MimeType = 'video/mp4' }
+    }
+    if ($Bytes.Length -ge 4 -and
+        $Bytes[0] -eq 0x1A -and $Bytes[1] -eq 0x45 -and $Bytes[2] -eq 0xDF -and $Bytes[3] -eq 0xA3) {
+        return [pscustomobject]@{ Extension = 'webm'; MimeType = 'video/webm' }
+    }
+    return $null
+}
+
+function Get-MbVideoDirectory {
+    param([Parameter(Mandatory = $true)][string]$ProjectPath)
+    return Join-Path (Split-Path -Parent ([IO.Path]::GetFullPath($ProjectPath))) 'videos'
+}
+
+function Get-MbVideoFilePath {
+    param(
+        [Parameter(Mandatory = $true)][object]$Project,
+        [Parameter(Mandatory = $true)][string]$ProjectPath,
+        [Parameter(Mandatory = $true)][string]$VideoId
+    )
+
+    $video = @($Project.videos | Where-Object { $_.id -eq $VideoId }) | Select-Object -First 1
+    if (-not $video) { return $null }
+    if ([string]$video.fileName -notmatch '^video-[a-f0-9]{32}\.(mp4|webm)$') { return $null }
+    return Join-Path (Get-MbVideoDirectory -ProjectPath $ProjectPath) ([string]$video.fileName)
+}
+
+function Add-MbVideoAsset {
+    param(
+        [Parameter(Mandatory = $true)][object]$Project,
+        [Parameter(Mandatory = $true)][string]$ProjectPath,
+        [Parameter(Mandatory = $true)][byte[]]$Bytes,
+        [double]$DurationSec = 0
+    )
+
+    if ($Bytes.Length -lt 1) { throw '動画データが空です。' }
+    if ($Bytes.Length -gt $script:MbVideoMaxBytes) { throw '動画は30MB以下にしてください。短く撮り直すか、解像度を下げてください。' }
+    $kind = Get-MbVideoKind -Bytes $Bytes
+    if (-not $kind) { throw 'mp4（H.264）またはwebmの動画に対応しています。' }
+    if ([double]::IsNaN($DurationSec) -or [double]::IsInfinity($DurationSec) -or $DurationSec -lt 0 -or $DurationSec -gt 3600) {
+        throw '動画の長さが範囲外です。'
+    }
+
+    $hash = Get-MbByteSha256 -Bytes $Bytes
+    $existing = @($Project.videos | Where-Object { $_.sha256 -eq $hash }) | Select-Object -First 1
+    if ($existing) {
+        return [pscustomobject]@{ Status = 'existing'; Video = $existing }
+    }
+    if (@($Project.videos).Count -ge 50) { throw '動画は1マニュアル50本までです。' }
+
+    $videoId = 'video-' + [guid]::NewGuid().ToString('N')
+    $fileName = "$videoId.$($kind.Extension)"
+    $videoDirectory = Get-MbVideoDirectory -ProjectPath $ProjectPath
+    if (-not (Test-Path -LiteralPath $videoDirectory)) {
+        [void](New-Item -ItemType Directory -Path $videoDirectory -Force)
+    }
+    $destination = Join-Path $videoDirectory $fileName
+    $temporary = Join-Path $videoDirectory ('.video-' + [guid]::NewGuid().ToString('N') + '.tmp')
+    try {
+        [IO.File]::WriteAllBytes($temporary, $Bytes)
+        [IO.File]::Move($temporary, $destination)
+    } finally {
+        if (Test-Path -LiteralPath $temporary) {
+            Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $video = [pscustomobject]@{
+        id          = $videoId
+        fileName    = $fileName
+        sha256      = $hash
+        byteLength  = [long]$Bytes.Length
+        mimeType    = $kind.MimeType
+        durationSec = [Math]::Round([double]$DurationSec, 1)
+        createdAt   = [DateTime]::UtcNow.ToString('o')
+    }
+    $Project.videos = @($Project.videos) + @($video)
+    return [pscustomobject]@{ Status = 'added'; Video = $video }
+}
+
+function Set-MbStepVideo {
+    param(
+        [Parameter(Mandatory = $true)][object]$Project,
+        [Parameter(Mandatory = $true)][string]$ProjectPath,
+        [Parameter(Mandatory = $true)][string]$StepId,
+        [Parameter(Mandatory = $true)][byte[]]$Bytes,
+        [double]$DurationSec = 0
+    )
+
+    $step = $null
+    foreach ($sheet in @($Project.sheets)) {
+        $step = @($sheet.steps | Where-Object { $_.id -eq $StepId }) | Select-Object -First 1
+        if ($step) { break }
+    }
+    if (-not $step) { throw '対象手順が見つかりません。' }
+
+    $previousVideoId = [string]$step.videoId
+    $asset = Add-MbVideoAsset -Project $Project -ProjectPath $ProjectPath -Bytes $Bytes -DurationSec $DurationSec
+    $step.videoId = [string]$asset.Video.id
+    $step.updatedAt = [DateTime]::UtcNow.ToString('o')
+    $removedPath = $null
+    if ($previousVideoId -and $previousVideoId -ne [string]$asset.Video.id) {
+        $removedPath = Remove-MbUnusedVideo -Project $Project -ProjectPath $ProjectPath -VideoId $previousVideoId
+    }
+    return [pscustomobject]@{ Step = $step; Video = $asset.Video; RemovedPath = $removedPath }
+}
+
+function Remove-MbStepVideo {
+    param(
+        [Parameter(Mandatory = $true)][object]$Project,
+        [Parameter(Mandatory = $true)][string]$ProjectPath,
+        [Parameter(Mandatory = $true)][string]$StepId
+    )
+
+    $step = $null
+    foreach ($sheet in @($Project.sheets)) {
+        $step = @($sheet.steps | Where-Object { $_.id -eq $StepId }) | Select-Object -First 1
+        if ($step) { break }
+    }
+    if (-not $step) { throw '対象手順が見つかりません。' }
+    $videoId = [string]$step.videoId
+    if (-not $videoId) { return [pscustomobject]@{ Step = $step; RemovedPath = $null } }
+    $step.videoId = $null
+    $step.updatedAt = [DateTime]::UtcNow.ToString('o')
+    return [pscustomobject]@{
+        Step        = $step
+        RemovedPath = (Remove-MbUnusedVideo -Project $Project -ProjectPath $ProjectPath -VideoId $videoId)
+    }
+}
+
+function Remove-MbUnusedVideo {
+    param(
+        [Parameter(Mandatory = $true)][object]$Project,
+        [Parameter(Mandatory = $true)][string]$ProjectPath,
+        [AllowEmptyString()][string]$VideoId
+    )
+
+    if ([string]::IsNullOrWhiteSpace($VideoId)) { return $null }
+    foreach ($sheet in @($Project.sheets)) {
+        foreach ($step in @($sheet.steps)) {
+            if ([string]$step.videoId -eq $VideoId) { return $null }
+        }
+    }
+
+    $videoPath = Get-MbVideoFilePath -Project $Project -ProjectPath $ProjectPath -VideoId $VideoId
+    $before = @($Project.videos).Count
+    $Project.videos = @($Project.videos | Where-Object { $_.id -ne $VideoId })
+    if (@($Project.videos).Count -eq $before) { return $null }
+    return $videoPath
+}
+
+function Remove-MbUnreferencedVideos {
+    param(
+        [Parameter(Mandatory = $true)][object]$Project,
+        [Parameter(Mandatory = $true)][string]$ProjectPath
+    )
+
+    $referenced = @{}
+    foreach ($sheet in @($Project.sheets)) {
+        foreach ($step in @($sheet.steps)) {
+            $videoId = [string]$step.videoId
+            if (-not [string]::IsNullOrWhiteSpace($videoId)) { $referenced[$videoId] = $true }
+        }
+    }
+
+    $paths = New-Object System.Collections.ArrayList
+    foreach ($video in @($Project.videos)) {
+        $videoId = [string]$video.id
+        if ($referenced.ContainsKey($videoId)) { continue }
+        $path = Get-MbVideoFilePath -Project $Project -ProjectPath $ProjectPath -VideoId $videoId
+        if ($path) { [void]$paths.Add($path) }
+    }
+    $Project.videos = @($Project.videos | Where-Object { $referenced.ContainsKey([string]$_.id) })
+    return @($paths)
+}
+
+function Get-MbVideoTotalBytes {
+    param([Parameter(Mandatory = $true)][object]$Project)
+    $total = [long]0
+    foreach ($video in @($Project.videos)) { $total += [long]$video.byteLength }
+    return $total
+}
+
 function Resolve-MbScreenshotDirectory {
     $guid = '{B7BEDE81-DF94-4682-A7D8-57A52620B86F}'
     foreach ($key in @(
@@ -301,5 +496,13 @@ Export-ModuleMember -Function @(
     'Restore-MbStepImage',
     'Remove-MbUnusedImage',
     'Remove-MbUnreferencedImages',
+    'Get-MbVideoKind',
+    'Get-MbVideoFilePath',
+    'Add-MbVideoAsset',
+    'Set-MbStepVideo',
+    'Remove-MbStepVideo',
+    'Remove-MbUnusedVideo',
+    'Remove-MbUnreferencedVideos',
+    'Get-MbVideoTotalBytes',
     'Resolve-MbScreenshotDirectory'
 )

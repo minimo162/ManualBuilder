@@ -1096,6 +1096,52 @@ function Invoke-MbRoute {
         return
     }
 
+    if ($path -eq '/api/videos/attach') {
+        # 動画は手順へ添付するだけで、ブラウザーへは返さない。PowerPoint出力のときだけ読む。
+        $bytes = $null
+        try {
+            $stepId = [string]$request.Headers['X-Step-Id']
+            if ([string]::IsNullOrWhiteSpace($stepId)) { throw '対象手順が指定されていません。' }
+            $length = [long]$request.ContentLength64
+            if ($length -lt 1) { throw '動画データが空です。' }
+            if ($length -gt (30 * 1024 * 1024)) { throw '動画は30MB以下にしてください。短く撮り直すか、解像度を下げてください。' }
+            $memory = New-Object IO.MemoryStream
+            try {
+                $request.InputStream.CopyTo($memory)
+                $bytes = $memory.ToArray()
+            } finally {
+                $memory.Dispose()
+            }
+            $duration = [double]0
+            [void][double]::TryParse([string]$request.Headers['X-Video-Duration'],
+                [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$duration)
+
+            $project = Get-MbProject -Path $ProjectPath
+            $result = Set-MbStepVideo -Project $project -ProjectPath $ProjectPath -StepId $stepId -Bytes $bytes -DurationSec $duration
+            $project = Save-MbProject -Project $project -Path $ProjectPath
+            if ($result.RemovedPath -and (Test-Path -LiteralPath $result.RemovedPath -PathType Leaf)) {
+                Remove-Item -LiteralPath $result.RemovedPath -Force -ErrorAction SilentlyContinue
+            }
+            $script:CaptureVersion++
+            $totalBytes = Get-MbVideoTotalBytes -Project $project
+            $body = [pscustomobject]@{
+                state       = 'attached'
+                message     = '動画を添付しました。PowerPointで作成すると再生できます。'
+                stepId      = $stepId
+                videoId     = [string]$result.Video.id
+                byteLength  = [long]$result.Video.byteLength
+                durationSec = [double]$result.Video.durationSec
+                totalBytes  = [long]$totalBytes
+            } | ConvertTo-Json -Compress
+            Write-MbLog "動画を添付しました: $stepId / $([Math]::Round([long]$result.Video.byteLength / 1MB, 1))MB" 'OK'
+            Write-MbResponse $Context $body 200 'application/json; charset=utf-8'
+        } catch {
+            $body = [pscustomobject]@{ state = 'failed'; message = $_.Exception.Message } | ConvertTo-Json -Compress
+            Write-MbResponse $Context $body 400 'application/json; charset=utf-8'
+        }
+        return
+    }
+
     if ($path -eq '/api/projects/import') {
         $packagePath = Join-Path ([IO.Path]::GetTempPath()) ('ManualBuilder-import-' + [guid]::NewGuid().ToString('N') + '.zip')
         try {
@@ -1418,6 +1464,20 @@ function Invoke-MbRoute {
             }
             return
         }
+        '/api/videos/detach' {
+            try {
+                $result = Remove-MbStepVideo -Project $project -ProjectPath $ProjectPath -StepId (Get-MbFormValue $form 'stepId')
+                [void](Save-MbProject -Project $project -Path $ProjectPath)
+                if ($result.RemovedPath -and (Test-Path -LiteralPath $result.RemovedPath -PathType Leaf)) {
+                    Remove-Item -LiteralPath $result.RemovedPath -Force -ErrorAction SilentlyContinue
+                }
+                $script:CaptureVersion++
+                Write-MbResponse $Context (ConvertTo-MbSaveStatusHtml)
+            } catch {
+                Write-MbResponse $Context (ConvertTo-MbSaveStatusHtml -Message $_.Exception.Message -State error) 400
+            }
+            return
+        }
         '/api/steps/delete' {
             try {
                 $stepId = Get-MbFormValue $form 'stepId'
@@ -1427,6 +1487,7 @@ function Invoke-MbRoute {
                     if ($removedStep) { break }
                 }
                 $removedImageId = if ($removedStep) { [string]$removedStep.imageId } else { '' }
+                $removedVideoId = if ($removedStep) { [string]$removedStep.videoId } else { '' }
                 $historyImageId = ''
                 if ($script:ImageReplacementHistory.ContainsKey($stepId)) {
                     $historyImageId = [string]$script:ImageReplacementHistory[$stepId].imageId
@@ -1436,6 +1497,7 @@ function Invoke-MbRoute {
                 $unusedImagePaths = @(
                     Remove-MbUnusedImage -Project $project -ProjectPath $ProjectPath -ImageId $removedImageId
                     Remove-MbUnusedImage -Project $project -ProjectPath $ProjectPath -ImageId $historyImageId
+                    Remove-MbUnusedVideo -Project $project -ProjectPath $ProjectPath -VideoId $removedVideoId
                 ) | Where-Object { $_ }
                 [void](Save-MbProject -Project $project -Path $ProjectPath)
                 foreach ($unusedImagePath in @($unusedImagePaths)) {
@@ -1477,7 +1539,11 @@ try {
     }
     $initialProject = Get-MbProject -Path $ProjectPath
     $projectReady = $true
-    $orphanedImagePaths = @(Remove-MbUnreferencedImages -Project $initialProject -ProjectPath $ProjectPath)
+    $orphanedImagePaths = @(
+        Remove-MbUnreferencedImages -Project $initialProject -ProjectPath $ProjectPath
+        Remove-MbUnreferencedVideos -Project $initialProject -ProjectPath $ProjectPath
+    ) | Where-Object { $_ }
+    $orphanedImagePaths = @($orphanedImagePaths)
     if ($orphanedImagePaths.Count -gt 0) {
         [void](Save-MbProject -Project $initialProject -Path $ProjectPath)
         foreach ($orphanedImagePath in $orphanedImagePaths) {
@@ -1571,7 +1637,11 @@ try {
         $script:ImageReplacementHistory.Clear()
         if ($projectReady -and (Test-Path -LiteralPath $ProjectPath -PathType Leaf)) {
             $finalProject = Get-MbProject -Path $ProjectPath
-            $unusedImagePaths = @(Remove-MbUnreferencedImages -Project $finalProject -ProjectPath $ProjectPath)
+            $unusedImagePaths = @(
+                Remove-MbUnreferencedImages -Project $finalProject -ProjectPath $ProjectPath
+                Remove-MbUnreferencedVideos -Project $finalProject -ProjectPath $ProjectPath
+            ) | Where-Object { $_ }
+            $unusedImagePaths = @($unusedImagePaths)
             if ($unusedImagePaths.Count -gt 0) {
                 [void](Save-MbProject -Project $finalProject -Path $ProjectPath)
                 foreach ($unusedImagePath in $unusedImagePaths) {
