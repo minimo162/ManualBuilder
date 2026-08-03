@@ -13,6 +13,7 @@ param(
     [ValidateRange(0, 3600)][int]$CaptureStandbySec = 900,
     [ValidateRange(60, 1800)][int]$ExcelExportTimeoutSec = 300,
     [ValidateRange(60, 1800)][int]$WordExportTimeoutSec = 300,
+    [ValidateRange(60, 1800)][int]$PowerPointExportTimeoutSec = 300,
     [switch]$DisableScreenshotWatcher,
     [switch]$NoBrowser
 )
@@ -57,6 +58,11 @@ $script:WordExportCancelRequestedAt = $null
 $script:WordExportCancelReason = ''
 $script:WordExportJobsRoot = [string]$storageLayout.ExportJobsRoot
 $script:WordExportWorkerPath = Join-Path $PSScriptRoot 'Export-ManualBuilderWord.ps1'
+$script:PowerPointExportJob = $null
+$script:PowerPointExportCancelRequestedAt = $null
+$script:PowerPointExportCancelReason = ''
+$script:PowerPointExportJobsRoot = [string]$storageLayout.ExportJobsRoot
+$script:PowerPointExportWorkerPath = Join-Path $PSScriptRoot 'Export-ManualBuilderPowerPoint.ps1'
 $script:ImageReplacementHistory = @{}
 $script:ProjectHomeVisible = -not $usesExplicitProjectPath
 $script:ActiveProjectKey = if ($usesExplicitProjectPath) { '' } else { 'default' }
@@ -699,6 +705,182 @@ function Open-MbWordExportResult {
     return $status
 }
 
+# --- PowerPoint出力（動画を埋め込める唯一の出力先） ---------------------------
+function Stop-MbPowerPointExportWorkerSafely {
+    param([Parameter(Mandatory = $true)][object]$Status)
+    if (-not $script:PowerPointExportJob) { return }
+    if ([bool]$Status.ownershipProven -and [int]$Status.ownedPowerPointPid -gt 0 -and $Status.ownedPowerPointStartTimeUtc) {
+        $powerPointProcess = Get-Process -Id ([int]$Status.ownedPowerPointPid) -ErrorAction SilentlyContinue
+        if ($powerPointProcess -and $powerPointProcess.ProcessName -eq 'POWERPNT') {
+            $expectedStart = [DateTime]::Parse([string]$Status.ownedPowerPointStartTimeUtc).ToUniversalTime()
+            $actualStart = $powerPointProcess.StartTime.ToUniversalTime()
+            if ([Math]::Abs(($actualStart - $expectedStart).TotalSeconds) -lt 2 -and [string]$Status.ownershipMode -eq 'Hwnd') {
+                Stop-Process -Id $powerPointProcess.Id -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+    Start-Sleep -Milliseconds 500
+    $worker = Get-Process -Id ([int]$script:PowerPointExportJob.ProcessId) -ErrorAction SilentlyContinue
+    if ($worker -and $worker.ProcessName -match '^powershell$') { Stop-Process -Id $worker.Id -Force -ErrorAction SilentlyContinue }
+}
+
+function Remove-MbPowerPointExportSnapshot {
+    if (-not $script:PowerPointExportJob -or $script:PowerPointExportJob.CleanupDone) { return }
+    $root = [IO.Path]::GetFullPath($script:PowerPointExportJobsRoot).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    $jobDirectory = [IO.Path]::GetFullPath([string]$script:PowerPointExportJob.JobDirectory)
+    if (-not $jobDirectory.StartsWith($root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { return }
+    foreach ($target in @('project.json', 'project.json.bak', 'images', 'videos', 'rendered-ppt-images')) {
+        $path = Join-Path $jobDirectory $target
+        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+    $script:PowerPointExportJob.CleanupDone = $true
+}
+
+function New-MbPowerPointIdleStatus {
+    return [pscustomobject]@{
+        jobId = ''; state = 'idle'; phase = 'idle'; message = 'PowerPoint出力を開始できます'; percent = 0
+        currentStep = 0; totalSteps = 0; outputPath = ''; outputName = ''; outputDirectory = (Get-MbExcelOutputDirectory)
+        ownedPowerPointPid = 0; ownedPowerPointStartTimeUtc = ''; ownershipMode = ''; ownershipProven = $false
+        slideCount = 0; videoCount = 0
+        startedAt = ''; updatedAt = ''; completedAt = ''; errorCode = ''
+    }
+}
+
+function Read-MbPowerPointExportStatus {
+    if (-not $script:PowerPointExportJob) { return New-MbPowerPointIdleStatus }
+    $status = $null
+    for ($attempt = 0; $attempt -lt 3 -and -not $status; $attempt++) {
+        try {
+            if (Test-Path -LiteralPath $script:PowerPointExportJob.StatusPath -PathType Leaf) {
+                $status = [IO.File]::ReadAllText($script:PowerPointExportJob.StatusPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+            }
+        } catch { if ($attempt -lt 2) { Start-Sleep -Milliseconds 30 } }
+    }
+    if (-not $status) {
+        $status = [pscustomobject]@{
+            jobId = [string]$script:PowerPointExportJob.JobId; state = 'queued'; phase = 'queued'; message = 'PowerPoint出力を開始しています'
+            percent = 0; currentStep = 0; totalSteps = [int]$script:PowerPointExportJob.TotalSteps; outputPath = ''; outputName = ''
+            outputDirectory = [string]$script:PowerPointExportJob.OutputDirectory
+            ownedPowerPointPid = 0; ownedPowerPointStartTimeUtc = ''; ownershipMode = ''; ownershipProven = $false
+            slideCount = 0; videoCount = 0
+            startedAt = [string]$script:PowerPointExportJob.StartedAt; updatedAt = ''; completedAt = ''; errorCode = ''
+        }
+    }
+    $process = Get-Process -Id ([int]$script:PowerPointExportJob.ProcessId) -ErrorAction SilentlyContinue
+    $active = [string]$status.state -in @('queued', 'running', 'finalizing')
+    if ($active -and $process -and -not $script:PowerPointExportCancelRequestedAt) {
+        if (((Get-Date) - [DateTime]$script:PowerPointExportJob.StartedAt).TotalSeconds -gt $PowerPointExportTimeoutSec) {
+            [IO.File]::WriteAllText($script:PowerPointExportJob.CancelPath, 'timeout', (New-Object Text.UTF8Encoding($false)))
+            $script:PowerPointExportCancelRequestedAt = Get-Date; $script:PowerPointExportCancelReason = 'timeout'
+            $status.message = '規定時間を超えたため、安全に中止しています'
+        }
+    }
+    if ($active -and $process -and $script:PowerPointExportCancelRequestedAt -and ((Get-Date) - $script:PowerPointExportCancelRequestedAt).TotalSeconds -gt 30) {
+        Stop-MbPowerPointExportWorkerSafely -Status $status
+        $status.state = if ($script:PowerPointExportCancelReason -eq 'timeout') { 'failed' } else { 'cancelled' }
+        $status.phase = [string]$status.state
+        $status.message = if ($script:PowerPointExportCancelReason -eq 'timeout') { 'PowerPointが規定時間内に応答しなかったため、出力処理を停止しました' } else { 'PowerPoint作成を中止しました' }
+        $status.errorCode = if ($script:PowerPointExportCancelReason -eq 'timeout') { 'EXPORT_TIMEOUT' } else { 'CANCELLED' }
+        $status.completedAt = [DateTime]::UtcNow.ToString('o')
+        try { Write-MbExportServerStatus -Path $script:PowerPointExportJob.StatusPath -Status $status } catch { }
+        $process = $null; $active = $false
+    }
+    if ($active -and -not $process) {
+        $status.state = 'failed'; $status.phase = 'failed'; $status.message = 'PowerPoint出力プロセスが完了結果を返さず終了しました'
+        $status.errorCode = 'WORKER_EXITED_WITHOUT_RESULT'; $status.completedAt = [DateTime]::UtcNow.ToString('o')
+        try { Write-MbExportServerStatus -Path $script:PowerPointExportJob.StatusPath -Status $status } catch { }
+    }
+    if ([string]$status.state -in @('completed', 'cancelled', 'failed')) { Remove-MbPowerPointExportSnapshot }
+    return $status
+}
+
+function Start-MbPowerPointExportJob {
+    $current = Read-MbPowerPointExportStatus
+    if ([string]$current.state -in @('queued', 'running', 'finalizing')) { return $current }
+    $excelStatus = Read-MbExcelExportStatus
+    if ([string]$excelStatus.state -in @('queued', 'running', 'finalizing')) { throw 'Excel作成中です。完了または中止してからPowerPointを作成してください。' }
+    $wordStatus = Read-MbWordExportStatus
+    if ([string]$wordStatus.state -in @('queued', 'running', 'finalizing')) { throw 'Word作成中です。完了または中止してからPowerPointを作成してください。' }
+    $project = Get-MbProject -Path $ProjectPath
+    $totalSteps = 0
+    foreach ($sheet in @($project.sheets)) { $totalSteps += @($sheet.steps).Count }
+    if ($totalSteps -lt 1) { throw 'PowerPointへ出力する手順を1件以上追加してください。' }
+    [void](Save-MbProject -Project $project -Path $ProjectPath)
+    $jobId = 'ppt-export-' + [guid]::NewGuid().ToString('N')
+    $jobDirectory = Join-Path $script:PowerPointExportJobsRoot $jobId
+    $snapshotPath = Join-Path $jobDirectory 'project.json'
+    $snapshotImageDirectory = Join-Path $jobDirectory 'images'
+    $snapshotVideoDirectory = Join-Path $jobDirectory 'videos'
+    $statusPath = Join-Path $jobDirectory 'status.json'
+    $cancelPath = Join-Path $jobDirectory 'cancel.requested'
+    $outputDirectory = Get-MbExcelOutputDirectory
+    [void](New-Item -ItemType Directory -Path $snapshotImageDirectory -Force)
+    [void](New-Item -ItemType Directory -Path $snapshotVideoDirectory -Force)
+    [void](New-Item -ItemType Directory -Path $outputDirectory -Force)
+    [IO.File]::Copy($ProjectPath, $snapshotPath, $true)
+    $sourceImageDirectory = Join-Path (Split-Path -Parent $ProjectPath) 'images'
+    foreach ($image in @($project.images)) {
+        $fileName = [string]$image.fileName
+        if ($fileName -notmatch '^image-[a-f0-9]{32}\.(png|jpg|bmp)$') { throw "画像ファイル名が不正です: $fileName" }
+        $sourcePath = Join-Path $sourceImageDirectory $fileName
+        if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) { throw "画像ファイルが見つかりません: $fileName" }
+        [IO.File]::Copy($sourcePath, (Join-Path $snapshotImageDirectory $fileName), $true)
+    }
+    $sourceVideoDirectory = Join-Path (Split-Path -Parent $ProjectPath) 'videos'
+    foreach ($video in @($project.videos)) {
+        $fileName = [string]$video.fileName
+        if ($fileName -notmatch '^video-[a-f0-9]{32}\.(mp4|webm)$') { throw "動画ファイル名が不正です: $fileName" }
+        $sourcePath = Join-Path $sourceVideoDirectory $fileName
+        if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) { throw "動画ファイルが見つかりません: $fileName" }
+        [IO.File]::Copy($sourcePath, (Join-Path $snapshotVideoDirectory $fileName), $true)
+    }
+    $queuedStatus = New-MbPowerPointIdleStatus
+    $queuedStatus.jobId = $jobId; $queuedStatus.state = 'queued'; $queuedStatus.phase = 'queued'
+    $queuedStatus.message = 'PowerPoint出力を開始しています'; $queuedStatus.totalSteps = $totalSteps
+    $queuedStatus.outputDirectory = $outputDirectory
+    $queuedStatus.startedAt = [DateTime]::UtcNow.ToString('o'); $queuedStatus.updatedAt = $queuedStatus.startedAt
+    Write-MbExportServerStatus -Path $statusPath -Status $queuedStatus
+    $powerShellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $powerShellPath -PathType Leaf)) { throw 'Windows PowerShell 5.1が見つかりません。' }
+    $quoted = { param([string]$Value) '"' + $Value.Replace('"', '\"') + '"' }
+    $arguments = @(
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-STA', '-File', (& $quoted $script:PowerPointExportWorkerPath),
+        '-ProjectPath', (& $quoted $snapshotPath), '-OutputDirectory', (& $quoted $outputDirectory),
+        '-StatusPath', (& $quoted $statusPath), '-CancelPath', (& $quoted $cancelPath), '-JobId', (& $quoted $jobId)
+    )
+    $worker = Start-Process -FilePath $powerShellPath -ArgumentList $arguments -WindowStyle Hidden -PassThru
+    $workerId = [int]$worker.Id; $worker.Dispose()
+    $script:PowerPointExportJob = [pscustomobject]@{
+        JobId = $jobId; ProcessId = $workerId; StatusPath = $statusPath; CancelPath = $cancelPath
+        JobDirectory = $jobDirectory; OutputDirectory = $outputDirectory; StartedAt = Get-Date; TotalSteps = $totalSteps; CleanupDone = $false
+    }
+    $script:PowerPointExportCancelRequestedAt = $null; $script:PowerPointExportCancelReason = ''
+    Write-MbLog "PowerPoint出力を開始しました: $jobId" 'OK'
+    return Read-MbPowerPointExportStatus
+}
+
+function Request-MbPowerPointExportCancel {
+    $status = Read-MbPowerPointExportStatus
+    if ([string]$status.state -in @('queued', 'running')) {
+        [IO.File]::WriteAllText($script:PowerPointExportJob.CancelPath, 'cancel', (New-Object Text.UTF8Encoding($false)))
+        $script:PowerPointExportCancelRequestedAt = Get-Date; $script:PowerPointExportCancelReason = 'user'
+        $status.message = 'PowerPoint作成を安全に中止しています'
+    }
+    return $status
+}
+
+function Open-MbPowerPointExportResult {
+    param([ValidateSet('file', 'folder')][string]$Mode)
+    $status = Read-MbPowerPointExportStatus
+    if ([string]$status.state -ne 'completed') { throw '完成したPowerPointファイルがありません。' }
+    $root = [IO.Path]::GetFullPath([string]$status.outputDirectory).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    $path = [IO.Path]::GetFullPath([string]$status.outputPath)
+    if (-not $path.StartsWith($root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw '出力ファイルの場所を確認できません。' }
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw '出力したPowerPointファイルが見つかりません。' }
+    if ($Mode -eq 'file') { Start-Process -FilePath $path } else { Start-Process -FilePath $root }
+    return $status
+}
+
 function Write-MbResponse {
     param(
         [Parameter(Mandatory = $true)][System.Net.HttpListenerContext]$Context,
@@ -852,8 +1034,10 @@ function ConvertTo-MbCurrentProjectLibraryHtml {
 function Test-MbOfficeExportActive {
     $excel = Read-MbExcelExportStatus
     $word = Read-MbWordExportStatus
+    $powerPoint = Read-MbPowerPointExportStatus
     return ([string]$excel.state -in @('queued', 'running', 'finalizing')) -or
-        ([string]$word.state -in @('queued', 'running', 'finalizing'))
+        ([string]$word.state -in @('queued', 'running', 'finalizing')) -or
+        ([string]$powerPoint.state -in @('queued', 'running', 'finalizing'))
 }
 
 function Reset-MbActiveProjectSession {
@@ -870,6 +1054,9 @@ function Reset-MbActiveProjectSession {
     $script:WordExportJob = $null
     $script:WordExportCancelRequestedAt = $null
     $script:WordExportCancelReason = ''
+    $script:PowerPointExportJob = $null
+    $script:PowerPointExportCancelRequestedAt = $null
+    $script:PowerPointExportCancelReason = ''
     $script:CaptureVersion++
 }
 
@@ -964,6 +1151,11 @@ function Invoke-MbRoute {
                 Write-MbResponse $Context ($status | ConvertTo-Json -Depth 8 -Compress) 200 'application/json; charset=utf-8'
                 return
             }
+            '/api/export/powerpoint/status' {
+                $status = Read-MbPowerPointExportStatus
+                Write-MbResponse $Context ($status | ConvertTo-Json -Depth 8 -Compress) 200 'application/json; charset=utf-8'
+                return
+            }
             default { Write-MbResponse $Context 'not found' 404 'text/plain; charset=utf-8'; return }
         }
     }
@@ -1014,7 +1206,7 @@ function Invoke-MbRoute {
             $memory.Dispose()
         }
         $source = [string]$request.Headers['X-Image-Source']
-        if ($source -notin @('paste', 'drop', 'file')) { $source = 'file' }
+        if ($source -notin @('paste', 'drop', 'file', 'video')) { $source = 'file' }
         $sheetId = [string]$request.Headers['X-Sheet-Id']
         $project = Get-MbProject -Path $ProjectPath
         $result = Add-MbImageStep -Project $project -ProjectPath $ProjectPath -SheetId $sheetId -Bytes $bytes -Source $source
@@ -1049,7 +1241,7 @@ function Invoke-MbRoute {
         }
         try {
             $source = [string]$request.Headers['X-Image-Source']
-            if ($source -notin @('paste', 'drop', 'file')) { $source = 'file' }
+            if ($source -notin @('paste', 'drop', 'file', 'video')) { $source = 'file' }
             $stepId = [string]$request.Headers['X-Step-Id']
             if ([string]::IsNullOrWhiteSpace($stepId)) { throw '対象手順が指定されていません。' }
             $project = Get-MbProject -Path $ProjectPath
@@ -1088,6 +1280,52 @@ function Invoke-MbRoute {
                 canUndo     = $canUndoReplacement
             } | ConvertTo-Json -Depth 6 -Compress
             Write-MbLog "画像を差し替えました: $stepId / $($result.Image.width)x$($result.Image.height)px" 'OK'
+            Write-MbResponse $Context $body 200 'application/json; charset=utf-8'
+        } catch {
+            $body = [pscustomobject]@{ state = 'failed'; message = $_.Exception.Message } | ConvertTo-Json -Compress
+            Write-MbResponse $Context $body 400 'application/json; charset=utf-8'
+        }
+        return
+    }
+
+    if ($path -eq '/api/videos/attach') {
+        # 動画は手順へ添付するだけで、ブラウザーへは返さない。PowerPoint出力のときだけ読む。
+        $bytes = $null
+        try {
+            $stepId = [string]$request.Headers['X-Step-Id']
+            if ([string]::IsNullOrWhiteSpace($stepId)) { throw '対象手順が指定されていません。' }
+            $length = [long]$request.ContentLength64
+            if ($length -lt 1) { throw '動画データが空です。' }
+            if ($length -gt (30 * 1024 * 1024)) { throw '動画は30MB以下にしてください。短く撮り直すか、解像度を下げてください。' }
+            $memory = New-Object IO.MemoryStream
+            try {
+                $request.InputStream.CopyTo($memory)
+                $bytes = $memory.ToArray()
+            } finally {
+                $memory.Dispose()
+            }
+            $duration = [double]0
+            [void][double]::TryParse([string]$request.Headers['X-Video-Duration'],
+                [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$duration)
+
+            $project = Get-MbProject -Path $ProjectPath
+            $result = Set-MbStepVideo -Project $project -ProjectPath $ProjectPath -StepId $stepId -Bytes $bytes -DurationSec $duration
+            $project = Save-MbProject -Project $project -Path $ProjectPath
+            if ($result.RemovedPath -and (Test-Path -LiteralPath $result.RemovedPath -PathType Leaf)) {
+                Remove-Item -LiteralPath $result.RemovedPath -Force -ErrorAction SilentlyContinue
+            }
+            $script:CaptureVersion++
+            $totalBytes = Get-MbVideoTotalBytes -Project $project
+            $body = [pscustomobject]@{
+                state       = 'attached'
+                message     = '動画を添付しました。PowerPointで作成すると再生できます。'
+                stepId      = $stepId
+                videoId     = [string]$result.Video.id
+                byteLength  = [long]$result.Video.byteLength
+                durationSec = [double]$result.Video.durationSec
+                totalBytes  = [long]$totalBytes
+            } | ConvertTo-Json -Compress
+            Write-MbLog "動画を添付しました: $stepId / $([Math]::Round([long]$result.Video.byteLength / 1MB, 1))MB" 'OK'
             Write-MbResponse $Context $body 200 'application/json; charset=utf-8'
         } catch {
             $body = [pscustomobject]@{ state = 'failed'; message = $_.Exception.Message } | ConvertTo-Json -Compress
@@ -1286,6 +1524,33 @@ function Invoke-MbRoute {
         }
         return
     }
+    if ($path -eq '/api/export/powerpoint/start') {
+        try {
+            $status = Start-MbPowerPointExportJob
+            Write-MbResponse $Context ($status | ConvertTo-Json -Depth 8 -Compress) 202 'application/json; charset=utf-8'
+        } catch {
+            $body = [pscustomobject]@{ state = 'failed'; message = $_.Exception.Message; errorCode = 'START_REJECTED' } | ConvertTo-Json -Compress
+            Write-MbResponse $Context $body 400 'application/json; charset=utf-8'
+        }
+        return
+    }
+    if ($path -eq '/api/export/powerpoint/cancel') {
+        $status = Request-MbPowerPointExportCancel
+        Write-MbResponse $Context ($status | ConvertTo-Json -Depth 8 -Compress) 202 'application/json; charset=utf-8'
+        return
+    }
+    if ($path -eq '/api/export/powerpoint/open') {
+        try {
+            $mode = Get-MbFormValue $form 'mode'
+            if ($mode -notin @('file', 'folder')) { throw '開く対象が不正です。' }
+            $status = Open-MbPowerPointExportResult -Mode $mode
+            Write-MbResponse $Context ($status | ConvertTo-Json -Depth 8 -Compress) 200 'application/json; charset=utf-8'
+        } catch {
+            $body = [pscustomobject]@{ state = 'failed'; message = $_.Exception.Message; errorCode = 'OPEN_FAILED' } | ConvertTo-Json -Compress
+            Write-MbResponse $Context $body 400 'application/json; charset=utf-8'
+        }
+        return
+    }
 
     $project = Get-MbProject -Path $ProjectPath
 
@@ -1418,6 +1683,20 @@ function Invoke-MbRoute {
             }
             return
         }
+        '/api/videos/detach' {
+            try {
+                $result = Remove-MbStepVideo -Project $project -ProjectPath $ProjectPath -StepId (Get-MbFormValue $form 'stepId')
+                [void](Save-MbProject -Project $project -Path $ProjectPath)
+                if ($result.RemovedPath -and (Test-Path -LiteralPath $result.RemovedPath -PathType Leaf)) {
+                    Remove-Item -LiteralPath $result.RemovedPath -Force -ErrorAction SilentlyContinue
+                }
+                $script:CaptureVersion++
+                Write-MbResponse $Context (ConvertTo-MbSaveStatusHtml)
+            } catch {
+                Write-MbResponse $Context (ConvertTo-MbSaveStatusHtml -Message $_.Exception.Message -State error) 400
+            }
+            return
+        }
         '/api/steps/delete' {
             try {
                 $stepId = Get-MbFormValue $form 'stepId'
@@ -1427,6 +1706,7 @@ function Invoke-MbRoute {
                     if ($removedStep) { break }
                 }
                 $removedImageId = if ($removedStep) { [string]$removedStep.imageId } else { '' }
+                $removedVideoId = if ($removedStep) { [string]$removedStep.videoId } else { '' }
                 $historyImageId = ''
                 if ($script:ImageReplacementHistory.ContainsKey($stepId)) {
                     $historyImageId = [string]$script:ImageReplacementHistory[$stepId].imageId
@@ -1436,6 +1716,7 @@ function Invoke-MbRoute {
                 $unusedImagePaths = @(
                     Remove-MbUnusedImage -Project $project -ProjectPath $ProjectPath -ImageId $removedImageId
                     Remove-MbUnusedImage -Project $project -ProjectPath $ProjectPath -ImageId $historyImageId
+                    Remove-MbUnusedVideo -Project $project -ProjectPath $ProjectPath -VideoId $removedVideoId
                 ) | Where-Object { $_ }
                 [void](Save-MbProject -Project $project -Path $ProjectPath)
                 foreach ($unusedImagePath in @($unusedImagePaths)) {
@@ -1477,7 +1758,11 @@ try {
     }
     $initialProject = Get-MbProject -Path $ProjectPath
     $projectReady = $true
-    $orphanedImagePaths = @(Remove-MbUnreferencedImages -Project $initialProject -ProjectPath $ProjectPath)
+    $orphanedImagePaths = @(
+        Remove-MbUnreferencedImages -Project $initialProject -ProjectPath $ProjectPath
+        Remove-MbUnreferencedVideos -Project $initialProject -ProjectPath $ProjectPath
+    ) | Where-Object { $_ }
+    $orphanedImagePaths = @($orphanedImagePaths)
     if ($orphanedImagePaths.Count -gt 0) {
         [void](Save-MbProject -Project $initialProject -Path $ProjectPath)
         foreach ($orphanedImagePath in $orphanedImagePaths) {
@@ -1566,12 +1851,19 @@ try {
     if ($script:WordExportJob) {
         try { [void](Request-MbWordExportCancel) } catch { }
     }
+    if ($script:PowerPointExportJob) {
+        try { [void](Request-MbPowerPointExportCancel) } catch { }
+    }
     Stop-MbScreenshotWatcher
     try {
         $script:ImageReplacementHistory.Clear()
         if ($projectReady -and (Test-Path -LiteralPath $ProjectPath -PathType Leaf)) {
             $finalProject = Get-MbProject -Path $ProjectPath
-            $unusedImagePaths = @(Remove-MbUnreferencedImages -Project $finalProject -ProjectPath $ProjectPath)
+            $unusedImagePaths = @(
+                Remove-MbUnreferencedImages -Project $finalProject -ProjectPath $ProjectPath
+                Remove-MbUnreferencedVideos -Project $finalProject -ProjectPath $ProjectPath
+            ) | Where-Object { $_ }
+            $unusedImagePaths = @($unusedImagePaths)
             if ($unusedImagePaths.Count -gt 0) {
                 [void](Save-MbProject -Project $finalProject -Path $ProjectPath)
                 foreach ($unusedImagePath in $unusedImagePaths) {

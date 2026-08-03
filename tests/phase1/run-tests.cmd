@@ -27,6 +27,9 @@ if errorlevel 1 goto :failed
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-CaptureHeartbeat.ps1"
 if errorlevel 1 goto :failed
 
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-VideoAttachment.ps1"
+if errorlevel 1 goto :failed
+
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-WebRender.ps1"
 if errorlevel 1 goto :failed
 
@@ -34,6 +37,9 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-
 if errorlevel 1 goto :failed
 
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-WordUtilities.ps1"
+if errorlevel 1 goto :failed
+
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-PowerPointUtilities.ps1"
 if errorlevel 1 goto :failed
 
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-Server.ps1"

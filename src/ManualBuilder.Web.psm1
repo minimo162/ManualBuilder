@@ -82,13 +82,26 @@ function Render-MbStepNavigation {
     return $sb.ToString()
 }
 
+function Get-MbStepVideoEntry {
+    param(
+        [Parameter(Mandatory = $true)][object]$Project,
+        [Parameter(Mandatory = $true)][object]$Step
+    )
+    if ($Step.PSObject.Properties.Name -notcontains 'videoId') { return $null }
+    $videoId = [string]$Step.videoId
+    if ([string]::IsNullOrWhiteSpace($videoId)) { return $null }
+    if ($Project.PSObject.Properties.Name -notcontains 'videos') { return $null }
+    return (@($Project.videos | Where-Object { $_.id -eq $videoId }) | Select-Object -First 1)
+}
+
 function ConvertTo-MbStepCardHtml {
     param(
         [Parameter(Mandatory = $true)][object]$Step,
         [Parameter(Mandatory = $true)][int]$Number,
         [Parameter(Mandatory = $true)][int]$Total,
         [string]$Token = '',
-        [bool]$CanUndoImageReplacement = $false
+        [bool]$CanUndoImageReplacement = $false,
+        [AllowNull()][object]$Video = $null
     )
 
     $title = ConvertTo-MbHtml $Step.title
@@ -109,6 +122,18 @@ function ConvertTo-MbStepCardHtml {
     $isCropped = ([double]$crop.x -gt 0.000001 -or [double]$crop.y -gt 0.000001 -or [double]$crop.width -lt 0.999999 -or [double]$crop.height -lt 0.999999)
     $sb = New-Object System.Text.StringBuilder
 
+    # 動画はPowerPoint出力にだけ埋め込む。画面では添付されていることだけを示す。
+    $videoRow = ''
+    if ($Video) {
+        $videoSizeText = if ([long]$Video.byteLength -ge (1024 * 1024)) {
+            [string][Math]::Round([long]$Video.byteLength / 1MB, 1) + 'MB'
+        } else {
+            [string][Math]::Max(1, [Math]::Round([long]$Video.byteLength / 1KB)) + 'KB'
+        }
+        $videoLengthText = [string][Math]::Round([double]$Video.durationSec, 1) + '秒'
+        $videoRow = '<div class="step-video" data-step-video><span class="step-video__mark" aria-hidden="true">▶</span><span class="step-video__text">動画つき ' + (ConvertTo-MbHtml $videoLengthText) + ' ・ ' + (ConvertTo-MbHtml $videoSizeText) + '<span class="step-video__hint">PowerPointで作成すると再生できます</span></span><button type="button" class="image-secondary-button" data-detach-video>動画を外す</button></div>'
+    }
+
     $imageStateClass = if ($Step.imageId) { '' } else { ' step-card--no-image' }
     [void]$sb.AppendLine('<article class="step-card' + $imageStateClass + '" id="step-' + $stepId + '" data-step-id="' + $stepId + '">')
     [void]$sb.AppendLine('<input type="hidden" name="stepId" value="' + $stepId + '">')
@@ -125,7 +150,7 @@ function ConvertTo-MbStepCardHtml {
         $cropBadge = if ($isCropped) { '<span class="image-edit-button__badge crop-badge">切り抜き済み</span>' } else { '' }
         $undoButton = if ($CanUndoImageReplacement) { '<button type="button" class="image-secondary-button image-secondary-button--undo" data-undo-image-replace>元の画像へ戻す</button>' } else { '' }
         $annotationBadge = if ($annotations.Count -gt 0) { '<span class="image-edit-button__badge">注釈 <span class="annotation-count">' + $annotations.Count + '</span></span>' } else { '' }
-        [void]$sb.AppendLine('<div class="step-image-frame"><button type="button" class="step-image-button" data-image-preview="' + $imageUrl + '" aria-label="手順 ' + $Number + ' のスクリーンショットを拡大"><span class="step-image-viewport"><img class="step-image" src="' + $imageUrl + '" alt="手順 ' + $Number + ' のスクリーンショット" loading="lazy"><svg class="step-annotation-overlay" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true"></svg></span></button><div class="image-edit-actions" aria-label="画像の操作"><button type="button" class="image-edit-button" data-open-annotation title="切り抜き・赤枠・矢印・番号・黒塗り"><span class="image-edit-button__icon" aria-hidden="true">✎</span><span class="image-edit-button__copy"><strong>画像を編集</strong></span>' + $annotationBadge + $cropBadge + '</button><div class="image-secondary-actions"><button type="button" class="image-secondary-button" data-replace-image>差し替え</button>' + $undoButton + '</div></div></div>')
+        [void]$sb.AppendLine('<div class="step-image-frame"><button type="button" class="step-image-button" data-image-preview="' + $imageUrl + '" aria-label="手順 ' + $Number + ' のスクリーンショットを拡大"><span class="step-image-viewport"><img class="step-image" src="' + $imageUrl + '" alt="手順 ' + $Number + ' のスクリーンショット" loading="lazy"><svg class="step-annotation-overlay" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true"></svg></span></button><div class="image-edit-actions" aria-label="画像の操作"><button type="button" class="image-edit-button" data-open-annotation title="切り抜き・赤枠・矢印・番号・黒塗り"><span class="image-edit-button__icon" aria-hidden="true">✎</span><span class="image-edit-button__copy"><strong>画像を編集</strong></span>' + $annotationBadge + $cropBadge + '</button><div class="image-secondary-actions"><button type="button" class="image-secondary-button" data-replace-image>差し替え</button>' + $undoButton + '</div>' + $videoRow + '</div></div>')
         [void]$sb.AppendLine('<textarea class="step-annotations-data" hidden>' + (ConvertTo-MbHtml $annotationsJson) + '</textarea>')
         [void]$sb.AppendLine('<textarea class="step-crop-data" hidden>' + (ConvertTo-MbHtml $cropJson) + '</textarea>')
     } else {
@@ -186,7 +211,8 @@ function ConvertTo-MbCaptureSnapshotHtml {
     [void]$sb.AppendLine('<div class="capture-snapshot" data-capture-version="' + $Version + '" data-step-count="' + $steps.Count + '" data-import-status="' + $Status + '">')
     for ($i = 0; $i -lt $steps.Count; $i++) {
         $canUndo = $UndoImageStepIds -contains [string]$steps[$i].id
-        [void]$sb.AppendLine((ConvertTo-MbStepCardHtml -Step $steps[$i] -Number ($i + 1) -Total $steps.Count -Token $Token -CanUndoImageReplacement $canUndo))
+        $stepVideo = Get-MbStepVideoEntry -Project $Project -Step $steps[$i]
+        [void]$sb.AppendLine((ConvertTo-MbStepCardHtml -Step $steps[$i] -Number ($i + 1) -Total $steps.Count -Token $Token -CanUndoImageReplacement $canUndo -Video $stepVideo))
     }
     [void]$sb.AppendLine('</div>')
     return $sb.ToString()
@@ -200,7 +226,7 @@ function ConvertTo-MbProjectLibraryHtml {
     )
 
     $sb = New-Object System.Text.StringBuilder
-    [void]$sb.AppendLine('<div id="workspace" class="workspace project-library" data-app-version="0.22.1">')
+    [void]$sb.AppendLine('<div id="workspace" class="workspace project-library" data-app-version="0.24.0">')
     [void]$sb.AppendLine('<header class="topbar project-library__topbar"><button type="button" class="brand brand--home" data-project-home hx-post="/api/projects/home" hx-target="#workspace" hx-swap="outerHTML" title="マニュアル一覧" aria-label="マニュアル一覧" aria-current="page"><span class="brand__mark" aria-hidden="true">M</span><span>ManualBuilder</span></button><div class="project-library__topbar-title">マニュアル一覧</div><div></div><div class="topbar__actions"><details class="action-menu topbar-menu"><summary class="icon-button" title="その他" aria-label="その他の操作">…</summary><div class="action-menu__panel action-menu__panel--right"><button type="button" class="menu-command menu-command--danger" hx-post="/api/shutdown" hx-target="body" hx-swap="none" hx-confirm="ManualBuilderを終了しますか？">ManualBuilderを終了</button></div></details></div></header>')
     [void]$sb.AppendLine('<main class="project-library__main">')
     [void]$sb.AppendLine('<section class="project-library__intro"><div><p class="eyebrow">作成したマニュアル</p><h1>マニュアルを選ぶ</h1></div><div class="project-library__actions"><input id="project-package-input" type="file" accept=".zip,application/zip" hidden><button type="button" class="button button--ghost" data-import-project-package>ZIPを取り込む</button><form class="project-create" hx-post="/api/projects/create" hx-target="#workspace" hx-swap="outerHTML"><label><span class="sr-only">新しいマニュアルの名前</span><input type="text" name="title" maxlength="100" placeholder="新しいマニュアルの名前"></label><button type="submit" class="button button--primary">＋ 新規作成</button></form></div></section>')
@@ -238,7 +264,7 @@ function ConvertTo-MbProjectLibraryHtml {
         }
         [void]$sb.AppendLine('</div></details>')
     }
-    [void]$sb.AppendLine('<footer class="project-library__footer"><span>v0.22.1</span></footer></main></div>')
+    [void]$sb.AppendLine('<footer class="project-library__footer"><span>v0.24.0</span></footer></main></div>')
     return $sb.ToString()
 }
 
@@ -260,22 +286,23 @@ function ConvertTo-MbWorkspaceHtml {
     $steps = @($sheet.steps)
     $sb = New-Object System.Text.StringBuilder
 
-    [void]$sb.AppendLine('<div id="workspace" class="workspace" data-app-version="0.22.1" data-revision="' + [int]$Project.revision + '" data-capture-version="' + $CaptureVersion + '">')
+    [void]$sb.AppendLine('<div id="workspace" class="workspace" data-app-version="0.24.0" data-revision="' + [int]$Project.revision + '" data-capture-version="' + $CaptureVersion + '">')
     [void]$sb.AppendLine('<header class="topbar">')
     [void]$sb.AppendLine('<button type="button" class="brand brand--home" data-project-home hx-post="/api/projects/home" hx-target="#workspace" hx-swap="outerHTML" title="マニュアル一覧へ戻る" aria-label="マニュアル一覧へ戻る"><span class="brand__mark" aria-hidden="true">M</span><span>ManualBuilder</span></button>')
     [void]$sb.AppendLine('<label class="project-title editable-name name-field" data-editable-name title="マニュアル名を編集"><span class="sr-only">マニュアル名</span><input type="text" name="title" maxlength="100" value="' + $title + '" aria-label="マニュアル名。入力して変更" hx-post="/api/project/title" hx-trigger="input changed delay:700ms, change" hx-target="#save-status" hx-swap="outerHTML"></label>')
     [void]$sb.AppendLine('<div class="topbar__state">' + (ConvertTo-MbSaveStatusHtml) + (ConvertTo-MbWatchStatusHtml -State $CaptureState -Role $CaptureRole -Directory $CaptureDirectory) + '</div>')
-    [void]$sb.AppendLine('<div class="topbar__actions"><button type="button" class="button button--primary" data-export-excel>Excelで作成</button><details class="action-menu topbar-menu"><summary class="icon-button" title="その他" aria-label="その他の操作">…</summary><div class="action-menu__panel action-menu__panel--right"><button type="button" class="menu-command" data-export-word>Wordで作成</button><button type="button" class="menu-command menu-command--danger" hx-post="/api/shutdown" hx-target="body" hx-swap="none" hx-confirm="ManualBuilderを終了しますか？">ManualBuilderを終了</button></div></details></div>')
+    [void]$sb.AppendLine('<div class="topbar__actions"><button type="button" class="button button--primary" data-export-excel>Excelで作成</button><details class="action-menu topbar-menu"><summary class="icon-button" title="その他" aria-label="その他の操作">…</summary><div class="action-menu__panel action-menu__panel--right"><button type="button" class="menu-command" data-export-powerpoint>PowerPointで作成（動画つき）</button><button type="button" class="menu-command" data-export-word>Wordで作成</button><button type="button" class="menu-command menu-command--danger" hx-post="/api/shutdown" hx-target="body" hx-swap="none" hx-confirm="ManualBuilderを終了しますか？">ManualBuilderを終了</button></div></details></div>')
     [void]$sb.AppendLine('</header>')
 
     [void]$sb.AppendLine('<div class="app-layout">')
-    [void]$sb.AppendLine('<aside class="sidebar">' + (Render-MbSheetNavigation -Project $Project) + (Render-MbStepNavigation -Sheet $sheet) + '<div class="sidebar__footer"><span class="sidebar__version">v0.22.1</span></div></aside>')
+    [void]$sb.AppendLine('<aside class="sidebar">' + (Render-MbSheetNavigation -Project $Project) + (Render-MbStepNavigation -Sheet $sheet) + '<div class="sidebar__footer"><span class="sidebar__version">v0.24.0</span></div></aside>')
     [void]$sb.AppendLine('<main class="editor">')
     [void]$sb.AppendLine('<div class="editor__heading">')
     [void]$sb.AppendLine('<div class="sheet-heading"><input type="hidden" name="sheetId" value="' + $sheetId + '"><label class="editable-name editable-name--sheet name-field" data-editable-name title="シート名を編集"><span class="sr-only">シート名</span><input class="sheet-name-input" type="text" name="name" maxlength="50" value="' + $sheetName + '" aria-label="シート名。入力して変更" hx-post="/api/sheets/rename" hx-trigger="input changed delay:700ms, change" hx-include="closest .sheet-heading" hx-target="#save-status" hx-swap="outerHTML"></label><span class="step-total">' + $steps.Count + ' 手順</span></div>')
     [void]$sb.AppendLine('<div class="editor__actions">')
     if ($steps.Count -gt 0) {
         [void]$sb.AppendLine('<button type="button" class="button button--primary editor-add-image" data-open-image-picker>＋ 画像から追加</button>')
+        [void]$sb.AppendLine('<button type="button" class="button button--ghost editor-add-video" data-open-video-picker title="録画から場面を選んで手順にします">動画から選ぶ</button>')
     }
     [void]$sb.AppendLine('<details class="action-menu sheet-menu"><summary class="icon-button" title="シートメニュー" aria-label="シートのメニュー">…</summary><div class="action-menu__panel action-menu__panel--right"><button type="button" class="menu-command" hx-post="/api/steps/add" hx-vals=''{"sheetId":"' + $sheetId + '"}'' hx-target="#workspace" hx-swap="outerHTML">文字だけ追加</button>')
     if (@($Project.sheets).Count -le 1) {
@@ -286,14 +313,15 @@ function ConvertTo-MbWorkspaceHtml {
     [void]$sb.AppendLine('</div></details></div>')
     [void]$sb.AppendLine('</div>')
 
-    [void]$sb.AppendLine('<div class="editor-import-inputs"><input id="image-file-input" type="file" accept="image/png,image/jpeg,image/bmp" multiple hidden><input id="replacement-image-file-input" type="file" accept="image/png,image/jpeg,image/bmp" hidden></div>')
+    [void]$sb.AppendLine('<div class="editor-import-inputs"><input id="image-file-input" type="file" accept="image/png,image/jpeg,image/bmp" multiple hidden><input id="replacement-image-file-input" type="file" accept="image/png,image/jpeg,image/bmp" hidden><input id="video-file-input" type="file" accept="video/mp4,video/webm" hidden></div>')
     [void]$sb.AppendLine('<section class="steps" aria-label="手順一覧">')
     if ($steps.Count -eq 0) {
-        [void]$sb.AppendLine('<div class="empty-state drop-target"><div class="empty-state__icon" aria-hidden="true">▧</div><h2>ここにスクリーンショットを追加</h2><button type="button" class="button button--primary empty-state__button" data-open-image-picker>＋ 画像から追加</button><p>撮影・貼り付け・ドロップでも作成できます</p></div>')
+        [void]$sb.AppendLine('<div class="empty-state drop-target"><div class="empty-state__icon" aria-hidden="true">▧</div><h2>ここにスクリーンショットを追加</h2><div class="empty-state__actions"><button type="button" class="button button--primary empty-state__button" data-open-image-picker>＋ 画像から追加</button><button type="button" class="button button--ghost empty-state__button" data-open-video-picker>動画から選ぶ</button></div><p>撮影・貼り付け・ドロップでも作成できます</p></div>')
     } else {
         for ($i = 0; $i -lt $steps.Count; $i++) {
             $canUndo = $UndoImageStepIds -contains [string]$steps[$i].id
-            [void]$sb.AppendLine((ConvertTo-MbStepCardHtml -Step $steps[$i] -Number ($i + 1) -Total $steps.Count -Token $Token -CanUndoImageReplacement $canUndo))
+            $stepVideo = Get-MbStepVideoEntry -Project $Project -Step $steps[$i]
+            [void]$sb.AppendLine((ConvertTo-MbStepCardHtml -Step $steps[$i] -Number ($i + 1) -Total $steps.Count -Token $Token -CanUndoImageReplacement $canUndo -Video $stepVideo))
         }
     }
     [void]$sb.AppendLine('</section></main></div><div id="drop-overlay" class="drop-overlay" aria-hidden="true"><div>画像をドロップして手順を追加</div></div></div>')
