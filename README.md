@@ -10,6 +10,7 @@
 - Excel COMによる主出力: 単発、10回連続、キャンセル、異常分岐を実機確認済み
 - 既存の未保存Excelブックへ影響しないことを実機確認済み
 - Word COMによる副出力の安全性と基本レイアウトを確認済み
+- Phase 1基盤 v0.32.1: 配布済みHTMLの元データを別PCで開いたとき、共有側がローカルより新しい場合に古いローカル版を開いて再反映できてしまう問題を修正した。古い版を残しつつ「共有版」の別項目として取り込み、同じ共有版を開き直しても重複しない。あわせて、保存先フォルダーの作成やJSON変換に失敗した場合に、ディスクへ書けていないrevisionだけが進まないよう保存処理をロールバックする
 - Phase 1基盤 v0.32.0: その他メニューに「Copilotで文章を整える」を追加した。敬体の統一・表記ゆれ・用語の不統一・誤字・長すぎる一文を確認し、直したい箇所だけを受け取る。画像は渡さず文章だけを一度にまとめて渡すため、下書きより速く、表記ゆれのように全体を見ないと気付けない指摘が出せる。指摘は確認画面で1件ずつ採用でき、空欄は「変更しない」の意味なので既存の文章を消さない。あわせてPowerPoint出力を削除した（動画つきの配布はHTMLとExcelが担うようになり、COM由来の不具合を抱え続ける利点が薄れたため）。v0.31.0でapp.jsなど3ファイルを空で出してしまった不具合を修正し、同じ取りこぼしを防ぐ検査（Test-WebAssets.mjs）を追加
 - Phase 1基盤 v0.31.0: 録画からのローカル音声認識（System.Speech）を廃止した。日本語の口述筆記の精度が実用未満で、誤認識した文をCopilotへ渡すとかえって説明を狂わせるため。良い音声認識が要る場合は、Win+Hと同じ仕組みが使える操作記録モード（v0.30.0）を使う。録画からの手順づくり自体は従来どおり動く
 - Phase 1基盤 v0.30.0: 操作記録モードで、話しながら操作した内容も手順の手がかりにできるようにした。Win+H（音声入力）と同じ Windows.Media.SpeechRecognition を使うため、v0.28.0の録画からの文字起こし（System.Speech）とは精度が段違いになる。この仕組みは入力がマイク固定で録画ファイルを食えないが、操作記録モードは実時間で動くのでその制約に当たらない。認識は記録ループと同居できないため並走する別プロセスにし、発話の開始時刻で操作と突き合わせる。「操作の直後に話したらその操作への補足、そうでなければ次に来る操作の説明」として振り分ける。マイクを使い音声が端末の外へ出るため、既定では行わず、記録のたびに選ぶ
@@ -103,7 +104,7 @@ v0.14.1以前のアプリ配下に `data\projects\default` がある場合、v0.
 
 初回は `tests\phase1\run-tests.cmd` を実行し、PowerShell 5.1構文、プロジェクト保存、localhostサーバーを確認してください。詳しくは [docs/PHASE1-FOUNDATION.md](docs/PHASE1-FOUNDATION.md) を参照してください。
 
-Phase 1 v0.32.0の再確認手順は [docs/RETEST-PHASE1-v0.32.0.md](docs/RETEST-PHASE1-v0.32.0.md)、v0.30.0は [docs/RETEST-PHASE1-v0.30.0.md](docs/RETEST-PHASE1-v0.30.0.md)、v0.29.0は [docs/RETEST-PHASE1-v0.29.0.md](docs/RETEST-PHASE1-v0.29.0.md)、v0.28.0は [docs/RETEST-PHASE1-v0.28.0.md](docs/RETEST-PHASE1-v0.28.0.md)、v0.27.0は [docs/RETEST-PHASE1-v0.27.0.md](docs/RETEST-PHASE1-v0.27.0.md)、v0.26.0は [docs/RETEST-PHASE1-v0.26.0.md](docs/RETEST-PHASE1-v0.26.0.md)、v0.25.0は [docs/RETEST-PHASE1-v0.25.0.md](docs/RETEST-PHASE1-v0.25.0.md)、v0.24.0は [docs/RETEST-PHASE1-v0.24.0.md](docs/RETEST-PHASE1-v0.24.0.md)、v0.23.0は [docs/RETEST-PHASE1-v0.23.0.md](docs/RETEST-PHASE1-v0.23.0.md)、v0.22.1は [docs/RETEST-PHASE1-v0.22.1.md](docs/RETEST-PHASE1-v0.22.1.md)、v0.22.0は [docs/RETEST-PHASE1-v0.22.0.md](docs/RETEST-PHASE1-v0.22.0.md) にまとめています。
+Phase 1 v0.32.1の再確認手順は [docs/RETEST-PHASE1-v0.32.1.md](docs/RETEST-PHASE1-v0.32.1.md)、v0.32.0は [docs/RETEST-PHASE1-v0.32.0.md](docs/RETEST-PHASE1-v0.32.0.md)、v0.30.0は [docs/RETEST-PHASE1-v0.30.0.md](docs/RETEST-PHASE1-v0.30.0.md)、v0.29.0は [docs/RETEST-PHASE1-v0.29.0.md](docs/RETEST-PHASE1-v0.29.0.md)、v0.28.0は [docs/RETEST-PHASE1-v0.28.0.md](docs/RETEST-PHASE1-v0.28.0.md)、v0.27.0は [docs/RETEST-PHASE1-v0.27.0.md](docs/RETEST-PHASE1-v0.27.0.md)、v0.26.0は [docs/RETEST-PHASE1-v0.26.0.md](docs/RETEST-PHASE1-v0.26.0.md)、v0.25.0は [docs/RETEST-PHASE1-v0.25.0.md](docs/RETEST-PHASE1-v0.25.0.md)、v0.24.0は [docs/RETEST-PHASE1-v0.24.0.md](docs/RETEST-PHASE1-v0.24.0.md)、v0.23.0は [docs/RETEST-PHASE1-v0.23.0.md](docs/RETEST-PHASE1-v0.23.0.md)、v0.22.1は [docs/RETEST-PHASE1-v0.22.1.md](docs/RETEST-PHASE1-v0.22.1.md)、v0.22.0は [docs/RETEST-PHASE1-v0.22.0.md](docs/RETEST-PHASE1-v0.22.0.md) にまとめています。
 
 ## 製品方針
 
