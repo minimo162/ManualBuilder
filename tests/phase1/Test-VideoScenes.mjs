@@ -197,40 +197,6 @@ console.log('maxScenes');
   check('上限を超えない', selected.length <= scenes.DEFAULTS.maxScenes, String(selected.length));
 }
 
-// ---------------------------------------------------------------
-console.log('encodeWav / resampleMono / computeRms');
-{
-  // encodeWavはBlobを返すのでNodeでは生成の可否だけを見る。
-  const hasBlob = typeof Blob !== 'undefined';
-  if (hasBlob) {
-    const wav = scenes.encodeWav(new Float32Array([0, 0.5, -0.5, 1, -1]), 16000);
-    check('WAVが44バイトのヘッダー＋データ長になる', wav.size === 44 + 5 * 2, String(wav.size));
-  } else {
-    console.log('  SKIP Blobが無いためWAV生成は検査しない');
-  }
-
-  // AudioBufferの最小限の代役。
-  const sourceRate = 32000;
-  const frames = 32000;
-  const channel = new Float32Array(frames);
-  for (let i = 0; i < frames; i += 1) channel[i] = Math.sin((i / sourceRate) * 2 * Math.PI * 440);
-  const fakeBuffer = {
-    sampleRate: sourceRate,
-    numberOfChannels: 1,
-    length: frames,
-    duration: frames / sourceRate,
-    getChannelData: () => channel
-  };
-  const resampled = scenes.resampleMono(fakeBuffer, 0, 1, 16000);
-  check('16kHzへ半分に間引かれる', Math.abs(resampled.length - 16000) <= 1, String(resampled.length));
-  check('正弦波のRMSが概ね0.707', Math.abs(scenes.computeRms(resampled) - 0.707) < 0.02,
-    String(scenes.computeRms(resampled)));
-  check('無音のRMSは0', scenes.computeRms(new Float32Array(100)) === 0);
-
-  const empty = scenes.resampleMono(fakeBuffer, 1, 1, 16000);
-  check('長さ0の範囲は空を返す', empty.length === 0);
-}
-
 console.log('');
 if (failures === 0) {
   console.log(`PASS  ${checks}件すべて成功`);

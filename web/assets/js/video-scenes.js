@@ -370,112 +370,6 @@
     return { cancelled: false, scenes, samples: samples.length };
   };
 
-  // ---------------------------------------------------------------
-  // ナレーション音声の切り出し
-  // ---------------------------------------------------------------
-
-  const WAV_SAMPLE_RATE = 16000;
-
-  // 16bit PCMのWAVへ詰める。音声認識側が素直に読める最小構成にする。
-  const encodeWav = (samples, sampleRate) => {
-    const buffer = new ArrayBuffer(44 + samples.length * 2);
-    const view = new DataView(buffer);
-    const writeText = (offset, text) => {
-      for (let i = 0; i < text.length; i += 1) view.setUint8(offset + i, text.charCodeAt(i));
-    };
-    writeText(0, 'RIFF');
-    view.setUint32(4, 36 + samples.length * 2, true);
-    writeText(8, 'WAVE');
-    writeText(12, 'fmt ');
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, 1, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate * 2, true);
-    view.setUint16(32, 2, true);
-    view.setUint16(34, 16, true);
-    writeText(36, 'data');
-    view.setUint32(40, samples.length * 2, true);
-    let offset = 44;
-    for (let i = 0; i < samples.length; i += 1) {
-      const clamped = Math.max(-1, Math.min(1, samples[i]));
-      view.setInt16(offset, clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff, true);
-      offset += 2;
-    }
-    return new Blob([buffer], { type: 'audio/wav' });
-  };
-
-  // 全チャンネルを混ぜて16kHzモノラルへ落とす。線形補間で足りる用途。
-  const resampleMono = (audioBuffer, startSec, endSec, targetRate) => {
-    const sourceRate = audioBuffer.sampleRate;
-    const channels = audioBuffer.numberOfChannels;
-    const startFrame = Math.max(0, Math.floor(startSec * sourceRate));
-    const endFrame = Math.min(audioBuffer.length, Math.ceil(endSec * sourceRate));
-    const sourceLength = endFrame - startFrame;
-    if (sourceLength <= 0) return new Float32Array(0);
-    const ratio = sourceRate / targetRate;
-    const targetLength = Math.floor(sourceLength / ratio);
-    const output = new Float32Array(targetLength);
-    const data = [];
-    for (let c = 0; c < channels; c += 1) data.push(audioBuffer.getChannelData(c));
-    for (let i = 0; i < targetLength; i += 1) {
-      const position = startFrame + i * ratio;
-      const left = Math.floor(position);
-      const right = Math.min(endFrame - 1, left + 1);
-      const weight = position - left;
-      let value = 0;
-      for (let c = 0; c < channels; c += 1) {
-        value += data[c][left] * (1 - weight) + data[c][right] * weight;
-      }
-      output[i] = value / channels;
-    }
-    return output;
-  };
-
-  const computeRms = (samples) => {
-    if (samples.length === 0) return 0;
-    let total = 0;
-    for (let i = 0; i < samples.length; i += 1) total += samples[i] * samples[i];
-    return Math.sqrt(total / samples.length);
-  };
-
-  // 場面ごとの時間帯からナレーション音声を切り出す。
-  // 説明は操作の前に喋られることが多いので、その場面が映り始める前も少し含める。
-  const extractNarration = async (file, ranges, options = {}) => {
-    if (!hasDom) throw new Error('この処理はブラウザーでのみ実行できます。');
-    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    if (!AudioContextClass) return { available: false, reason: 'この環境では音声を取り出せません。', clips: [] };
-    const leadMs = Number.isFinite(options.leadMs) ? options.leadMs : 2500;
-    const tailMs = Number.isFinite(options.tailMs) ? options.tailMs : 500;
-    // 無音より少し上。事務所の環境音だけの区間を送らないための下限。
-    const silenceRms = Number.isFinite(options.silenceRms) ? options.silenceRms : 0.008;
-
-    let audioBuffer = null;
-    const context = new AudioContextClass();
-    try {
-      const bytes = await file.arrayBuffer();
-      audioBuffer = await context.decodeAudioData(bytes);
-    } catch (error) {
-      return { available: false, reason: 'この録画には読み取れる音声がありません。', clips: [] };
-    } finally {
-      try { await context.close(); } catch { /* 閉じられなくても処理は続く */ }
-    }
-    if (!audioBuffer || audioBuffer.length === 0 || audioBuffer.numberOfChannels === 0) {
-      return { available: false, reason: 'この録画には音声が入っていません。', clips: [] };
-    }
-
-    const clips = [];
-    for (const range of ranges) {
-      const startSec = Math.max(0, (range.startMs - leadMs) / 1000);
-      const endSec = Math.min(audioBuffer.duration, (range.endMs + tailMs) / 1000);
-      const samples = resampleMono(audioBuffer, startSec, endSec, WAV_SAMPLE_RATE);
-      if (samples.length === 0) continue;
-      if (computeRms(samples) < silenceRms) continue;
-      clips.push({ index: range.index, blob: encodeWav(samples, WAV_SAMPLE_RATE) });
-    }
-    return { available: true, reason: '', clips };
-  };
-
   const api = {
     DEFAULTS,
     createSignature,
@@ -487,11 +381,7 @@
     detectStillRuns,
     selectScenes,
     planScenes,
-    extractScenes,
-    extractNarration,
-    encodeWav,
-    resampleMono,
-    computeRms
+    extractScenes
   };
 
   if (hasDom) window.MbVideoScenes = api;

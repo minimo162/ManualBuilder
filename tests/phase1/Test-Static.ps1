@@ -106,7 +106,7 @@ Add-Result (($serverText -match '\$projectReady = \$false') -and ($serverText -m
 Add-Result ($serverText -match '\$storageLayout\.RuntimePath') '二重起動情報をユーザーデータ配下へ置く'
 Add-Result ($serverText -match '\$storageLayout\.ExportJobsRoot') 'Office一時ジョブをユーザーデータ配下へ置く'
 Add-Result (($runCommandText -match '%~dp0src\\Start-ManualBuilderLauncher\.ps1') -and ($runCommandText -notmatch '(?im)^cd /d')) 'UNC共有フォルダーから更新ランチャーを起動できる'
-Add-Result ([string]$appVersionManifest.appVersion -eq '0.30.0') '配布用アプリバージョンを0.30.0へ更新する'
+Add-Result ([string]$appVersionManifest.appVersion -eq '0.31.0') '配布用アプリバージョンを0.31.0へ更新する'
 Add-Result ($workspaceModuleText -notmatch "ManualBuilder\.Project\.psm1'\) -Force") 'WorkspaceがProjectコマンドを強制再読込しない'
 Add-Result ($launcherModuleText -match "'ManualBuilder\\app'") 'アプリ実行コードをLocalApplicationDataへキャッシュする'
 Add-Result ($launcherModuleText -match "@\('src', 'web', 'run\.cmd', 'app-version\.json'\)") 'キャッシュ対象からプロジェクトデータを除外する'
@@ -401,6 +401,11 @@ Add-Result ($recorderServerText -match 'Merge-MbNarrationIntoEvents') '話した
 Add-Result ($jsText -match 'data-recorder-narration') '音声を記録するかを選べる'
 Add-Result ($jsText -match 'Microsoftのオンライン音声認識へ送られます') '音声が端末の外へ出ることを画面に明記する'
 Add-Result ($jsText -match "narrationToggle.checked = false") '音声の記録は既定で行わない'
+$copilotServerText2 = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.CopilotServer.psm1'), [Text.Encoding]::UTF8)
+$sceneText2 = [IO.File]::ReadAllText((Join-Path $repoRoot 'web\assets\js\video-scenes.js'), [Text.Encoding]::UTF8)
+Add-Result ($copilotServerText2 -notmatch 'System\.Speech') '精度の低いローカル音声認識を持たない'
+Add-Result ($serverText -notmatch '/api/narration/transcribe') '録画からの文字起こしの口を持たない'
+Add-Result ($sceneText2 -notmatch 'extractNarration') '録画から音声を取り出さない'
 
 if ($errors.Count -gt 0) {
     Write-Host ''

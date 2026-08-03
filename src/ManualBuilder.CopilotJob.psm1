@@ -145,7 +145,7 @@ function New-MbCopilotStepPrompt {
             [void]$builder.AppendLine(('赤枠の位置にあった操作対象: ' + [string]$step.clickLabel))
         }
         if (-not [string]::IsNullOrWhiteSpace([string]$step.narration)) {
-            [void]$builder.AppendLine(('録画の音声: ' + [string]$step.narration))
+            [void]$builder.AppendLine(('操作しながら話した内容: ' + [string]$step.narration))
         }
         if (-not [string]::IsNullOrWhiteSpace([string]$step.screenText)) {
             $screenText = ([string]$step.screenText) -replace '[\r\n]+', ' / '

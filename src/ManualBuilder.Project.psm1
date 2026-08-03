@@ -39,7 +39,7 @@ function New-MbStepCapture {
         clickLabel  = ''   # 操作された場所から読み取れた文字、または押したコントロールの名前
         windowTitle = ''   # 操作していたウィンドウの題名
         screenText  = ''   # 画面に出ていた文字
-        narration   = ''   # 録画の音声から起こした文
+        narration   = ''   # 操作しながら話した内容（操作記録モードでのみ入る）
     }
 }
 
@@ -501,7 +501,7 @@ function Set-MbStepCapture {
     $target.capture.clickLabel = Get-MbText -Value $ClickLabel -MaxLength 200 -FieldName '操作対象'
     $target.capture.windowTitle = Get-MbText -Value $WindowTitle -MaxLength 300 -FieldName 'ウィンドウの題名'
     $target.capture.screenText = Get-MbText -Value $ScreenText -MaxLength 4000 -FieldName '画面の文字'
-    $target.capture.narration = Get-MbText -Value $Narration -MaxLength 2000 -FieldName '録画の音声'
+    $target.capture.narration = Get-MbText -Value $Narration -MaxLength 2000 -FieldName '話した内容'
     $target.updatedAt = Get-MbUtcTimestamp
     return $target
 }

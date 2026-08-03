@@ -62,7 +62,6 @@ function Import-MbVideoScene {
         [Parameter(Mandatory = $true)][byte[]]$Bytes,
         [int]$TimeMs = 0,
         [AllowEmptyString()][string]$RectJson = '',
-        [AllowEmptyString()][string]$Narration = '',
         [switch]$SkipOcr
     )
 
@@ -110,7 +109,7 @@ function Import-MbVideoScene {
     }
 
     [void](Set-MbStepCapture -Project $Project -StepId $stepId -Kind 'video-scene' -VideoTimeMs $TimeMs `
-        -ClickLabel $clickLabel -ScreenText $screenText -Narration $Narration)
+        -ClickLabel $clickLabel -ScreenText $screenText)
 
     return [pscustomobject]@{
         status       = 'added'
@@ -311,93 +310,16 @@ function Set-MbCopilotDraftSelection {
     return $applied
 }
 
-# 画面の文字認識と音声の文字起こしが使えるかをまとめて返す。
+# 画面の文字認識が使えるかを返す。
 # Ocrモジュールはこのモジュールの内側にしか読み込まれないため、
 # 本体からはこの関数を通して状態を受け取る。
 function Get-MbCopilotCapabilities {
-    return [pscustomobject]@{
-        ocr       = Get-MbOcrStatus
-        narration = Get-MbNarrationStatus
-    }
+    return [pscustomobject]@{ ocr = Get-MbOcrStatus }
 }
 
 function Show-MbCopilotSignInWindow {
     $settings = Get-MbCopilotServerSettings
     return (Show-MbCopilotWindow -Settings $settings -ProfileDirectory $script:MbCopilotProfileRoot)
-}
-
-# ---------------------------------------------------------------------
-# ナレーションの文字起こし
-# ---------------------------------------------------------------------
-$script:MbSpeechChecked = $false
-$script:MbSpeechAvailable = $false
-$script:MbSpeechReason = ''
-
-function Get-MbNarrationStatus {
-    if ($script:MbSpeechChecked) {
-        return [pscustomobject]@{ available = $script:MbSpeechAvailable; reason = $script:MbSpeechReason }
-    }
-    $script:MbSpeechChecked = $true
-    try {
-        Add-Type -AssemblyName System.Speech -ErrorAction Stop
-    } catch {
-        $script:MbSpeechReason = 'この環境では音声の文字起こしを利用できません。'
-        return [pscustomobject]@{ available = $false; reason = $script:MbSpeechReason }
-    }
-    $japanese = $null
-    try {
-        $japanese = @([System.Speech.Recognition.SpeechRecognitionEngine]::InstalledRecognizers() |
-            Where-Object { [string]$_.Culture.Name -eq 'ja-JP' }) | Select-Object -First 1
-    } catch { $japanese = $null }
-    if (-not $japanese) {
-        $script:MbSpeechReason = 'この端末に日本語の音声認識が入っていないため、ナレーションは使えません。'
-        return [pscustomobject]@{ available = $false; reason = $script:MbSpeechReason }
-    }
-    $script:MbSpeechAvailable = $true
-    return [pscustomobject]@{ available = $true; reason = '' }
-}
-
-# WAV（16kHzモノラル）を文字にする。
-# Windows標準の音声認識は口述筆記の精度が高くないため、結果は下書きの材料として扱い、
-# 手順の文章そのものには使わない。
-function ConvertFrom-MbNarrationWav {
-    param([Parameter(Mandatory = $true)][byte[]]$Bytes)
-
-    $status = Get-MbNarrationStatus
-    if (-not $status.available) {
-        return [pscustomobject]@{ available = $false; reason = [string]$status.reason; text = '' }
-    }
-    if ($Bytes.Length -lt 45) {
-        return [pscustomobject]@{ available = $true; reason = ''; text = '' }
-    }
-
-    $temporary = Join-Path ([IO.Path]::GetTempPath()) ('mb-narration-' + [guid]::NewGuid().ToString('N') + '.wav')
-    $engine = $null
-    try {
-        [IO.File]::WriteAllBytes($temporary, $Bytes)
-        $culture = New-Object System.Globalization.CultureInfo 'ja-JP'
-        $engine = New-Object System.Speech.Recognition.SpeechRecognitionEngine $culture
-        $engine.LoadGrammar((New-Object System.Speech.Recognition.DictationGrammar))
-        $engine.SetInputToWaveFile($temporary)
-
-        $builder = New-Object System.Text.StringBuilder
-        # 1回の Recognize は1発話ぶん。ファイルの終わりで $null が返るまで繰り返す。
-        for ($i = 0; $i -lt 200; $i++) {
-            $result = $null
-            try { $result = $engine.Recognize() } catch { break }
-            if ($null -eq $result) { break }
-            $text = [string]$result.Text
-            if (-not [string]::IsNullOrWhiteSpace($text)) { [void]$builder.Append($text) }
-        }
-        $recognized = $builder.ToString().Trim()
-        if ($recognized.Length -gt 2000) { $recognized = $recognized.Substring(0, 2000) }
-        return [pscustomobject]@{ available = $true; reason = ''; text = $recognized }
-    } catch {
-        return [pscustomobject]@{ available = $false; reason = ('音声の文字起こしに失敗しました: ' + $_.Exception.Message); text = '' }
-    } finally {
-        if ($null -ne $engine) { try { $engine.Dispose() } catch { } }
-        if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue }
-    }
 }
 
 Export-ModuleMember -Function @(
@@ -413,7 +335,5 @@ Export-ModuleMember -Function @(
     'Set-MbCopilotDraftSelection',
     'Show-MbCopilotSignInWindow',
     'Get-MbCopilotCapabilities',
-    'Get-MbNarrationStatus',
-    'ConvertFrom-MbNarrationWav',
     'Get-MbCopilotStepListFromProject'
 )

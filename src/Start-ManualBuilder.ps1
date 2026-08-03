@@ -1358,16 +1358,10 @@ function Invoke-MbRoute {
         $timeMs = 0
         try { $timeMs = [int][string]$request.Headers['X-Scene-Time-Ms'] } catch { $timeMs = 0 }
         $rectJson = [string]$request.Headers['X-Scene-Rect']
-        $narration = ''
-        # ヘッダーに日本語をそのまま載せられないため、文字起こしはBase64で受け取る。
-        $narrationEncoded = [string]$request.Headers['X-Scene-Narration']
-        if (-not [string]::IsNullOrWhiteSpace($narrationEncoded)) {
-            try { $narration = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($narrationEncoded)) } catch { $narration = '' }
-        }
         try {
             $project = Get-MbProject -Path $ProjectPath
             $imported = Import-MbVideoScene -Project $project -ProjectPath $ProjectPath -SheetId $sheetId `
-                -Bytes $bytes -TimeMs $timeMs -RectJson $rectJson -Narration $narration
+                -Bytes $bytes -TimeMs $timeMs -RectJson $rectJson
             if ($imported.status -eq 'added') {
                 $project = Save-MbProject -Project $project -Path $ProjectPath
                 $script:CaptureVersion++
@@ -1381,24 +1375,6 @@ function Invoke-MbRoute {
         return
     }
 
-    # 場面ごとに切り出した音声を文字にする。使えない環境では理由を返す。
-    if ($path -eq '/api/narration/transcribe') {
-        $length = [long]$request.ContentLength64
-        if ($length -lt 1) { Write-MbResponse $Context '音声データが空です。' 400 'text/plain; charset=utf-8'; return }
-        if ($length -gt (10 * 1024 * 1024)) { Write-MbResponse $Context '音声は10MB以下にしてください。' 400 'text/plain; charset=utf-8'; return }
-        $memory = New-Object IO.MemoryStream
-        try {
-            $request.InputStream.CopyTo($memory)
-            $bytes = $memory.ToArray()
-        } finally {
-            $memory.Dispose()
-        }
-        $result = ConvertFrom-MbNarrationWav -Bytes $bytes
-        Write-MbResponse $Context ($result | ConvertTo-Json -Depth 4 -Compress) 200 'application/json; charset=utf-8'
-        return
-    }
-
-    # 操作記録。記録そのものは別プロセスが行い、ここでは開始と停止だけを扱う。
     if ($path -eq '/api/recorder/start') {
         try {
             $form = Read-MbForm -Request $request
