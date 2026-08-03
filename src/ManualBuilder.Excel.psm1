@@ -680,8 +680,8 @@ function Add-MbExcelStepCard {
         # 展開され、Range1個ではなくセルの配列になる。配列にはプロパティを設定できないので、
         # COMオブジェクトは必ず直接代入で受け取る。
         if ($hasVideoLink) {
-            $titleArea = $Worksheet.Range("B${headerRow}:I${headerRow}")
-            $videoCell = $Worksheet.Range("J${headerRow}:L${headerRow}")
+            $titleArea = $Worksheet.Range("B${headerRow}:J${headerRow}")
+            $videoCell = $Worksheet.Range("K${headerRow}:L${headerRow}")
         } else {
             $titleArea = $Worksheet.Range("B${headerRow}:L${headerRow}")
         }
@@ -719,15 +719,16 @@ function Add-MbExcelStepCard {
             # =HYPERLINK() の相対パスはクリック時にブックの場所を基準に解決されるため、
             # フォルダーごと共有フォルダーへコピーしても、そのまま再生できる。
             $videoCell.Formula = '=HYPERLINK("' + ($VideoLinkPath -replace '"', '""') + '","▶ 動画を見る")'
+            # 文字リンクだと見出しの中で埋もれ、同じ行の「目次へ戻る」とも見分けが付かない。
+            # 左のSTEPバッジと同じ塗りにして、押せるものだと分かる見た目にする。
             $videoCell.Font.Name = $FontName
             $videoCell.Font.Size = 11
             $videoCell.Font.Bold = $true
-            $videoCell.Font.Color = $colorAccent
-            $videoCell.Font.Underline = 2
-            $videoCell.Interior.Color = $colorWhite
-            $videoCell.HorizontalAlignment = $xlRight
+            $videoCell.Font.Color = $colorWhite
+            $videoCell.Font.Underline = -4142
+            $videoCell.Interior.Color = $colorAccent
+            $videoCell.HorizontalAlignment = $xlCenter
             $videoCell.VerticalAlignment = $xlCenter
-            $videoCell.IndentLevel = 1
         }
 
         if ($hasImage) {
