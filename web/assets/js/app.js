@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const appVersion = '0.22.1';
+  const appVersion = '0.23.0';
   // 番号注釈はSVG属性で指定するためCSS変数を参照できない。
   // 編集画面とExcel・Word出力（New-MbAnnotatedImage）で同じ見た目にするため、基準フォントを揃える。
   const ANNOTATION_NUMBER_FONT = '"BIZ UDPGothic", "BIZ UDPゴシック", "BIZ UDGothic", "BIZ UDゴシック", Meiryo, "Yu Gothic UI", "MS Pゴシック", sans-serif';
@@ -1206,6 +1206,191 @@
     }
   };
 
+  // 動画はサーバーへ送らない。ブラウザーで再生し、選んだ場面だけを画像にして
+  // 既存の取り込み経路（/api/images/import）へ流す。保存・注釈・Office出力は静止画のまま。
+  // 出力側は注釈を焼き込むとき760px幅（Wordは600px）へ縮小するため、長辺1280pxで足りる。
+  // 動画のコマはH.264で圧縮済みでノイズが乗るため、可逆のPNGにすると逆に大きくなる。JPEGで持つ。
+  const VIDEO_FRAME_MAX_EDGE = 1280;
+  const VIDEO_FRAME_QUALITY = 0.85;
+  const VIDEO_FRAME_ORIGINAL_QUALITY = 0.92;
+  const VIDEO_STEP_SECONDS = 0.1;
+
+  const isSupportedVideo = (file) => {
+    if (!file) return false;
+    if (/^video\/(mp4|webm)$/i.test(file.type || '')) return true;
+    return /\.(mp4|webm)$/i.test(file.name || '');
+  };
+
+  const videoCapture = { dialog: null, player: null, objectUrl: '', added: 0, busy: false };
+
+  // ダイアログは最上位レイヤーに出るため、背面のトーストは読みにくい。結果はダイアログ内に出す。
+  const setVideoStatus = (message = '') => {
+    const status = videoCapture.dialog?.querySelector('[data-video-status]');
+    if (!status) return;
+    status.textContent = `追加: ${videoCapture.added}件` + (message ? ` ・ ${message}` : '');
+  };
+
+  const formatVideoTime = (seconds) => {
+    const total = Math.max(0, Number(seconds) || 0);
+    const minutes = Math.floor(total / 60);
+    return `${minutes}:${(total - (minutes * 60)).toFixed(1).padStart(4, '0')}`;
+  };
+
+  const refreshVideoDialogTime = () => {
+    const player = videoCapture.player;
+    if (!player) return;
+    const duration = Number.isFinite(player.duration) ? player.duration : 0;
+    const seek = videoCapture.dialog.querySelector('[data-video-seek]');
+    seek.max = String(duration);
+    seek.value = String(Math.min(player.currentTime || 0, duration));
+    videoCapture.dialog.querySelector('[data-video-time]').textContent =
+      `${formatVideoTime(player.currentTime)} / ${formatVideoTime(duration)}`;
+    videoCapture.dialog.querySelector('[data-video-play]').textContent = player.paused ? '再生' : '一時停止';
+  };
+
+  const seekVideoTo = (seconds) => {
+    const player = videoCapture.player;
+    if (!player) return;
+    const duration = Number.isFinite(player.duration) ? player.duration : 0;
+    player.pause();
+    player.currentTime = Math.min(Math.max(0, seconds), Math.max(0, duration - 0.001));
+  };
+
+  // シーク直後に描くと前のコマが写る。seekedを待ってから1フレーム置く。
+  const waitForVideoFrame = (player) => new Promise((resolve) => {
+    const settle = () => {
+      player.removeEventListener('seeked', settle);
+      window.requestAnimationFrame(() => resolve());
+    };
+    if (!player.seeking) { settle(); return; }
+    player.addEventListener('seeked', settle);
+    window.setTimeout(settle, 600);
+  });
+
+  const captureVideoFrame = async () => {
+    const player = videoCapture.player;
+    if (!player || videoCapture.busy) return;
+    if (!player.videoWidth || !player.videoHeight) {
+      showToast('動画をまだ読み込めていません。');
+      return;
+    }
+    if (!selectedSheetId()) return;
+    const button = videoCapture.dialog.querySelector('[data-video-capture]');
+    videoCapture.busy = true;
+    button.disabled = true;
+    try {
+      player.pause();
+      await waitForVideoFrame(player);
+      const keepOriginal = videoCapture.dialog.querySelector('[data-video-original]').checked;
+      const scale = keepOriginal
+        ? 1
+        : Math.min(1, VIDEO_FRAME_MAX_EDGE / Math.max(player.videoWidth, player.videoHeight));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(player.videoWidth * scale));
+      canvas.height = Math.max(1, Math.round(player.videoHeight * scale));
+      canvas.getContext('2d').drawImage(player, 0, 0, canvas.width, canvas.height);
+      const quality = keepOriginal ? VIDEO_FRAME_ORIGINAL_QUALITY : VIDEO_FRAME_QUALITY;
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality));
+      if (!blob) throw new Error('この場面を画像にできませんでした。');
+      const position = formatVideoTime(player.currentTime);
+      const before = document.querySelectorAll('.step-card').length;
+      await importImage(blob, 'video');
+      if (document.querySelectorAll('.step-card').length > before) {
+        videoCapture.added += 1;
+        setVideoStatus(`${position} の場面を追加しました`);
+      } else {
+        // 動画は動きの無い区間から2コマ取ると完全に一致し、重複として手順が作られない。
+        setVideoStatus('同じ画面のため追加しませんでした');
+      }
+    } catch (error) {
+      setVideoStatus('取り込めませんでした');
+      showToast(error.message || 'この場面を取り込めませんでした。');
+    } finally {
+      videoCapture.busy = false;
+      button.disabled = false;
+    }
+  };
+
+  const releaseVideoSource = () => {
+    const player = videoCapture.player;
+    if (player) {
+      player.pause();
+      player.removeAttribute('src');
+      player.load();
+    }
+    if (videoCapture.objectUrl) {
+      URL.revokeObjectURL(videoCapture.objectUrl);
+      videoCapture.objectUrl = '';
+    }
+  };
+
+  const ensureVideoDialog = () => {
+    if (videoCapture.dialog) return videoCapture.dialog;
+    const dialog = document.createElement('dialog');
+    dialog.id = 'video-frame-dialog';
+    dialog.className = 'video-dialog';
+    dialog.innerHTML = '<header class="video-dialog__header"><div><strong>動画から手順を作る</strong><span>場面を選んで、その画面を手順に追加します</span></div><button type="button" class="video-dialog__close" data-video-close aria-label="閉じる">×</button></header><div class="video-dialog__content"><video class="video-dialog__player" data-video-player playsinline preload="metadata"></video><p class="video-dialog__error" data-video-error hidden></p><div class="video-dialog__controls"><button type="button" class="button button--ghost" data-video-play>再生</button><button type="button" class="button button--ghost" data-video-step="-1" aria-label="0.1秒戻す">◀ 0.1秒</button><input type="range" class="video-dialog__seek" data-video-seek min="0" max="0" step="0.01" value="0" aria-label="再生位置"><button type="button" class="button button--ghost" data-video-step="1" aria-label="0.1秒進める">0.1秒 ▶</button><span class="video-dialog__time" data-video-time>0:00.0 / 0:00.0</span></div></div><footer class="video-dialog__footer"><label class="video-dialog__quality"><input type="checkbox" data-video-original>元の解像度で取り込む</label><span class="video-dialog__spacer"></span><span class="video-dialog__count" data-video-status role="status" aria-live="polite">追加: 0件</span><button type="button" class="button button--primary" data-video-capture>この場面を手順にする</button><button type="button" class="button button--ghost" data-video-close>閉じる</button></footer>';
+
+    const player = dialog.querySelector('[data-video-player]');
+    videoCapture.dialog = dialog;
+    videoCapture.player = player;
+
+    dialog.querySelectorAll('[data-video-close]').forEach((button) => {
+      button.addEventListener('click', () => dialog.close());
+    });
+    dialog.querySelector('[data-video-play]').addEventListener('click', () => {
+      if (player.paused) { player.play().catch(() => { }); } else { player.pause(); }
+    });
+    dialog.querySelectorAll('[data-video-step]').forEach((button) => {
+      button.addEventListener('click', () => {
+        seekVideoTo(player.currentTime + (Number(button.dataset.videoStep) * VIDEO_STEP_SECONDS));
+      });
+    });
+    dialog.querySelector('[data-video-seek]').addEventListener('input', (event) => {
+      seekVideoTo(Number(event.target.value));
+    });
+    dialog.querySelector('[data-video-capture]').addEventListener('click', captureVideoFrame);
+    dialog.addEventListener('keydown', (event) => {
+      if (event.target.matches('[data-video-seek]')) return;
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+      event.preventDefault();
+      seekVideoTo(player.currentTime + (event.key === 'ArrowLeft' ? -VIDEO_STEP_SECONDS : VIDEO_STEP_SECONDS));
+    });
+    ['loadedmetadata', 'timeupdate', 'seeked', 'play', 'pause'].forEach((name) => {
+      player.addEventListener(name, refreshVideoDialogTime);
+    });
+    player.addEventListener('error', () => {
+      if (!player.getAttribute('src')) return;
+      const error = dialog.querySelector('[data-video-error]');
+      error.textContent = 'この動画は再生できません。mp4（H.264）またはwebmで録画し直してください。';
+      error.hidden = false;
+      dialog.querySelector('[data-video-capture]').disabled = true;
+    });
+    dialog.addEventListener('close', releaseVideoSource);
+    document.body.appendChild(dialog);
+    return dialog;
+  };
+
+  const openVideoDialog = (file) => {
+    if (!isSupportedVideo(file)) {
+      showToast('mp4またはwebmの動画を選んでください。');
+      return;
+    }
+    if (!selectedSheetId()) return;
+    const dialog = ensureVideoDialog();
+    releaseVideoSource();
+    videoCapture.added = 0;
+    setVideoStatus();
+    dialog.querySelector('[data-video-capture]').disabled = false;
+    const error = dialog.querySelector('[data-video-error]');
+    error.hidden = true;
+    error.textContent = '';
+    videoCapture.objectUrl = URL.createObjectURL(file);
+    videoCapture.player.src = videoCapture.objectUrl;
+    videoCapture.player.load();
+    if (!dialog.open) dialog.showModal();
+  };
+
   let heartbeatStartedAt = 0;
   const sendHeartbeat = async () => {
     const sheetId = selectedSheetId();
@@ -1586,6 +1771,10 @@
       setActiveStep(stepJump.dataset.stepJump);
       return;
     }
+    if (event.target.closest('[data-open-video-picker]')) {
+      document.getElementById('video-file-input')?.click();
+      return;
+    }
     if (!event.target.closest('[data-open-image-picker]')) return;
     document.getElementById('image-file-input')?.click();
   });
@@ -1677,6 +1866,12 @@
     if (event.target.id === 'image-file-input') {
       enqueueImages(event.target.files || [], 'file');
       event.target.value = '';
+      return;
+    }
+    if (event.target.id === 'video-file-input') {
+      const video = event.target.files?.[0];
+      event.target.value = '';
+      if (video) openVideoDialog(video);
       return;
     }
     if (event.target.id === 'replacement-image-file-input') {
@@ -2036,6 +2231,12 @@
     document.getElementById('workspace')?.classList.remove('workspace--dragging');
     const files = [...(event.dataTransfer?.files || [])];
     const supported = files.filter(isSupportedImage);
+    const videos = files.filter(isSupportedVideo);
+    // 動画だけを落としたときは、コマを選ぶダイアログへ回す。
+    if (!supported.length && videos.length) {
+      openVideoDialog(videos[0]);
+      return;
+    }
     const emptyCard = document.querySelector('.step-card--active .image-placeholder')?.closest('.step-card');
     if (supported.length === 1 && emptyCard?.dataset.stepId) {
       importQueue = importQueue

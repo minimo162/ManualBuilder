@@ -1426,6 +1426,13 @@ kbd {
   font-size: 12px;
 }
 
+.empty-state__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+
 .empty-state__button {
   min-height: 40px;
   margin-top: 12px;
@@ -1985,6 +1992,131 @@ kbd {
 
 .excel-export-dialog__spacer {
   flex: 1;
+}
+
+.video-dialog {
+  width: min(94vw, 880px);
+  max-width: none;
+  padding: 0;
+  overflow: hidden;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: 0 20px 60px rgba(28, 32, 39, 0.2);
+}
+
+.video-dialog::backdrop {
+  background: rgba(28, 32, 39, 0.42);
+}
+
+.video-dialog__header {
+  min-height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 9px 10px 9px 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.video-dialog__header strong,
+.video-dialog__header span {
+  display: block;
+}
+
+.video-dialog__header strong {
+  font-size: 15px;
+}
+
+.video-dialog__header span {
+  margin-top: 2px;
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.video-dialog__close {
+  width: 34px;
+  min-height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text-2);
+  background: transparent;
+  font-size: 21px;
+}
+
+.video-dialog__close:hover {
+  background: var(--surface-inset);
+}
+
+.video-dialog__content {
+  padding: 14px;
+}
+
+.video-dialog__player {
+  width: 100%;
+  max-height: min(58vh, 460px);
+  display: block;
+  background: #1c2027;
+  border-radius: 8px;
+}
+
+.video-dialog__error {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  color: var(--danger);
+  background: #fff1f0;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.video-dialog__controls {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.video-dialog__seek {
+  flex: 1;
+  min-width: 80px;
+}
+
+.video-dialog__time {
+  min-width: 108px;
+  color: var(--text-2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.video-dialog__footer {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 14px;
+  background: #fbfcfd;
+  border-top: 1px solid var(--border);
+}
+
+.video-dialog__quality {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.video-dialog__spacer {
+  flex: 1;
+}
+
+.video-dialog__count {
+  color: var(--text-2);
+  font-size: 12px;
 }
 
 .shutdown-screen {

@@ -1014,7 +1014,7 @@ function Invoke-MbRoute {
             $memory.Dispose()
         }
         $source = [string]$request.Headers['X-Image-Source']
-        if ($source -notin @('paste', 'drop', 'file')) { $source = 'file' }
+        if ($source -notin @('paste', 'drop', 'file', 'video')) { $source = 'file' }
         $sheetId = [string]$request.Headers['X-Sheet-Id']
         $project = Get-MbProject -Path $ProjectPath
         $result = Add-MbImageStep -Project $project -ProjectPath $ProjectPath -SheetId $sheetId -Bytes $bytes -Source $source
@@ -1049,7 +1049,7 @@ function Invoke-MbRoute {
         }
         try {
             $source = [string]$request.Headers['X-Image-Source']
-            if ($source -notin @('paste', 'drop', 'file')) { $source = 'file' }
+            if ($source -notin @('paste', 'drop', 'file', 'video')) { $source = 'file' }
             $stepId = [string]$request.Headers['X-Step-Id']
             if ([string]::IsNullOrWhiteSpace($stepId)) { throw '対象手順が指定されていません。' }
             $project = Get-MbProject -Path $ProjectPath
