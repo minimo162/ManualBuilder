@@ -135,14 +135,15 @@ function Add-MbImageStep {
         [Parameter(Mandatory = $true)][string]$ProjectPath,
         [Parameter(Mandatory = $true)][string]$SheetId,
         [Parameter(Mandatory = $true)][byte[]]$Bytes,
-        [ValidateSet('watcher', 'paste', 'drop', 'file', 'video', 'recorder')][string]$Source = 'file'
+        [ValidateSet('watcher', 'paste', 'drop', 'file', 'video', 'recorder')][string]$Source = 'file',
+        [switch]$AllowDuplicateStep = $false
     )
 
     $targetSheet = @($Project.sheets | Where-Object { $_.id -eq $SheetId }) | Select-Object -First 1
     if (-not $targetSheet) { throw '対象シートが見つかりません。' }
     if (@($targetSheet.steps).Count -ge 500) { throw '1シートの手順は500件までです。' }
     $asset = Add-MbImageAsset -Project $Project -ProjectPath $ProjectPath -Bytes $Bytes -Source $Source
-    if ($asset.Status -eq 'existing') {
+    if ($asset.Status -eq 'existing' -and -not $AllowDuplicateStep) {
         return [pscustomobject]@{ Status = 'duplicate'; Step = $null; Image = $asset.Image }
     }
 

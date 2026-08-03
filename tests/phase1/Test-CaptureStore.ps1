@@ -93,6 +93,12 @@ try {
     Assert-Mb ($duplicate.Status -eq 'duplicate') '同じ画像をSHA-256で重複判定する'
     Assert-Mb (@($project.images).Count -eq 1 -and @($project.sheets[0].steps).Count -eq 1) '重複画像では手順を増やさない'
 
+    $reused = Add-MbImageStep -Project $project -ProjectPath $projectPath -SheetId $sheetId -Bytes $bytes `
+        -Source recorder -AllowDuplicateStep
+    Assert-Mb ($reused.Status -eq 'added') '操作記録では同じ画面でも別の手順として追加できる'
+    Assert-Mb (@($project.images).Count -eq 1 -and @($project.sheets[0].steps).Count -eq 2) '同じ画面の手順は画像実体を共有する'
+    Assert-Mb ([string]$project.sheets[0].steps[1].imageId -eq [string]$result.Image.id) '共有した画像IDを新しい手順から参照する'
+
     $invalidRejected = $false
     try {
         [void](Add-MbImageStep -Project $project -ProjectPath $projectPath -SheetId $sheetId -Bytes ([byte[]](1, 2, 3, 4)) -Source file)
