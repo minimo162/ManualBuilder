@@ -126,6 +126,42 @@ try {
     # 未完成フォルダーを残さない
     Assert-Mb (@(Get-ChildItem -LiteralPath $outputRoot -Directory -Force | Where-Object { $_.Name -like '.mb-html-*' }).Count -eq 0) '作業用フォルダーを残さない'
 
+    # --- 注釈も切り抜きも無い手順の画像 ---
+    # New-MbAnnotatedImage は焼き込みが不要だと元画像のパスを返し、出力先へは書かない。
+    # 戻り値を捨てると、注釈を付けていない手順の画像がすべてリンク切れになる。
+    $plainRoot = Join-Path $testRoot 'plain-image'
+    [void](New-Item -ItemType Directory -Path (Join-Path $plainRoot 'images') -Force)
+    $plainImageName = 'image-' + ('a' * 32) + '.png'
+    # 1x1の透明PNG（GDI+を使わずに用意できる最小の実画像）
+    [IO.File]::WriteAllBytes((Join-Path (Join-Path $plainRoot 'images') $plainImageName),
+        [Convert]::FromBase64String('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='))
+    $plainProject = New-MbProject
+    $plainProject.title = '注釈なしの出力'
+    $plainSheetId = [string]$plainProject.sheets[0].id
+    $plainStep = Add-MbStep -Project $plainProject -SheetId $plainSheetId
+    $plainStep.title = '注釈を付けていない手順'
+    $plainStep.imageId = 'image-plain'
+    $plainProject.images = @([pscustomobject]@{ id = 'image-plain'; fileName = $plainImageName })
+    $plainProjectPath = Join-Path $plainRoot 'project.json'
+    # 画像の取り扱いはGDI+（System.Drawing）を通る。.NET 6以降のGDI+はWindows専用のため、
+    # Windows以外の開発環境ではこの節を飛ばす。実機のテストでは必ず実行される。
+    $imageRenderingAvailable = $true
+    try {
+        $probeBitmap = New-Object Drawing.Bitmap -ArgumentList @(1, 1)
+        $probeBitmap.Dispose()
+    } catch { $imageRenderingAvailable = $false }
+    if ($imageRenderingAvailable) {
+        $plainResult = Invoke-MbHtmlExport -Project $plainProject -ProjectPath $plainProjectPath -OutputDirectory $outputRoot
+        $plainHtml = [IO.File]::ReadAllText($plainResult.IndexPath, [Text.Encoding]::UTF8)
+        Assert-Mb ([int]$plainResult.ImageCount -eq 1) '注釈なしでも画像を数える'
+        Assert-Mb ($plainHtml -match '<img src="images/([^"]+)"') 'HTMLが画像を参照する'
+        $referencedImage = [string]$Matches[1]
+        Assert-Mb (Test-Path -LiteralPath (Join-Path (Join-Path $plainResult.OutputPath 'images') $referencedImage) -PathType Leaf) `
+            '注釈も切り抜きも無い手順でも画像を出力する（リンク切れにしない）'
+    } else {
+        Write-Host '[SKIP] 注釈なしの画像出力（GDI+が使えない環境のため）' -ForegroundColor Yellow
+    }
+
     # --- 同梱する元データ（_source） ---
     $sourcePath = Join-Path $result.OutputPath '_source'
     Assert-Mb (Test-Path -LiteralPath $sourcePath -PathType Container) '出力フォルダーへ元データを同梱する'

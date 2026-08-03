@@ -136,6 +136,50 @@ function Get-MbSafeExcelFileName {
     return $candidate + $Extension
 }
 
+function Invoke-MbMoveWithRetry {
+    param(
+        [Parameter(Mandatory = $true)][scriptblock]$MoveAction,
+        [Parameter(Mandatory = $true)][string]$DestinationPath,
+        [ValidateRange(1, 10)][int]$Attempts = 5
+    )
+    # OneDriveの同期やウイルス対策が書いたばかりのファイルを掴んでいると、移動が
+    # 「アクセスが拒否されました」で失敗する。多くは数百ミリ秒で解けるため間隔を空けて試す。
+    $delayMilliseconds = 200
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        try {
+            & $MoveAction
+            return
+        } catch {
+            # 同じ名前が既にある場合は待っても解決しないため、すぐ知らせる。
+            if ($attempt -ge $Attempts -or (Test-Path -LiteralPath $DestinationPath)) { throw }
+        }
+        Start-Sleep -Milliseconds $delayMilliseconds
+        $delayMilliseconds = [Math]::Min(2000, $delayMilliseconds * 2)
+    }
+}
+
+function Move-MbDirectorySafely {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourcePath,
+        [Parameter(Mandatory = $true)][string]$DestinationPath,
+        [ValidateRange(1, 10)][int]$Attempts = 5
+    )
+    Invoke-MbMoveWithRetry -DestinationPath $DestinationPath -Attempts $Attempts -MoveAction {
+        [IO.Directory]::Move($SourcePath, $DestinationPath)
+    }
+}
+
+function Move-MbFileSafely {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourcePath,
+        [Parameter(Mandatory = $true)][string]$DestinationPath,
+        [ValidateRange(1, 10)][int]$Attempts = 5
+    )
+    Invoke-MbMoveWithRetry -DestinationPath $DestinationPath -Attempts $Attempts -MoveAction {
+        [IO.File]::Move($SourcePath, $DestinationPath)
+    }
+}
+
 function Get-MbSafeExcelFolderName {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -680,8 +724,8 @@ function Add-MbExcelStepCard {
         # 展開され、Range1個ではなくセルの配列になる。配列にはプロパティを設定できないので、
         # COMオブジェクトは必ず直接代入で受け取る。
         if ($hasVideoLink) {
-            $titleArea = $Worksheet.Range("B${headerRow}:J${headerRow}")
-            $videoCell = $Worksheet.Range("K${headerRow}:L${headerRow}")
+            $titleArea = $Worksheet.Range("B${headerRow}:K${headerRow}")
+            $videoCell = $Worksheet.Range("L${headerRow}:L${headerRow}")
         } else {
             $titleArea = $Worksheet.Range("B${headerRow}:L${headerRow}")
         }
@@ -729,6 +773,8 @@ function Add-MbExcelStepCard {
             $videoCell.Interior.Color = $colorAccent
             $videoCell.HorizontalAlignment = $xlCenter
             $videoCell.VerticalAlignment = $xlCenter
+            # 白い余白で囲み、見出しいっぱいに広がる帯ではなく、独立したボタンとして見せる。
+            Set-MbExcelEdgeBorder -Range $videoCell -Edges @(7, 8, 9, 10) -Color $colorWhite -Weight 4
         }
 
         if ($hasImage) {
@@ -1310,9 +1356,10 @@ function Invoke-MbExcelExport {
             if ($copiedVideoCount -ne [int]$videoPlan.Count) { throw '出力した動画数の自己検査に失敗しました。' }
 
             $outputName = Get-MbSafeExcelFileName -Name ([string]$Project.title) -Directory $stagingDirectory
-            [IO.File]::Move($temporaryPath, (Join-Path $stagingDirectory $outputName))
+            # 保存直後はExcelやOneDriveがファイルを掴んでいることがあるため、少し待って試し直す。
+            Move-MbFileSafely -SourcePath $temporaryPath -DestinationPath (Join-Path $stagingDirectory $outputName)
             $temporaryPath = ''
-            [IO.Directory]::Move($stagingDirectory, $outputFolderPath)
+            Move-MbDirectorySafely -SourcePath $stagingDirectory -DestinationPath $outputFolderPath
             $stagingDirectory = ''
             $outputPath = Join-Path $outputFolderPath $outputName
             $status.outputFolder = $outputFolderPath
@@ -1412,6 +1459,8 @@ function Invoke-MbExcelExport {
 }
 
 Export-ModuleMember -Function @(
+    'Move-MbDirectorySafely',
+    'Move-MbFileSafely',
     'Get-MbSafeExcelFileName',
     'Get-MbSafeExcelFolderName',
     'Get-MbExcelVideoPlan',

@@ -95,7 +95,7 @@ Add-Result (($serverText -match '\$projectReady = \$false') -and ($serverText -m
 Add-Result ($serverText -match '\$storageLayout\.RuntimePath') '二重起動情報をユーザーデータ配下へ置く'
 Add-Result ($serverText -match '\$storageLayout\.ExportJobsRoot') 'Office一時ジョブをユーザーデータ配下へ置く'
 Add-Result (($runCommandText -match '%~dp0src\\Start-ManualBuilderLauncher\.ps1') -and ($runCommandText -notmatch '(?im)^cd /d')) 'UNC共有フォルダーから更新ランチャーを起動できる'
-Add-Result ([string]$appVersionManifest.appVersion -eq '0.27.2') '配布用アプリバージョンを0.27.2へ更新する'
+Add-Result ([string]$appVersionManifest.appVersion -eq '0.27.3') '配布用アプリバージョンを0.27.3へ更新する'
 Add-Result ($workspaceModuleText -notmatch "ManualBuilder\.Project\.psm1'\) -Force") 'WorkspaceがProjectコマンドを強制再読込しない'
 Add-Result ($launcherModuleText -match "'ManualBuilder\\app'") 'アプリ実行コードをLocalApplicationDataへキャッシュする'
 Add-Result ($launcherModuleText -match "@\('src', 'web', 'run\.cmd', 'app-version\.json'\)") 'キャッシュ対象からプロジェクトデータを除外する'
@@ -184,6 +184,20 @@ Add-Result (($excelModuleText -match '\$videoCell\.Interior\.Color = \$colorAcce
 # 「フォルダーごとコピー」とだけ書いても次の操作へつながらないため、案内文はボタン名で指す。
 Add-Result (($jsText -match 'フォルダーを開く』?」から') -or ($jsText -match '「フォルダーを開く」から')) '配布の案内から次に押すボタンへつなぐ'
 Add-Result ($jsText -match "folderButton\.textContent = outputFolderName \? 'フォルダーを開く'") 'フォルダー出力のときはボタン名も「フォルダーを開く」にする'
+# New-MbAnnotatedImage は焼き込みが不要だと元画像のパスを返し、出力先へは書かない。
+# 戻り値を捨てると、注釈を付けていない手順の画像がすべてリンク切れになる。
+Add-Result ($htmlModuleText -notmatch '\[void\]\(New-MbAnnotatedImage') 'HTML出力で焼き込み結果の戻り値を捨てない'
+Add-Result ($htmlModuleText -match '\$renderedPath = New-MbAnnotatedImage') 'HTML出力は焼き込み結果のパスを見て画像を置く'
+Add-Result ($htmlModuleText -match '画像を出力できませんでした') '画像が出力できていなければ気付けるようにする'
+Add-Result (($htmlModuleText -match "Import-Module \(Join-Path \`$PSScriptRoot 'ManualBuilder\.Excel\.psm1'\)") -and
+    ($htmlModuleText -match "Import-Module \(Join-Path \`$PSScriptRoot 'ManualBuilder\.Capture\.psm1'\)")) 'HTMLモジュールが借りているコマンドを明示して読み込む'
+# OneDriveやウイルス対策が書いたばかりのファイルを掴んでいると、移動がアクセス拒否で失敗する。
+Add-Result ($excelModuleText -match 'function Move-MbDirectorySafely') 'フォルダーの移動を待って試し直せるようにする'
+Add-Result ($htmlModuleText -notmatch '\[IO\.Directory\]::Move') 'HTML出力の差し替えは再試行つきの移動を使う'
+Add-Result ($excelModuleText -notmatch '\[IO\.Directory\]::Move\(\$stagingDirectory') 'Excelのフォルダー出力も再試行つきの移動を使う'
+# 差し替えに失敗して元へ戻せなかった場合、退避先が前の内容の唯一の実体になる。
+Add-Result ($htmlModuleText -match '\$moveCompleted -and \$replacedMoved') '差し替えを終えたときだけ前のフォルダーを消す'
+Add-Result ($excelModuleText -match 'Set-MbExcelEdgeBorder -Range \$videoCell') '動画ボタンを白い余白で囲んで帯に見せない'
 Add-Result (($webModuleText -match 'button--primary" data-export-excel') -and ($webModuleText -match 'button--secondary" data-export-html')) 'ExcelとHTMLのボタンを並べる'
 Add-Result ($serverText -match '/api/steps/reorder') '手順並べ替えAPIを実装する'
 Add-Result ($serverText -match '/api/sheets/reorder') 'シート並べ替えAPIを実装する'

@@ -6,6 +6,13 @@
 
 Set-StrictMode -Version 2.0
 
+# 注釈の焼き込み（New-MbAnnotatedImage）と安全な移動（Move-MbDirectorySafely）を借りる。
+# サーバーが先に読み込むため今までは動いていたが、暗黙の依存はテストから使えないため明示する。
+# -Force は付けない。入れ子の再読込で呼び出し元のコマンドが消えるため。
+Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Excel.psm1')
+# 画像と動画の実ファイルの場所を解決するために使う。
+Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Capture.psm1')
+
 # 画面表示に使う画像の基準。Excel（760px幅）より大きめにして、拡大表示にも耐えるようにする。
 $script:MbHtmlImageWidth = 1100
 $script:MbHtmlImageHeight = 1100
@@ -381,6 +388,7 @@ function Invoke-MbHtmlExport {
     $outputPath = Join-Path $OutputDirectory $folderName
     $replacedPath = Join-Path $OutputDirectory ('.mb-old-' + [guid]::NewGuid().ToString('N'))
     $replacedMoved = $false
+    $moveCompleted = $false
 
     try {
         [void](New-Item -ItemType Directory -Path $stagingPath -Force)
@@ -402,14 +410,23 @@ function Invoke-MbHtmlExport {
                     if (-not $sourcePath -or -not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) { throw "画像が見つかりません: $($step.imageId)" }
                     if (-not (Test-Path -LiteralPath $imageDirectory)) { [void](New-Item -ItemType Directory -Path $imageDirectory -Force) }
                     $imageCount++
-                    $fileName = "step-{0:d4}.png" -f $stepCount
+                    $destinationPath = Join-Path $imageDirectory ("step-{0:d4}.png" -f $stepCount)
                     # 注釈と切り抜きは画像へ焼き込む。Excel・Word・PowerPointと同じ見た目になり、
                     # 黒塗りがHTMLのソースから読み取られることもない。
-                    [void](New-MbAnnotatedImage -SourcePath $sourcePath -Annotations @($step.annotations) -Crop $step.crop `
-                        -DestinationPath (Join-Path $imageDirectory $fileName) `
+                    $renderedPath = New-MbAnnotatedImage -SourcePath $sourcePath -Annotations @($step.annotations) -Crop $step.crop `
+                        -DestinationPath $destinationPath `
                         -TargetDisplayWidth $script:MbHtmlImageWidth -TargetDisplayHeight $script:MbHtmlImageHeight `
-                        -MaximumDisplayScale 1.5 -NumberFontName $NumberFontName)
-                    $imageNames[$stepId] = 'images/' + $fileName
+                        -MaximumDisplayScale 1.5 -NumberFontName $NumberFontName
+                    if ([string]$renderedPath -ne $destinationPath) {
+                        # 注釈も切り抜きも無い手順では焼き込みが不要なため、元画像のパスがそのまま返る。
+                        # 戻り値を捨てると出力フォルダーへ画像が入らず、リンク切れになる。
+                        $extension = [IO.Path]::GetExtension([string]$renderedPath).ToLowerInvariant()
+                        if ($extension -notin @('.png', '.jpg', '.jpeg', '.bmp')) { $extension = '.png' }
+                        $destinationPath = (Join-Path $imageDirectory ("step-{0:d4}" -f $stepCount)) + $extension
+                        [IO.File]::Copy([string]$renderedPath, $destinationPath, $true)
+                    }
+                    if (-not (Test-Path -LiteralPath $destinationPath -PathType Leaf)) { throw "画像を出力できませんでした: $($step.imageId)" }
+                    $imageNames[$stepId] = 'images/' + [IO.Path]::GetFileName($destinationPath)
                 }
 
                 if ($step.PSObject.Properties.Name -contains 'videoId' -and -not [string]::IsNullOrWhiteSpace([string]$step.videoId)) {
@@ -437,16 +454,24 @@ function Invoke-MbHtmlExport {
         if (Test-Path -LiteralPath $outputPath) {
             if (-not $Overwrite) { throw '同じ名前の出力フォルダーがすでにあります。' }
             # 先に新しい方を作り終えてから差し替える。差し替えに失敗しても、前のフォルダーを戻せるようにする。
-            [IO.Directory]::Move($outputPath, $replacedPath)
+            Move-MbDirectorySafely -SourcePath $outputPath -DestinationPath $replacedPath
             $replacedMoved = $true
             $replaced = $true
         }
         try {
-            [IO.Directory]::Move($stagingPath, $outputPath)
+            Move-MbDirectorySafely -SourcePath $stagingPath -DestinationPath $outputPath
+            $moveCompleted = $true
         } catch {
             if ($replacedMoved) {
-                [IO.Directory]::Move($replacedPath, $outputPath)
-                $replacedMoved = $false
+                try {
+                    Move-MbDirectorySafely -SourcePath $replacedPath -DestinationPath $outputPath
+                    $replacedMoved = $false
+                } catch {
+                    # 戻せなかった場合、退避先が前のフォルダーの唯一の実体になる。
+                    # 消してしまわないよう場所を伝える。
+                    throw ('出力フォルダーを差し替えられませんでした。前の内容は「' + (Split-Path -Leaf $replacedPath) +
+                        '」という名前で保存先に残っています。名前を戻してから、もう一度実行してください。')
+                }
             }
             throw
         }
@@ -469,7 +494,9 @@ function Invoke-MbHtmlExport {
         if (Test-Path -LiteralPath $stagingPath) {
             Remove-Item -LiteralPath $stagingPath -Recurse -Force -ErrorAction SilentlyContinue
         }
-        if ($replacedMoved -and (Test-Path -LiteralPath $replacedPath)) {
+        # 差し替えを終えたときだけ、退避しておいた前のフォルダーを消す。
+        # 差し替えに失敗して戻せていない場合は、前の内容がここにしか無いので消さない。
+        if ($moveCompleted -and $replacedMoved -and (Test-Path -LiteralPath $replacedPath)) {
             Remove-Item -LiteralPath $replacedPath -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
@@ -497,20 +524,27 @@ function Copy-MbHtmlManualFolder {
     $stagingPath = Join-Path $parent ('.mb-publish-' + [guid]::NewGuid().ToString('N'))
     $replacedPath = Join-Path $parent ('.mb-old-' + [guid]::NewGuid().ToString('N'))
     $replacedMoved = $false
+    $moveCompleted = $false
     try {
         Copy-Item -LiteralPath $source -Destination $stagingPath -Recurse -Force -ErrorAction Stop
         $replaced = $false
         if (Test-Path -LiteralPath $destination) {
-            [IO.Directory]::Move($destination, $replacedPath)
+            Move-MbDirectorySafely -SourcePath $destination -DestinationPath $replacedPath
             $replacedMoved = $true
             $replaced = $true
         }
         try {
-            [IO.Directory]::Move($stagingPath, $destination)
+            Move-MbDirectorySafely -SourcePath $stagingPath -DestinationPath $destination
+            $moveCompleted = $true
         } catch {
             if ($replacedMoved) {
-                [IO.Directory]::Move($replacedPath, $destination)
-                $replacedMoved = $false
+                try {
+                    Move-MbDirectorySafely -SourcePath $replacedPath -DestinationPath $destination
+                    $replacedMoved = $false
+                } catch {
+                    throw ('共有フォルダーを差し替えられませんでした。前の内容は「' + (Split-Path -Leaf $replacedPath) +
+                        '」という名前で共有フォルダーに残っています。名前を戻してから、もう一度実行してください。')
+                }
             }
             throw
         }
@@ -531,7 +565,8 @@ function Copy-MbHtmlManualFolder {
         if (Test-Path -LiteralPath $stagingPath) {
             Remove-Item -LiteralPath $stagingPath -Recurse -Force -ErrorAction SilentlyContinue
         }
-        if ($replacedMoved -and (Test-Path -LiteralPath $replacedPath)) {
+        # 差し替えを終えたときだけ、退避しておいた前のフォルダーを消す。
+        if ($moveCompleted -and $replacedMoved -and (Test-Path -LiteralPath $replacedPath)) {
             Remove-Item -LiteralPath $replacedPath -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
