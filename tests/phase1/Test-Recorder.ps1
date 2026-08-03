@@ -148,6 +148,13 @@ Add-Result ($typingKeys -notcontains 0x11) 'Ctrlだけでは入力とみなさ�
 Add-Result ($typingKeys -notcontains 0x10) 'Shiftだけでは入力とみなさない'
 Add-Result ($typingKeys -notcontains 0x09) 'Tabだけでは入力とみなさない'
 
+# タッチパッドの短いタップは次の巡回時には離されていることがある。
+# その場合も GetAsyncKeyState の下位ビットから押下を拾う。
+Add-Result ((Test-MbAsyncKeyStateDown -State 0x8000) -eq $true) '押されているキーを上位ビットで検出する'
+Add-Result ((Test-MbAsyncKeyStatePressed -State 0x0001) -eq $true) '巡回の間に終わった短い押下を下位ビットで検出する'
+Add-Result ((Test-MbAsyncKeyStateDown -State 0x0001) -eq $false) '離された短い押下を押下中とは扱わない'
+Add-Result ((Test-MbAsyncKeyStatePressed -State 0x0000) -eq $false) '操作のない状態を押下とは扱わない'
+
 # ---------------------------------------------------------------------
 # 実行環境で記録できるかどうか
 # ---------------------------------------------------------------------

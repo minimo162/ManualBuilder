@@ -449,9 +449,17 @@ function Get-MbWatchedTypingKeys {
     return $keys.ToArray()
 }
 
-function Test-MbKeyDown {
-    param([int]$VirtualKey)
-    return (([MbRecorderNative]::GetAsyncKeyState($VirtualKey) -band 0x8000) -ne 0)
+# GetAsyncKeyState の上位ビットは「現在押されている」、下位ビットは
+# 「前回の確認後に一度でも押された」を表す。タッチパッドのタップなどは
+# 16ms の巡回間隔より短く、上位ビットだけでは押下を丸ごと見失うことがある。
+function Test-MbAsyncKeyStateDown {
+    param([int]$State)
+    return (($State -band 0x8000) -ne 0)
+}
+
+function Test-MbAsyncKeyStatePressed {
+    param([int]$State)
+    return (($State -band 0x0001) -ne 0)
 }
 
 function Test-MbIgnoredWindow {
@@ -562,8 +570,10 @@ function Invoke-MbRecordingLoop {
     $lastStatusMs = -1000
     $lastTarget = ''
 
-    $leftWasDown = Test-MbKeyDown -VirtualKey $script:MbVkLeftButton
-    $rightWasDown = Test-MbKeyDown -VirtualKey $script:MbVkRightButton
+    $leftState = [int][MbRecorderNative]::GetAsyncKeyState($script:MbVkLeftButton)
+    $rightState = [int][MbRecorderNative]::GetAsyncKeyState($script:MbVkRightButton)
+    $leftWasDown = Test-MbAsyncKeyStateDown -State $leftState
+    $rightWasDown = Test-MbAsyncKeyStateDown -State $rightState
     $typingActive = $false
     $typingField = $null
     $typingWindow = $null
@@ -577,17 +587,23 @@ function Invoke-MbRecordingLoop {
         if ($index -ge $MaxEvents) { break }
         if ($watch.Elapsed.TotalMinutes -ge $MaxMinutes) { break }
 
-        $leftDown = Test-MbKeyDown -VirtualKey $script:MbVkLeftButton
-        $rightDown = Test-MbKeyDown -VirtualKey $script:MbVkRightButton
-        $leftClicked = ($leftDown -and -not $leftWasDown)
-        $rightClicked = ($rightDown -and -not $rightWasDown)
+        $leftState = [int][MbRecorderNative]::GetAsyncKeyState($script:MbVkLeftButton)
+        $rightState = [int][MbRecorderNative]::GetAsyncKeyState($script:MbVkRightButton)
+        $leftDown = Test-MbAsyncKeyStateDown -State $leftState
+        $rightDown = Test-MbAsyncKeyStateDown -State $rightState
+        $leftClicked = (Test-MbAsyncKeyStatePressed -State $leftState) -or ($leftDown -and -not $leftWasDown)
+        $rightClicked = (Test-MbAsyncKeyStatePressed -State $rightState) -or ($rightDown -and -not $rightWasDown)
         $clicked = ($leftClicked -or $rightClicked)
         $leftWasDown = $leftDown
         $rightWasDown = $rightDown
 
         $typingNow = $false
         foreach ($vk in $typingKeys) {
-            if (Test-MbKeyDown -VirtualKey $vk) { $typingNow = $true; break }
+            $keyState = [int][MbRecorderNative]::GetAsyncKeyState($vk)
+            if ((Test-MbAsyncKeyStateDown -State $keyState) -or (Test-MbAsyncKeyStatePressed -State $keyState)) {
+                $typingNow = $true
+                break
+            }
         }
         if ($typingNow) {
             if (-not $typingActive) {
@@ -711,6 +727,8 @@ Export-ModuleMember -Function @(
     'Test-MbUsableElementInfo',
     'Test-MbIgnoredWindow',
     'Get-MbWatchedTypingKeys',
+    'Test-MbAsyncKeyStateDown',
+    'Test-MbAsyncKeyStatePressed',
     'Invoke-MbRecordingLoop',
     'Write-MbRecordingStatus'
 )
