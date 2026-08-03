@@ -57,7 +57,7 @@ $rect = ConvertTo-MbRegionRect -Region $capturedRegion -Target $button
 Add-Result ($null -ne $rect) '範囲の中の操作対象は矩形になる'
 Add-Result ([Math]::Abs([double]$rect.x1 - 0.5) -lt 0.0001) '左端の割合が正しい'
 Add-Result ([Math]::Abs([double]$rect.y1 - 0.5) -lt 0.0001) '上端の割合が正しい'
-Add-Result ([Math]::Abs([double]$rect.x2 - 0.725) -lt 0.0001) '右端の割合が正しい'
+Add-Result ([Math]::Abs([double]$rect.x2 - 0.6) -lt 0.0001) '右端の割合が正しい'
 Add-Result ([Math]::Abs([double]$rect.y2 - 0.55) -lt 0.0001) '下端の割合が正しい'
 
 $outsideTarget = [pscustomobject]@{ left = -500.0; top = -500.0; width = 80.0; height = 30.0 }

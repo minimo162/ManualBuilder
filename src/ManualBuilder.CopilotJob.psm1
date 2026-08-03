@@ -9,9 +9,9 @@
 #   加えて、すでに人が書いた手順を見本として渡す。文体と粒度の基準は人が決め、
 #   Copilotはそれに合わせる。ここを渡さないと部内の書き方から外れた文が返る。
 
-Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Project.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Excel.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Copilot.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Project.psm1')
+Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Excel.psm1')
+Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Copilot.psm1')
 
 $script:MbDraftTitleMaxLength = 40
 $script:MbDraftDescriptionMaxLength = 400
@@ -115,7 +115,10 @@ function Get-MbCopilotPackets {
         $count = [Math]::Min($StepsPerPacket, $targets.Count - $i)
         [void]$packets.Add(@($targets[$i..($i + $count - 1)]))
     }
-    return @($packets)
+    # パケットが1件だけでも、その中の手順をPowerShellのパイプラインで平坦化しない。
+    # 呼び出し側は常に「パケットの配列」として件数と添付単位を扱う。
+    Write-Output -NoEnumerate ($packets.ToArray())
+    return
 }
 
 function New-MbCopilotStepPrompt {

@@ -1680,7 +1680,6 @@ function Invoke-MbRoute {
         }
         return
     }
-    }
     if ($path -eq '/api/export/html/open') {
         try {
             if (-not $script:HtmlExportResult) { throw '作成したHTMLマニュアルがありません。' }
