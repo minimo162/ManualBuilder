@@ -52,6 +52,8 @@ $required = @(
     'src\ManualBuilder.Recorder.psm1',
     'src\ManualBuilder.RecorderServer.psm1',
     'src\Invoke-ManualBuilderRecorder.ps1',
+    'src\ManualBuilder.Dictation.psm1',
+    'src\Invoke-ManualBuilderDictation.ps1',
     'web\index.html',
     'web\assets\css\app.css',
     'web\assets\js\app.js',
@@ -104,7 +106,7 @@ Add-Result (($serverText -match '\$projectReady = \$false') -and ($serverText -m
 Add-Result ($serverText -match '\$storageLayout\.RuntimePath') '二重起動情報をユーザーデータ配下へ置く'
 Add-Result ($serverText -match '\$storageLayout\.ExportJobsRoot') 'Office一時ジョブをユーザーデータ配下へ置く'
 Add-Result (($runCommandText -match '%~dp0src\\Start-ManualBuilderLauncher\.ps1') -and ($runCommandText -notmatch '(?im)^cd /d')) 'UNC共有フォルダーから更新ランチャーを起動できる'
-Add-Result ([string]$appVersionManifest.appVersion -eq '0.29.0') '配布用アプリバージョンを0.29.0へ更新する'
+Add-Result ([string]$appVersionManifest.appVersion -eq '0.30.0') '配布用アプリバージョンを0.30.0へ更新する'
 Add-Result ($workspaceModuleText -notmatch "ManualBuilder\.Project\.psm1'\) -Force") 'WorkspaceがProjectコマンドを強制再読込しない'
 Add-Result ($launcherModuleText -match "'ManualBuilder\\app'") 'アプリ実行コードをLocalApplicationDataへキャッシュする'
 Add-Result ($launcherModuleText -match "@\('src', 'web', 'run\.cmd', 'app-version\.json'\)") 'キャッシュ対象からプロジェクトデータを除外する'
@@ -392,6 +394,13 @@ Add-Result ($serverText -match '/api/recorder/import') '記録した操作の取
 Add-Result ($serverText -match '\^/images/recording/') '記録した画面をクエリのトークンで表示できる'
 Add-Result ($webModuleText -match 'data-record-operations') '操作の記録をメニューから選べる'
 Add-Result ($jsText -match 'recorder-dialog') '記録の確認画面を実装する'
+$dictationModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.Dictation.psm1'), [Text.Encoding]::UTF8)
+Add-Result ($dictationModuleText -match 'SpeechRecognitionScenario\]::Dictation') 'Win+Hと同じ口述筆記の仕組みを使う'
+Add-Result ($dictationModuleText -match 'PhraseStartTime') '受信時刻ではなく発話の開始時刻で突き合わせる'
+Add-Result ($recorderServerText -match 'Merge-MbNarrationIntoEvents') '話した内容を操作へ振り分ける'
+Add-Result ($jsText -match 'data-recorder-narration') '音声を記録するかを選べる'
+Add-Result ($jsText -match 'Microsoftのオンライン音声認識へ送られます') '音声が端末の外へ出ることを画面に明記する'
+Add-Result ($jsText -match "narrationToggle.checked = false") '音声の記録は既定で行わない'
 
 if ($errors.Count -gt 0) {
     Write-Host ''

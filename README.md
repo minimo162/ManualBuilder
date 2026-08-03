@@ -10,6 +10,7 @@
 - Excel COMによる主出力: 単発、10回連続、キャンセル、異常分岐を実機確認済み
 - 既存の未保存Excelブックへ影響しないことを実機確認済み
 - Word COMによる副出力の安全性と基本レイアウトを確認済み
+- Phase 1基盤 v0.30.0: 操作記録モードで、話しながら操作した内容も手順の手がかりにできるようにした。Win+H（音声入力）と同じ Windows.Media.SpeechRecognition を使うため、v0.28.0の録画からの文字起こし（System.Speech）とは精度が段違いになる。この仕組みは入力がマイク固定で録画ファイルを食えないが、操作記録モードは実時間で動くのでその制約に当たらない。認識は記録ループと同居できないため並走する別プロセスにし、発話の開始時刻で操作と突き合わせる。「操作の直後に話したらその操作への補足、そうでなければ次に来る操作の説明」として振り分ける。マイクを使い音声が端末の外へ出るため、既定では行わず、記録のたびに選ぶ
 - Phase 1基盤 v0.29.0: 操作を記録して手順にするモードを追加した。記録中はクリックのたびに画面を取り込み、押したコントロールの名前・種類・矩形をWindowsのUI Automationから直接読む。v0.28.0の録画からの取り込みが画面の変化から押された場所を推定するのに対し、こちらは推定しない。赤枠はボタンの輪郭そのもので、操作対象の名前も確定値になる。低レベルフックは使わずマウスの状態を60Hzで見る方式にした（フックのコールバック内でスクリーンショットを撮るとWindowsに無警告でフックを外されるため）。押す直前の画面を先に確保してからUI Automationへ問い合わせるので、押した後の画面が写ることはない。高DPIで赤枠がずれないようプロセスをDPI認識にしている。入力した文字は記録せず、「どの欄に入力したか」だけを残すため、パスワードが手順に残ることはない
 - Phase 1基盤 v0.28.0: 録画を渡すだけで手順が組み上がるようにした。画面が止まっている区間を自動で見つけて代表のコマを手順にし、遷移が始まった最初の瞬間に変化した場所＝押されたボタンとして赤枠を自動で付ける。Windowsの文字認識が使える環境では、その赤枠を実際のボタンの文字へ寄せて締め、読み取った操作対象の名前も残す。そのうえでMicrosoft 365 Copilotへ画面と赤枠と操作対象を渡し、手順名・説明・補足の下書きを受け取る。Copilotには推測ではなく確定した事実を渡すため、どの画面にも当てはまる当たり障りのない文になりにくい。下書きは確認画面で1件ずつ採用・却下でき、採用したものだけが手順へ入る
 - Phase 1基盤 v0.27.3: HTML出力で、注釈も切り抜きも付けていない手順の画像がすべてリンク切れになる不具合を修正（動画の再生前に出る静止画も出ず、黒い枠に見えていた）。焼き込みが不要な場合、`New-MbAnnotatedImage` は書き出さずに元画像のパスを返すが、HTML出力だけがその戻り値を捨てていた。あわせて、OneDrive上の保存先でフォルダーの差し替えが「アクセスが拒否されました」で失敗する件に、間隔を空けた再試行を追加。差し替えに失敗して元へ戻せなかった場合に、退避した前のフォルダーまで消してしまう問題も修正
@@ -70,6 +71,8 @@ Windowsでリポジトリ直下の `run.cmd` をダブルクリックします�
 - その他メニューの「操作を記録して手順にする」から、実際の操作を記録して手順を作る。押したボタンの名前と位置はWindowsから直接取得するため推定を含まない
 - 記録した操作は一覧で確認でき、押し間違いを外してから取り込める
 - 記録するのは画面と押したコントロールの名前だけで、入力した文字は保存しない
+- 記録中に話した内容も文字にして手順へ結び付けられる（既定はオフ。音声はMicrosoftのオンライン音声認識へ送られる）
+- 話した内容は手順の文章としてそのまま使わず、Copilotへ渡す手がかりとしてのみ使う
 - タスクバー・デスクトップ・ManualBuilder自身への操作は記録しない
 - 録画から「自動で手順に分ける」を選ぶと、場面の切れ目を自動で見つけて手順を並べ、押された場所に赤枠を付ける
 - 画面全体が一度に切り替わった手順は押された場所を特定できないため、赤枠を出さない（憶測の枠は付けない）
@@ -101,7 +104,7 @@ v0.14.1以前のアプリ配下に `data\projects\default` がある場合、v0.
 
 初回は `tests\phase1\run-tests.cmd` を実行し、PowerShell 5.1構文、プロジェクト保存、localhostサーバーを確認してください。詳しくは [docs/PHASE1-FOUNDATION.md](docs/PHASE1-FOUNDATION.md) を参照してください。
 
-Phase 1 v0.29.0の再確認手順は [docs/RETEST-PHASE1-v0.29.0.md](docs/RETEST-PHASE1-v0.29.0.md)、v0.28.0は  [docs/RETEST-PHASE1-v0.28.0.md](docs/RETEST-PHASE1-v0.28.0.md)、v0.27.0は [docs/RETEST-PHASE1-v0.27.0.md](docs/RETEST-PHASE1-v0.27.0.md)、v0.26.0は [docs/RETEST-PHASE1-v0.26.0.md](docs/RETEST-PHASE1-v0.26.0.md)、v0.25.0は [docs/RETEST-PHASE1-v0.25.0.md](docs/RETEST-PHASE1-v0.25.0.md)、v0.24.0は [docs/RETEST-PHASE1-v0.24.0.md](docs/RETEST-PHASE1-v0.24.0.md)、v0.23.0は [docs/RETEST-PHASE1-v0.23.0.md](docs/RETEST-PHASE1-v0.23.0.md)、v0.22.1は [docs/RETEST-PHASE1-v0.22.1.md](docs/RETEST-PHASE1-v0.22.1.md)、v0.22.0は [docs/RETEST-PHASE1-v0.22.0.md](docs/RETEST-PHASE1-v0.22.0.md) にまとめています。
+Phase 1 v0.30.0の再確認手順は [docs/RETEST-PHASE1-v0.30.0.md](docs/RETEST-PHASE1-v0.30.0.md)、v0.29.0は  [docs/RETEST-PHASE1-v0.29.0.md](docs/RETEST-PHASE1-v0.29.0.md)、v0.28.0は  [docs/RETEST-PHASE1-v0.28.0.md](docs/RETEST-PHASE1-v0.28.0.md)、v0.27.0は [docs/RETEST-PHASE1-v0.27.0.md](docs/RETEST-PHASE1-v0.27.0.md)、v0.26.0は [docs/RETEST-PHASE1-v0.26.0.md](docs/RETEST-PHASE1-v0.26.0.md)、v0.25.0は [docs/RETEST-PHASE1-v0.25.0.md](docs/RETEST-PHASE1-v0.25.0.md)、v0.24.0は [docs/RETEST-PHASE1-v0.24.0.md](docs/RETEST-PHASE1-v0.24.0.md)、v0.23.0は [docs/RETEST-PHASE1-v0.23.0.md](docs/RETEST-PHASE1-v0.23.0.md)、v0.22.1は [docs/RETEST-PHASE1-v0.22.1.md](docs/RETEST-PHASE1-v0.22.1.md)、v0.22.0は [docs/RETEST-PHASE1-v0.22.0.md](docs/RETEST-PHASE1-v0.22.0.md) にまとめています。
 
 ## 製品方針
 

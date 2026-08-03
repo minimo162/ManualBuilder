@@ -3014,3 +3014,9 @@ kbd {
   font-size: 11px;
   color: var(--text-muted);
 }
+
+/* 端末の外へ出る動作の注意書き。読み飛ばされないよう色で区別する。 */
+.copilot-note--warn {
+  color: #7a4b00;
+  background: rgba(214, 154, 0, 0.12);
+}

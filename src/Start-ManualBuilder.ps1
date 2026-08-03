@@ -1401,7 +1401,10 @@ function Invoke-MbRoute {
     # 操作記録。記録そのものは別プロセスが行い、ここでは開始と停止だけを扱う。
     if ($path -eq '/api/recorder/start') {
         try {
-            $status = Start-MbRecordingJob
+            $form = Read-MbForm -Request $request
+            # 音声はマイクを入れ、Microsoftのオンライン音声認識へ送る。既定では行わない。
+            $withNarration = ([string](Get-MbFormValue -Form $form -Name 'withNarration')) -match '^(?i:true|1|on|yes)$'
+            $status = Start-MbRecordingJob -WithNarration:$withNarration
             Write-MbLog '操作の記録を開始しました。' 'OK'
             Write-MbResponse $Context ($status | ConvertTo-Json -Depth 6 -Compress) 200 'application/json; charset=utf-8'
         } catch {

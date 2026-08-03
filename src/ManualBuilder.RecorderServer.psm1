@@ -10,6 +10,7 @@ Set-StrictMode -Version 2.0
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Project.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Capture.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Recorder.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Dictation.psm1') -Force
 
 $script:MbRecordingJobsRoot = ''
 $script:MbRecordingScriptRoot = ''
@@ -57,7 +58,7 @@ function Read-MbRecordingStatus {
 }
 
 function Start-MbRecordingJob {
-    param([string[]]$IgnoreTitlePatterns = @('ManualBuilder'))
+    param([string[]]$IgnoreTitlePatterns = @('ManualBuilder'), [switch]$WithNarration)
 
     $current = Read-MbRecordingStatus
     if ([string]$current.state -eq 'recording') { return $current }
@@ -75,6 +76,8 @@ function Start-MbRecordingJob {
     $statusPath = Join-Path $jobDirectory 'status.json'
     $eventsPath = Join-Path $jobDirectory 'events.jsonl'
     $stopPath = Join-Path $jobDirectory 'stop.requested'
+    $narrationPath = Join-Path $jobDirectory 'narration.jsonl'
+    $narrationStatusPath = Join-Path $jobDirectory 'narration-status.json'
 
     $queued = [pscustomobject]@{
         jobId = $jobId; state = 'recording'; count = 0; message = '記録の準備をしています'
@@ -82,6 +85,8 @@ function Start-MbRecordingJob {
     }
     [IO.File]::WriteAllText($statusPath, ($queued | ConvertTo-Json -Depth 5), (New-Object Text.UTF8Encoding($false)))
 
+    # 記録プロセスと音声プロセスが同じ時計を使うよう、開始時刻を揃えて渡す。
+    $startedAtUtc = [DateTime]::UtcNow
     $powerShellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     if (-not (Test-Path -LiteralPath $powerShellPath -PathType Leaf)) { throw 'Windows PowerShell 5.1が見つかりません。' }
     $workerPath = Join-Path $script:MbRecordingScriptRoot 'Invoke-ManualBuilderRecorder.ps1'
@@ -103,10 +108,33 @@ function Start-MbRecordingJob {
     $processId = [int]$worker.Id
     $worker.Dispose()
 
+    # 音声の聞き取りは記録ループと同居できない。並走する別プロセスにする。
+    # 起動に失敗しても操作の記録は続けられるので、ここでは止めない。
+    $dictationProcessId = 0
+    if ($WithNarration) {
+        try {
+            $dictationWorkerPath = Join-Path $script:MbRecordingScriptRoot 'Invoke-ManualBuilderDictation.ps1'
+            $dictationArguments = @(
+                '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-STA', '-File', (& $quote $dictationWorkerPath),
+                '-OutputPath', (& $quote $narrationPath),
+                '-StopPath', (& $quote $stopPath),
+                '-StatusPath', (& $quote $narrationStatusPath),
+                '-StartedAtUtcTicks', ([string]$startedAtUtc.Ticks)
+            )
+            $dictationWorker = Start-Process -FilePath $powerShellPath -ArgumentList $dictationArguments -WindowStyle Hidden -PassThru
+            $dictationProcessId = [int]$dictationWorker.Id
+            $dictationWorker.Dispose()
+        } catch {
+            $dictationProcessId = 0
+        }
+    }
+
     $script:MbRecordingJob = [pscustomobject]@{
         JobId = $jobId; ProcessId = $processId; JobDirectory = $jobDirectory
         EventsDirectory = $eventsDirectory; EventsPath = $eventsPath
         StatusPath = $statusPath; StopPath = $stopPath; StartedAt = Get-Date
+        NarrationPath = $narrationPath; NarrationStatusPath = $narrationStatusPath
+        DictationProcessId = $dictationProcessId
     }
     return (Read-MbRecordingStatus)
 }
@@ -156,6 +184,74 @@ function New-MbRecorderAnnotationId {
     return 'annotation-' + [guid]::NewGuid().ToString('N')
 }
 
+function Get-MbRecordedNarration {
+    if ($null -eq $script:MbRecordingJob) { return @() }
+    $path = [string]$script:MbRecordingJob.NarrationPath
+    if ([string]::IsNullOrWhiteSpace($path) -or -not (Test-Path -LiteralPath $path -PathType Leaf)) { return @() }
+
+    $phrases = New-Object System.Collections.ArrayList
+    foreach ($line in [IO.File]::ReadAllLines($path, [Text.Encoding]::UTF8)) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        $record = $null
+        try { $record = $line | ConvertFrom-Json } catch { continue }
+        if ($null -eq $record) { continue }
+        if ([string]::IsNullOrWhiteSpace([string]$record.text)) { continue }
+        [void]$phrases.Add($record)
+    }
+    return @($phrases)
+}
+
+# 話した内容を、どの操作の説明かで振り分ける。
+#
+# 人の喋り方は2通りある。
+#   「ここで申請ボタンを押します」→ 操作する    … 発話のあとに操作が来る
+#   操作する →「これで一覧に出ました」          … 操作のあとに発話が来る
+#
+# 直前の操作からすぐ喋り始めた場合はその操作への補足とみなし、
+# そうでなければ次に来る操作の説明とみなす。
+# 1つの発話は1つの操作にしか付けない。同じ文が複数の手順に出ると読みにくいため。
+function Merge-MbNarrationIntoEvents {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Events,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Phrases,
+        [int]$TrailMs = 2000,
+        [int]$LeadMs = 3000
+    )
+
+    $assigned = @{}
+    if (@($Events).Count -eq 0 -or @($Phrases).Count -eq 0) { return $assigned }
+
+    $ordered = @($Events | Sort-Object @{ Expression = { [int]$_.timeMs } })
+    foreach ($phrase in (@($Phrases) | Sort-Object @{ Expression = { [int]$_.startMs } })) {
+        $startMs = [int]$phrase.startMs
+        $endMs = [int]$phrase.endMs
+        $target = $null
+
+        # 直後の補足。操作してからすぐに喋り始めたもの。
+        foreach ($item in $ordered) {
+            $gap = $startMs - [int]$item.timeMs
+            if ($gap -ge 0 -and $gap -le $TrailMs) { $target = $item }
+        }
+        # そうでなければ、これから行う操作の説明とみなす。
+        if ($null -eq $target) {
+            foreach ($item in $ordered) {
+                $time = [int]$item.timeMs
+                if ($time -ge $startMs -and $time -le ($endMs + $LeadMs)) { $target = $item; break }
+            }
+        }
+        if ($null -eq $target) { continue }
+
+        $index = [int]$target.index
+        $text = ([string]$phrase.text).Trim()
+        if ($assigned.ContainsKey($index)) {
+            $assigned[$index] = [string]$assigned[$index] + ' ' + $text
+        } else {
+            $assigned[$index] = $text
+        }
+    }
+    return $assigned
+}
+
 # 記録した操作を手順にする。
 #
 # 録画からの取り込みと違い、赤枠の位置も操作対象の名前も UI Automation の確定値なので、
@@ -187,6 +283,9 @@ function Import-MbRecordedEvents {
             }
         }
     }
+
+    # 話した内容を、どの操作の説明かで振り分けておく。
+    $narration = Merge-MbNarrationIntoEvents -Events $events -Phrases (@(Get-MbRecordedNarration))
 
     $added = 0
     $skipped = 0
@@ -228,9 +327,11 @@ function Import-MbRecordedEvents {
         if ($kind -eq 'recorded-input' -and -not [string]::IsNullOrWhiteSpace($targetName)) {
             $targetName = $targetName + '（入力）'
         }
+        $spoken = ''
+        if ($narration.ContainsKey($index)) { $spoken = [string]$narration[$index] }
         [void](Set-MbStepCapture -Project $Project -StepId $stepId -Kind $kind `
             -VideoTimeMs ([int]$record.timeMs) -ClickLabel $targetName `
-            -WindowTitle ([string]$record.windowTitle))
+            -WindowTitle ([string]$record.windowTitle) -Narration $spoken)
         $added++
     }
     return [pscustomobject]@{ added = $added; skipped = $skipped }
@@ -255,14 +356,20 @@ function Test-MbNormalizedRect {
 
 function Remove-MbRecordingJob {
     if ($null -eq $script:MbRecordingJob) { return }
-    $directory = [string]$script:MbRecordingJob.JobDirectory
-    $processId = [int]$script:MbRecordingJob.ProcessId
+    $job = $script:MbRecordingJob
+    $directory = [string]$job.JobDirectory
+    $processId = [int]$job.ProcessId
+    $dictationProcessId = 0
+    if ($job.PSObject.Properties.Name -contains 'DictationProcessId') { $dictationProcessId = [int]$job.DictationProcessId }
     $script:MbRecordingJob = $null
     # まだ記録プロセスが動いていたら止める。放置すると画面を撮り続ける。
-    try {
-        $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
-        if ($null -ne $process) { $process.Kill() }
-    } catch { }
+    foreach ($id in @($processId, $dictationProcessId)) {
+        if ($id -le 0) { continue }
+        try {
+            $process = Get-Process -Id $id -ErrorAction SilentlyContinue
+            if ($null -ne $process) { $process.Kill() }
+        } catch { }
+    }
     if ([string]::IsNullOrWhiteSpace($directory)) { return }
     try { Remove-Item -LiteralPath $directory -Recurse -Force -ErrorAction SilentlyContinue } catch { }
 }
@@ -270,7 +377,17 @@ function Remove-MbRecordingJob {
 # Recorder モジュールはこのモジュールの内側にしか読み込まれないため、
 # 本体からは この関数を通して記録できるかどうかを受け取る。
 function Get-MbRecordingCapability {
-    return (Get-MbRecorderCapability)
+    $recorder = Get-MbRecorderCapability
+    # 音声は任意。使えなくても操作の記録はできるので、別々に返す。
+    $dictation = $null
+    try { $dictation = Get-MbDictationCapability } catch {
+        $dictation = [pscustomobject]@{ available = $false; reason = 'この環境では音声入力を利用できません。'; language = '' }
+    }
+    return [pscustomobject]@{
+        available = $recorder.available
+        reason    = $recorder.reason
+        narration = $dictation
+    }
 }
 
 # Test-MbNormalizedRect はこのモジュールの内部でだけ使う。
@@ -284,6 +401,8 @@ Export-ModuleMember -Function @(
     'Get-MbRecordedEvents',
     'Get-MbRecordedEventImagePath',
     'Import-MbRecordedEvents',
+    'Get-MbRecordedNarration',
+    'Merge-MbNarrationIntoEvents',
     'Remove-MbRecordingJob',
     'Get-MbRecordingCapability'
 )

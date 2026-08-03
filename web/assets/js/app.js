@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const appVersion = '0.29.0';
+  const appVersion = '0.30.0';
   // 番号注釈はSVG属性で指定するためCSS変数を参照できない。
   // 編集画面とExcel・Word出力（New-MbAnnotatedImage）で同じ見た目にするため、基準フォントを揃える。
   const ANNOTATION_NUMBER_FONT = '"BIZ UDPGothic", "BIZ UDPゴシック", "BIZ UDGothic", "BIZ UDゴシック", Meiryo, "Yu Gothic UI", "MS Pゴシック", sans-serif';
@@ -2962,7 +2962,14 @@
     setRecorderMessage('記録の準備をしています', '');
     setRecorderView('recording');
     try {
-      const response = await fetch('/api/recorder/start', { method: 'POST', headers: sessionHeaders() });
+      const withNarration = recorder.dialog.querySelector('[data-recorder-narration]').checked;
+      const body = new URLSearchParams();
+      body.set('withNarration', withNarration ? 'true' : 'false');
+      const response = await fetch('/api/recorder/start', {
+        method: 'POST',
+        headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' }),
+        body: body.toString()
+      });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload?.message || `HTTP ${response.status}`);
       stopRecorderPolling();
@@ -3024,6 +3031,8 @@
       + '<div class="copilot-dialog__content">'
       + '<section data-recorder-view="setup">'
       + '<p class="copilot-note">記録するのは「画面」と「押したコントロールの名前」だけです。<strong>入力した文字は記録しません</strong>ので、パスワードが残ることはありません。記録中は画面全体が写ります。関係のないウィンドウは閉じてから始めてください。</p>'
+      + '<label class="copilot-option"><input type="checkbox" data-recorder-narration><span>操作しながら話した内容も記録する</span></label>'
+      + '<p class="copilot-note copilot-note--warn" data-recorder-narration-note hidden>マイクを使い、<strong>音声はMicrosoftのオンライン音声認識へ送られます</strong>。Windowsの音声入力（Win+H）と同じ仕組みです。話した内容は手順の手がかりとして使い、そのまま文章にはしません。</p>'
       + '<p class="copilot-capability" data-recorder-capability></p>'
       + '<p class="copilot-dialog__error" data-recorder-detail></p>'
       + '</section>'
@@ -3050,6 +3059,9 @@
       button.addEventListener('click', () => dialog.close());
     });
     dialog.querySelector('[data-recorder-start]').addEventListener('click', () => startRecording());
+    dialog.querySelector('[data-recorder-narration]').addEventListener('change', (event) => {
+      dialog.querySelector('[data-recorder-narration-note]').hidden = !event.target.checked;
+    });
     dialog.querySelector('[data-recorder-stop]').addEventListener('click', () => stopRecording());
     dialog.querySelector('[data-recorder-import]').addEventListener('click', () => importRecordedEvents());
     dialog.addEventListener('close', () => {
@@ -3071,16 +3083,25 @@
 
     const capability = dialog.querySelector('[data-recorder-capability]');
     capability.textContent = '記録できるか確認しています…';
+    const narrationToggle = dialog.querySelector('[data-recorder-narration]');
+    narrationToggle.checked = false;
+    dialog.querySelector('[data-recorder-narration-note]').hidden = true;
     let available = false;
     try {
       const response = await fetch('/api/recorder/capabilities', { headers: sessionHeaders() });
       const payload = response.ok ? await response.json() : null;
       available = Boolean(payload?.available);
-      capability.textContent = available
+      const notes = [available
         ? '押したボタンの名前と位置をWindowsから直接取得します。赤枠は自動で付きます。'
-        : String(payload?.reason || 'この環境では操作を記録できません。');
+        : String(payload?.reason || 'この環境では操作を記録できません。')];
+      // 音声が使えない理由は、対処が分かるようにそのまま出す。
+      const narration = payload?.narration;
+      narrationToggle.disabled = !narration?.available;
+      if (!narration?.available && narration?.reason) notes.push(narration.reason);
+      capability.textContent = notes.join(' ');
     } catch {
       capability.textContent = 'この環境で記録できるかを確認できませんでした。';
+      narrationToggle.disabled = true;
     }
     dialog.querySelector('[data-recorder-start]').disabled = !available;
     dialog.showModal();
