@@ -123,6 +123,32 @@ function Test-MbPowerPointCancellation {
     if (Test-Path -LiteralPath $CancelPath -PathType Leaf) { throw 'MB_EXPORT_CANCELLED' }
 }
 
+function Get-MbPowerPointErrorDetail {
+    param([Parameter(Mandatory = $true)][object]$ErrorRecord)
+    # COM由来の失敗は「失敗しました。」だけで理由が分からない。HRESULTと発生位置を残す。
+    $parts = New-Object System.Collections.ArrayList
+    $exception = $null
+    try { $exception = $ErrorRecord.Exception } catch { }
+    while ($exception) {
+        $message = [string]$exception.Message
+        if ($message -and -not $parts.Contains($message)) { [void]$parts.Add($message) }
+        $hresult = 0
+        try { $hresult = [int]$exception.HResult } catch { $hresult = 0 }
+        if ($hresult -ne 0) {
+            $code = 'HRESULT 0x' + ('{0:X8}' -f $hresult)
+            if (-not $parts.Contains($code)) { [void]$parts.Add($code) }
+        }
+        $inner = $null
+        try { $inner = $exception.InnerException } catch { }
+        $exception = $inner
+    }
+    try {
+        $line = [int]$ErrorRecord.InvocationInfo.ScriptLineNumber
+        if ($line -gt 0) { [void]$parts.Add("PowerPointモジュール ${line}行目") }
+    } catch { }
+    return ($parts -join ' / ')
+}
+
 function Get-MbPowerPointContentSheets {
     param([Parameter(Mandatory = $true)][object]$Project)
     return @($Project.sheets | Where-Object { @($_.steps).Count -gt 0 })
@@ -259,11 +285,16 @@ function Invoke-MbPowerPointExport {
         Write-MbPowerPointStatus $StatusPath $status
 
         try { $powerPoint.DisplayAlerts = 1 } catch { }
-        # PowerPointは Visible = $false を受け付けない。ウィンドウ無しでプレゼンテーションを開けば
-        # 画面には出ないため、Presentations.Add に msoFalse を渡す。
+        # PowerPointは Visible = $false を受け付けない（Wordと違い、設定するとエラーになる）。
+        # ウィンドウ無し（Presentations.Add に msoFalse）でも作れるが、その状態では
+        # 保存とメディアの描画が失敗する（Presentation.SaveAs : 失敗しました）。
+        # そのため、ウィンドウを作ったうえで最小化する。専用プロセスなので操作の邪魔にはならない。
+        try { $powerPoint.Visible = -1 } catch { }
         $presentations = $null
-        try { $presentations = $powerPoint.Presentations; $presentation = $presentations.Add(0) }
+        try { $presentations = $powerPoint.Presentations; $presentation = $presentations.Add(-1) }
         finally { Release-MbPowerPointComObject $presentations }
+        # 2 = ppWindowMinimized。ウィンドウができた後でないと設定できない。
+        try { $powerPoint.WindowState = 2 } catch { }
 
         if ($ownershipMode -ne 'Hwnd') {
             $hwndOwnedPid = Get-MbPowerPointProcessId -Application $powerPoint
@@ -417,7 +448,9 @@ function Invoke-MbPowerPointExport {
         } finally { Release-MbPowerPointComObject $slides }
 
         Set-MbPowerPointStatusProgress $status $StatusPath 'saving' 'PowerPointファイルを保存しています' $totalSteps $totalSteps 94
-        $temporaryPath = Join-Path $OutputDirectory ('.ManualBuilder-' + $JobId + '.tmp.pptx')
+        # 先頭がピリオドの名前はPowerPointが受け付けないことがあるため、ExcelやWordと違い普通の名前にする。
+        # 未完成ファイルを成功扱いしないよう、いったん一時名で保存してから正式名へ移す点は同じ。
+        $temporaryPath = Join-Path $OutputDirectory ('ManualBuilder-' + $JobId + '.tmp.pptx')
         if (Test-Path -LiteralPath $temporaryPath) { Remove-Item -LiteralPath $temporaryPath -Force }
         # 24 = ppSaveAsOpenXMLPresentation
         $presentation.SaveAs($temporaryPath, 24)
@@ -440,7 +473,7 @@ function Invoke-MbPowerPointExport {
                 'MB_CONNECTED_TO_EXISTING_POWERPOINT' { '既存のPowerPointへ接続したため、安全のため作成を中止しました。PowerPointを閉じて再実行してください。' }
                 'MB_POWERPOINT_OWNERSHIP_UNRESOLVED' { '作成用PowerPointの安全確認ができませんでした。' }
                 'MB_POWERPOINT_OWNERSHIP_API_UNAVAILABLE' { 'PowerPointの所有確認に必要なWindows機能を利用できません。' }
-                default { 'PowerPointファイルを作成できませんでした: ' + $message }
+                default { 'PowerPointファイルを作成できませんでした: ' + (Get-MbPowerPointErrorDetail -ErrorRecord $_) }
             }
         }
     } finally {

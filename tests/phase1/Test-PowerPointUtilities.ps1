@@ -20,7 +20,7 @@ $tokens = $null
 $parseErrors = $null
 $moduleAst = [System.Management.Automation.Language.Parser]::ParseInput($moduleText, [ref]$tokens, [ref]$parseErrors)
 if (@($parseErrors).Count -gt 0) { throw "ManualBuilder.PowerPoint.psm1 を解析できません: $($parseErrors[0].Message)" }
-foreach ($functionName in @('ConvertTo-MbPowerPointRgb', 'Write-MbPowerPointStatus', 'Set-MbPowerPointStatusProgress', 'Test-MbPowerPointCancellation', 'Get-MbPowerPointContentSheets')) {
+foreach ($functionName in @('ConvertTo-MbPowerPointRgb', 'Write-MbPowerPointStatus', 'Set-MbPowerPointStatusProgress', 'Test-MbPowerPointCancellation', 'Get-MbPowerPointContentSheets', 'Get-MbPowerPointErrorDetail')) {
     $found = @($moduleAst.FindAll({
         param($node)
         $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName
@@ -84,6 +84,23 @@ try {
     # --- 色の変換 ---
     Assert-Mb ((ConvertTo-MbPowerPointRgb 255 0 0) -eq 255) '赤をRGB値へ変換できる'
     Assert-Mb ((ConvertTo-MbPowerPointRgb 0 0 255) -eq 16711680) '青をRGB値へ変換できる（PowerPointはBGR順）'
+
+    # --- 失敗理由の取り出し ---
+    # COM由来の失敗は「失敗しました。」だけで理由が分からないため、HRESULTと発生位置を残す。
+    $detail = ''
+    try {
+        $comException = New-Object System.Runtime.InteropServices.COMException('失敗しました。', -2147467259)
+        throw (New-Object System.Management.Automation.MethodInvocationException('Presentation.SaveAs : 失敗しました。', $comException))
+    } catch {
+        $detail = Get-MbPowerPointErrorDetail -ErrorRecord $_
+    }
+    Assert-Mb ($detail -match 'Presentation\.SaveAs') '失敗した操作名を残す'
+    Assert-Mb ($detail -match 'HRESULT 0x80004005') 'COMのHRESULTを残す'
+    Assert-Mb ($detail -match '行目') '失敗した位置を残す'
+
+    $plain = ''
+    try { throw '出力する手順がありません。' } catch { $plain = Get-MbPowerPointErrorDetail -ErrorRecord $_ }
+    Assert-Mb ($plain -match '出力する手順がありません') 'COM以外の失敗でも理由を残す'
 
     Write-Host ''
     Write-Host 'PowerPoint utility tests passed.' -ForegroundColor Cyan
