@@ -897,7 +897,9 @@ function Write-MbResponse {
     $response.Headers.Add('X-Content-Type-Options', 'nosniff')
     $response.Headers.Add('Referrer-Policy', 'no-referrer')
     $response.Headers.Add('X-Frame-Options', 'DENY')
-    $response.Headers.Add('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+    # media-srcを省くとdefault-srcへフォールバックし、動画ダイアログのblob:再生がCSPで止まる。
+    # 動画はブラウザー内で作ったblob:のみを再生し、外部URLは読み込まない。
+    $response.Headers.Add('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
     $response.ContentLength64 = $bytes.Length
     if ($bytes.Length -gt 0) {
         $response.OutputStream.Write($bytes, 0, $bytes.Length)
