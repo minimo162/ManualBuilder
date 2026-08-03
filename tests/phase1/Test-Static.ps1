@@ -44,9 +44,15 @@ $required = @(
     'src\ManualBuilder.PowerPoint.psm1',
     'src\Export-ManualBuilderPowerPoint.ps1',
     'src\ManualBuilder.Html.psm1',
+    'src\ManualBuilder.Ocr.psm1',
+    'src\ManualBuilder.Copilot.psm1',
+    'src\ManualBuilder.CopilotJob.psm1',
+    'src\ManualBuilder.CopilotServer.psm1',
+    'src\Invoke-ManualBuilderCopilotJob.ps1',
     'web\index.html',
     'web\assets\css\app.css',
     'web\assets\js\app.js',
+    'web\assets\js\video-scenes.js',
     'web\assets\js\heartbeat-worker.js',
     'web\vendor\htmx-2.0.10.min.js',
     'web\vendor\HTMX-LICENSE.txt'
@@ -95,7 +101,7 @@ Add-Result (($serverText -match '\$projectReady = \$false') -and ($serverText -m
 Add-Result ($serverText -match '\$storageLayout\.RuntimePath') '二重起動情報をユーザーデータ配下へ置く'
 Add-Result ($serverText -match '\$storageLayout\.ExportJobsRoot') 'Office一時ジョブをユーザーデータ配下へ置く'
 Add-Result (($runCommandText -match '%~dp0src\\Start-ManualBuilderLauncher\.ps1') -and ($runCommandText -notmatch '(?im)^cd /d')) 'UNC共有フォルダーから更新ランチャーを起動できる'
-Add-Result ([string]$appVersionManifest.appVersion -eq '0.27.3') '配布用アプリバージョンを0.27.3へ更新する'
+Add-Result ([string]$appVersionManifest.appVersion -eq '0.28.0') '配布用アプリバージョンを0.28.0へ更新する'
 Add-Result ($workspaceModuleText -notmatch "ManualBuilder\.Project\.psm1'\) -Force") 'WorkspaceがProjectコマンドを強制再読込しない'
 Add-Result ($launcherModuleText -match "'ManualBuilder\\app'") 'アプリ実行コードをLocalApplicationDataへキャッシュする'
 Add-Result ($launcherModuleText -match "@\('src', 'web', 'run\.cmd', 'app-version\.json'\)") 'キャッシュ対象からプロジェクトデータを除外する'
@@ -349,6 +355,26 @@ Add-Result ($excelModuleText -match '\$requiresCrop') 'Excel出力へ切り抜�
 Add-Result ($excelModuleText -match '\[AllowEmptyCollection\(\)\]\[object\[\]\]\$Annotations') '注釈なしの切り抜き画像を許可する'
 Add-Result ($cssText -match '--accent: #3a5ba0') 'ミニマルUIのアクセントトークンを使用する'
 Add-Result ($cssText -notmatch 'linear-gradient') 'グラデーションを使用しない'
+
+$ocrModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.Ocr.psm1'), [Text.Encoding]::UTF8)
+$copilotModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.Copilot.psm1'), [Text.Encoding]::UTF8)
+$copilotServerText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.CopilotServer.psm1'), [Text.Encoding]::UTF8)
+$copilotJobText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.CopilotJob.psm1'), [Text.Encoding]::UTF8)
+$sceneText = [IO.File]::ReadAllText((Join-Path $repoRoot 'web\assets\js\video-scenes.js'), [Text.Encoding]::UTF8)
+Add-Result ($indexText -match 'video-scenes\.js') '場面分割のスクリプトを読み込む'
+Add-Result ($jsText -match 'data-video-auto') '録画を自動で手順へ分けるボタンがある'
+Add-Result ($sceneText -match 'locateChangeRect') '遷移の入口から操作位置を求める'
+Add-Result ($serverText -match '/api/videos/scenes/import') '場面の取り込み口がある'
+Add-Result ($serverText -match '/api/copilot/draft/start') 'Copilot下書きの開始口がある'
+Add-Result ($serverText -match '/api/copilot/draft/apply') '採用した下書きの反映口がある'
+Add-Result ($webModuleText -match 'data-copilot-draft') 'Copilotでの下書きをメニューから選べる'
+Add-Result ($jsText -match 'copilot-draft-dialog') 'Copilot下書きの確認画面を実装する'
+Add-Result ($copilotModuleText -match 'm365\.cloud\.microsoft') '普段使うM365 Copilotの画面を操作する'
+Add-Result ($copilotModuleText -notmatch '(?i)api[_-]?key') 'APIキーを持たない'
+Add-Result ($copilotJobText -match '\$rendered = New-MbAnnotatedImage') '焼き込み結果の戻り値を捨てない'
+Add-Result ($copilotServerText -match 'Resolve-MbOperationRect') '赤枠を読み取った文字へ寄せる'
+Add-Result ($ocrModuleText -match 'return \$false') '文字認識が使えない環境では機能だけを止める'
+Add-Result ($projectModuleText -match "Add-MbPropertyIfMissing \$step 'capture'") '古い手順にも録画情報の入れ物を補う'
 
 if ($errors.Count -gt 0) {
     Write-Host ''

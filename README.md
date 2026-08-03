@@ -10,6 +10,7 @@
 - Excel COMによる主出力: 単発、10回連続、キャンセル、異常分岐を実機確認済み
 - 既存の未保存Excelブックへ影響しないことを実機確認済み
 - Word COMによる副出力の安全性と基本レイアウトを確認済み
+- Phase 1基盤 v0.28.0: 録画を渡すだけで手順が組み上がるようにした。画面が止まっている区間を自動で見つけて代表のコマを手順にし、遷移が始まった最初の瞬間に変化した場所＝押されたボタンとして赤枠を自動で付ける。Windowsの文字認識が使える環境では、その赤枠を実際のボタンの文字へ寄せて締め、読み取った操作対象の名前も残す。そのうえでMicrosoft 365 Copilotへ画面と赤枠と操作対象を渡し、手順名・説明・補足の下書きを受け取る。Copilotには推測ではなく確定した事実を渡すため、どの画面にも当てはまる当たり障りのない文になりにくい。下書きは確認画面で1件ずつ採用・却下でき、採用したものだけが手順へ入る
 - Phase 1基盤 v0.27.3: HTML出力で、注釈も切り抜きも付けていない手順の画像がすべてリンク切れになる不具合を修正（動画の再生前に出る静止画も出ず、黒い枠に見えていた）。焼き込みが不要な場合、`New-MbAnnotatedImage` は書き出さずに元画像のパスを返すが、HTML出力だけがその戻り値を捨てていた。あわせて、OneDrive上の保存先でフォルダーの差し替えが「アクセスが拒否されました」で失敗する件に、間隔を空けた再試行を追加。差し替えに失敗して元へ戻せなかった場合に、退避した前のフォルダーまで消してしまう問題も修正
 - Phase 1基盤 v0.27.2: Excelの「▶ 動画を見る」を文字リンクから塗りつぶしのボタン表示へ変更し、同じ行の「目次へ戻る」と見分けが付くようにした。完了画面は「フォルダーごとコピーしてください」の案内文から次に押すボタン名を直接指し、フォルダー出力のときはボタン名も「保存先を開く」から「フォルダーを開く」へ変える。HTML出力の完了画面も同じ書き方に揃えた
 - Phase 1基盤 v0.27.1: v0.27.0でExcel出力が「このオブジェクトにプロパティ 'NumberFormat' が見つかりません」で必ず失敗する不具合を修正。COMのRangeはセルの集合として列挙できるため、`$x = if (...) { $Worksheet.Range(...) }` と書くとRange1個ではなくセルの配列になり、プロパティを設定できなくなっていた。動画の有無にかかわらずExcel出力全体が止まっていた
@@ -65,6 +66,12 @@ Windowsでリポジトリ直下の `run.cmd` をダブルクリックします�
 - その他メニューの「Wordで作成」から、同じ順序と編集済み画像を持つ縦型docxを作成
 - Word起動中はCOMを生成せず安全停止し、Wordを閉じて再実行またはExcel作成を案内
 - 録画（mp4・webm）を開いて場面を選び、その画面を手順として取り込み。動画はサーバーへ送らずブラウザーで再生する
+- 録画から「自動で手順に分ける」を選ぶと、場面の切れ目を自動で見つけて手順を並べ、押された場所に赤枠を付ける
+- 画面全体が一度に切り替わった手順は押された場所を特定できないため、赤枠を出さない（憶測の枠は付けない）
+- その他メニューの「Copilotで手順の文章を作る」から、Microsoft 365 Copilotに手順名・説明・補足の下書きを作らせる
+- Copilotへ渡すのは画面・赤枠・読み取った操作対象・すでに人が書いた手順の文体で、APIキーもGraphの権限も使わない
+- 下書きは確認画面で1件ずつ採用・却下でき、その場で直してから採用できる。却下したものは手順に入らない
+- 下書きの空欄は「変更しない」の意味で、すでに書いた文章を消さない
 - その他メニューの「PowerPointで作成（動画つき）」から、手順ごとに1枚のスライドを持つpptxを作成
 - 動画つきの手順は動画をpptxの中へ取り込むため、受け取った人はファイル1つで再生できる（Wordは静止画のみ）
 - 動画つきの手順があるときは、Excelもブックと動画を1つのフォルダーへ出力し、見出し右の「▶ 動画を見る」から再生できる
@@ -89,7 +96,7 @@ v0.14.1以前のアプリ配下に `data\projects\default` がある場合、v0.
 
 初回は `tests\phase1\run-tests.cmd` を実行し、PowerShell 5.1構文、プロジェクト保存、localhostサーバーを確認してください。詳しくは [docs/PHASE1-FOUNDATION.md](docs/PHASE1-FOUNDATION.md) を参照してください。
 
-Phase 1 v0.27.0の再確認手順は [docs/RETEST-PHASE1-v0.27.0.md](docs/RETEST-PHASE1-v0.27.0.md)、v0.26.0は [docs/RETEST-PHASE1-v0.26.0.md](docs/RETEST-PHASE1-v0.26.0.md)、v0.25.0は [docs/RETEST-PHASE1-v0.25.0.md](docs/RETEST-PHASE1-v0.25.0.md)、v0.24.0は [docs/RETEST-PHASE1-v0.24.0.md](docs/RETEST-PHASE1-v0.24.0.md)、v0.23.0は [docs/RETEST-PHASE1-v0.23.0.md](docs/RETEST-PHASE1-v0.23.0.md)、v0.22.1は [docs/RETEST-PHASE1-v0.22.1.md](docs/RETEST-PHASE1-v0.22.1.md)、v0.22.0は [docs/RETEST-PHASE1-v0.22.0.md](docs/RETEST-PHASE1-v0.22.0.md) にまとめています。
+Phase 1 v0.28.0の再確認手順は [docs/RETEST-PHASE1-v0.28.0.md](docs/RETEST-PHASE1-v0.28.0.md)、v0.27.0は [docs/RETEST-PHASE1-v0.27.0.md](docs/RETEST-PHASE1-v0.27.0.md)、v0.26.0は [docs/RETEST-PHASE1-v0.26.0.md](docs/RETEST-PHASE1-v0.26.0.md)、v0.25.0は [docs/RETEST-PHASE1-v0.25.0.md](docs/RETEST-PHASE1-v0.25.0.md)、v0.24.0は [docs/RETEST-PHASE1-v0.24.0.md](docs/RETEST-PHASE1-v0.24.0.md)、v0.23.0は [docs/RETEST-PHASE1-v0.23.0.md](docs/RETEST-PHASE1-v0.23.0.md)、v0.22.1は [docs/RETEST-PHASE1-v0.22.1.md](docs/RETEST-PHASE1-v0.22.1.md)、v0.22.0は [docs/RETEST-PHASE1-v0.22.0.md](docs/RETEST-PHASE1-v0.22.0.md) にまとめています。
 
 ## 製品方針
 

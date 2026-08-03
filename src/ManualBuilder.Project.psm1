@@ -30,6 +30,18 @@ function Get-MbText {
     return $text
 }
 
+# 録画から取り込んだ手順に付く情報。手で作った手順では空のまま残る。
+# Copilotへ渡す材料であり、出力（Excel・Word・HTML）には出さない。
+function New-MbStepCapture {
+    return [pscustomobject]@{
+        kind        = ''   # 'video-scene' なら録画の場面から取り込んだ手順
+        videoTimeMs = 0    # 録画のどの時点か
+        clickLabel  = ''   # 操作された場所から読み取れた文字
+        screenText  = ''   # 画面に出ていた文字
+        narration   = ''   # 録画の音声から起こした文
+    }
+}
+
 function New-MbStep {
     $now = Get-MbUtcTimestamp
     return [pscustomobject]@{
@@ -41,6 +53,7 @@ function New-MbStep {
         videoId     = $null
         annotations = @()
         crop        = [pscustomobject]@{ x = 0.0; y = 0.0; width = 1.0; height = 1.0 }
+        capture     = New-MbStepCapture
         createdAt   = $now
         updatedAt   = $now
     }
@@ -127,11 +140,22 @@ function Repair-MbProject {
             Add-MbPropertyIfMissing $step 'videoId' $null
             Add-MbPropertyIfMissing $step 'annotations' @()
             Add-MbPropertyIfMissing $step 'crop' ([pscustomobject]@{ x = 0.0; y = 0.0; width = 1.0; height = 1.0 })
+            Add-MbPropertyIfMissing $step 'capture' (New-MbStepCapture)
             Add-MbPropertyIfMissing $step 'createdAt' (Get-MbUtcTimestamp)
             Add-MbPropertyIfMissing $step 'updatedAt' (Get-MbUtcTimestamp)
             $step.annotations = @($step.annotations)
             if ($null -eq $step.crop) {
                 $step.crop = [pscustomobject]@{ x = 0.0; y = 0.0; width = 1.0; height = 1.0 }
+            }
+            if ($null -eq $step.capture) {
+                $step.capture = New-MbStepCapture
+            } else {
+                # 古いプロジェクトには項目が欠けていることがある。読み出し側で毎回確かめずに済むよう補う。
+                Add-MbPropertyIfMissing $step.capture 'kind' ''
+                Add-MbPropertyIfMissing $step.capture 'videoTimeMs' 0
+                Add-MbPropertyIfMissing $step.capture 'clickLabel' ''
+                Add-MbPropertyIfMissing $step.capture 'screenText' ''
+                Add-MbPropertyIfMissing $step.capture 'narration' ''
             }
         }
     }
@@ -443,6 +467,71 @@ function Update-MbStep {
     $target.updatedAt = Get-MbUtcTimestamp
 }
 
+function Get-MbStepById {
+    param([Parameter(Mandatory = $true)][object]$Project, [Parameter(Mandatory = $true)][string]$StepId)
+    foreach ($sheet in @($Project.sheets)) {
+        $found = @($sheet.steps | Where-Object { $_.id -eq $StepId }) | Select-Object -First 1
+        if ($found) { return $found }
+    }
+    return $null
+}
+
+# 録画から取り込んだ情報を手順へ書き込む。文章は触らない。
+function Set-MbStepCapture {
+    param(
+        [Parameter(Mandatory = $true)][object]$Project,
+        [Parameter(Mandatory = $true)][string]$StepId,
+        [string]$Kind = 'video-scene',
+        [int]$VideoTimeMs = 0,
+        [AllowEmptyString()][string]$ClickLabel = '',
+        [AllowEmptyString()][string]$ScreenText = '',
+        [AllowEmptyString()][string]$Narration = ''
+    )
+
+    $target = Get-MbStepById -Project $Project -StepId $StepId
+    if (-not $target) { throw '対象手順が見つかりません。' }
+    if ($target.PSObject.Properties.Name -notcontains 'capture' -or $null -eq $target.capture) {
+        $target | Add-Member -NotePropertyName 'capture' -NotePropertyValue (New-MbStepCapture) -Force
+    }
+    $target.capture.kind = Get-MbText -Value $Kind -MaxLength 40 -FieldName '取り込み種別'
+    $target.capture.videoTimeMs = [Math]::Max(0, $VideoTimeMs)
+    $target.capture.clickLabel = Get-MbText -Value $ClickLabel -MaxLength 200 -FieldName '操作対象'
+    $target.capture.screenText = Get-MbText -Value $ScreenText -MaxLength 4000 -FieldName '画面の文字'
+    $target.capture.narration = Get-MbText -Value $Narration -MaxLength 2000 -FieldName '録画の音声'
+    $target.updatedAt = Get-MbUtcTimestamp
+    return $target
+}
+
+# Copilotの下書きのうち、利用者が採用した手順だけを書き込む。
+# 空文字の項目は「変更しない」を意味する。誤って既存の文章を消さないため。
+function Set-MbStepDraft {
+    param(
+        [Parameter(Mandatory = $true)][object]$Project,
+        [Parameter(Mandatory = $true)][string]$StepId,
+        [AllowEmptyString()][string]$Title = '',
+        [AllowEmptyString()][string]$Description = '',
+        [AllowEmptyString()][string]$Note = ''
+    )
+
+    $target = Get-MbStepById -Project $Project -StepId $StepId
+    if (-not $target) { throw '対象手順が見つかりません。' }
+    $changed = $false
+    if (-not [string]::IsNullOrWhiteSpace($Title)) {
+        $target.title = Get-MbText -Value $Title -MaxLength 100 -FieldName '手順タイトル'
+        $changed = $true
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Description)) {
+        $target.description = Get-MbText -Value $Description -MaxLength 4000 -FieldName '説明'
+        $changed = $true
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Note)) {
+        $target.note = Get-MbText -Value $Note -MaxLength 2000 -FieldName '補足'
+        $changed = $true
+    }
+    if ($changed) { $target.updatedAt = Get-MbUtcTimestamp }
+    return $changed
+}
+
 function Set-MbStepOrder {
     param(
         [Parameter(Mandatory = $true)][object]$Project,
@@ -633,6 +722,10 @@ Export-ModuleMember -Function @(
     'New-MbProject',
     'New-MbSheet',
     'New-MbStep',
+    'New-MbStepCapture',
+    'Get-MbStepById',
+    'Set-MbStepCapture',
+    'Set-MbStepDraft',
     'Get-MbProject',
     'Save-MbProject',
     'Test-MbProject',

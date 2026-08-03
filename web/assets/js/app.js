@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const appVersion = '0.27.3';
+  const appVersion = '0.28.0';
   // 番号注釈はSVG属性で指定するためCSS変数を参照できない。
   // 編集画面とExcel・Word出力（New-MbAnnotatedImage）で同じ見た目にするため、基準フォントを揃える。
   const ANNOTATION_NUMBER_FONT = '"BIZ UDPGothic", "BIZ UDPゴシック", "BIZ UDGothic", "BIZ UDゴシック", Meiryo, "Yu Gothic UI", "MS Pゴシック", sans-serif';
@@ -1223,7 +1223,7 @@
 
   const VIDEO_ATTACH_MAX_BYTES = 30 * 1024 * 1024;
 
-  const videoCapture = { dialog: null, player: null, file: null, objectUrl: '', added: 0, busy: false };
+  const videoCapture = { dialog: null, player: null, file: null, objectUrl: '', added: 0, busy: false, cancelAuto: false };
 
   const formatByteSize = (bytes) => {
     const value = Number(bytes) || 0;
@@ -1353,6 +1353,137 @@
     }
   };
 
+  // 録画から切り出した1コマを、操作位置と読み取った音声つきで手順にする。
+  const importScene = async (blob, scene, narrationText) => {
+    const sheetId = selectedSheetId();
+    if (!sheetId) throw new Error('シートが選ばれていません。');
+    const headers = {
+      'Content-Type': 'image/jpeg',
+      'X-Sheet-Id': sheetId,
+      'X-Scene-Time-Ms': String(Math.round(scene.timeMs || 0))
+    };
+    if (scene.operationRect) headers['X-Scene-Rect'] = JSON.stringify(scene.operationRect);
+    if (narrationText) {
+      // ヘッダーには非ASCIIをそのまま載せられないのでBase64にする。
+      headers['X-Scene-Narration'] = btoa(String.fromCharCode(...new TextEncoder().encode(narrationText)));
+    }
+    const response = await fetch('/api/videos/scenes/import', {
+      method: 'POST',
+      headers: sessionHeaders(headers),
+      body: blob
+    });
+    if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+    syncCaptureSnapshot(await response.text(), true);
+  };
+
+  let copilotCapabilities = null;
+  const loadCopilotCapabilities = async () => {
+    if (copilotCapabilities) return copilotCapabilities;
+    try {
+      const response = await fetch('/api/copilot/capabilities', { headers: sessionHeaders() });
+      copilotCapabilities = response.ok ? await response.json() : null;
+    } catch {
+      copilotCapabilities = null;
+    }
+    return copilotCapabilities;
+  };
+
+  // 場面ごとの音声を文字にする。使えない環境では黙って諦め、手順づくりは続ける。
+  const transcribeScenes = async (scenes) => {
+    const transcripts = new Map();
+    const capabilities = await loadCopilotCapabilities();
+    if (!capabilities?.narration?.available) return transcripts;
+    if (!videoCapture.file) return transcripts;
+
+    const ranges = scenes.map((scene, index) => ({
+      index,
+      startMs: scene.timeMs,
+      endMs: scenes[index + 1] ? scenes[index + 1].timeMs : scene.timeMs + 6000
+    }));
+    let extracted = null;
+    try {
+      extracted = await window.MbVideoScenes.extractNarration(videoCapture.file, ranges);
+    } catch {
+      return transcripts;
+    }
+    if (!extracted?.available) return transcripts;
+
+    for (const clip of extracted.clips) {
+      try {
+        const response = await fetch('/api/narration/transcribe', {
+          method: 'POST',
+          headers: sessionHeaders({ 'Content-Type': 'audio/wav' }),
+          body: clip.blob
+        });
+        if (!response.ok) continue;
+        const result = await response.json();
+        if (result?.text) transcripts.set(clip.index, result.text);
+      } catch {
+        // 1件失敗しても他の場面は続ける。
+      }
+    }
+    return transcripts;
+  };
+
+  const runAutoScenes = async () => {
+    const player = videoCapture.player;
+    if (!player || videoCapture.busy) return;
+    if (!player.videoWidth || !player.videoHeight) {
+      showToast('動画をまだ読み込めていません。');
+      return;
+    }
+    if (!selectedSheetId()) return;
+
+    const buttons = [...videoCapture.dialog.querySelectorAll('[data-video-capture], [data-video-capture-with-movie], [data-video-auto]')];
+    videoCapture.busy = true;
+    buttons.forEach((item) => { item.disabled = true; });
+    videoCapture.cancelAuto = false;
+    try {
+      const keepOriginal = videoCapture.dialog.querySelector('[data-video-original]').checked;
+      setVideoStatus('場面の切れ目を探しています…');
+      const outcome = await window.MbVideoScenes.extractScenes(player, {
+        maxEdge: keepOriginal ? 0 : VIDEO_FRAME_MAX_EDGE,
+        quality: keepOriginal ? VIDEO_FRAME_ORIGINAL_QUALITY : VIDEO_FRAME_QUALITY,
+        onProgress: (progress) => setVideoStatus(`${progress.message}（${progress.percent}%）`),
+        shouldCancel: () => videoCapture.cancelAuto
+      });
+      if (outcome.cancelled) {
+        setVideoStatus('中止しました');
+        return;
+      }
+      if (outcome.scenes.length === 0) {
+        setVideoStatus('手順にできる場面が見つかりませんでした');
+        showToast('画面が切り替わる場面を見つけられませんでした。手動で場面を選んでください。', 'info');
+        return;
+      }
+
+      setVideoStatus(`${outcome.scenes.length} 件の場面が見つかりました。音声を確認しています…`);
+      const transcripts = await transcribeScenes(outcome.scenes);
+
+      let added = 0;
+      let skipped = 0;
+      for (let i = 0; i < outcome.scenes.length; i += 1) {
+        if (videoCapture.cancelAuto) break;
+        const scene = outcome.scenes[i];
+        setVideoStatus(`手順にしています（${i + 1}/${outcome.scenes.length}）`);
+        const before = document.querySelectorAll('.step-card').length;
+        await importScene(scene.blob, scene, transcripts.get(i) || '');
+        if (document.querySelectorAll('.step-card').length > before) added += 1; else skipped += 1;
+      }
+      videoCapture.added += added;
+      const parts = [`${added} 件の手順を作りました`];
+      if (skipped > 0) parts.push(`${skipped} 件は同じ画面のため除きました`);
+      setVideoStatus(parts.join('・'));
+      showToast(`${parts.join('、')}。赤枠と文章は編集画面で直せます。`, 'info');
+    } catch (error) {
+      setVideoStatus(error.message || '自動で分けられませんでした');
+      showToast(error.message || '録画を自動で分けられませんでした。');
+    } finally {
+      videoCapture.busy = false;
+      buttons.forEach((item) => { item.disabled = false; });
+    }
+  };
+
   const releaseVideoSource = () => {
     const player = videoCapture.player;
     if (player) {
@@ -1394,14 +1525,18 @@
     const dialog = document.createElement('dialog');
     dialog.id = 'video-frame-dialog';
     dialog.className = 'video-dialog';
-    dialog.innerHTML = '<header class="video-dialog__header"><div><strong>動画から手順を作る</strong><span>場面を選んで、その画面を手順に追加します</span></div><button type="button" class="video-dialog__close" data-video-close aria-label="閉じる">×</button></header><div class="video-dialog__content"><video class="video-dialog__player" data-video-player playsinline preload="metadata"></video><p class="video-dialog__error" data-video-error hidden></p><div class="video-dialog__controls"><button type="button" class="button button--ghost" data-video-play>再生</button><button type="button" class="button button--ghost" data-video-step="-1" aria-label="0.1秒戻す">◀ 0.1秒</button><input type="range" class="video-dialog__seek" data-video-seek min="0" max="0" step="0.01" value="0" aria-label="再生位置"><button type="button" class="button button--ghost" data-video-step="1" aria-label="0.1秒進める">0.1秒 ▶</button><span class="video-dialog__time" data-video-time>0:00.0 / 0:00.0</span></div></div><footer class="video-dialog__footer"><label class="video-dialog__quality"><input type="checkbox" data-video-original>元の解像度で取り込む</label><span class="video-dialog__spacer"></span><span class="video-dialog__count" data-video-status role="status" aria-live="polite">追加: 0件</span><button type="button" class="button button--ghost" data-video-capture-with-movie title="この場面を手順にしたうえで、動画をその手順へ添付します">動画つきで手順にする</button><button type="button" class="button button--primary" data-video-capture>この場面を手順にする</button><button type="button" class="button button--ghost" data-video-close>閉じる</button></footer>';
+    dialog.innerHTML = '<header class="video-dialog__header"><div><strong>動画から手順を作る</strong><span>自動で場面に分けるか、場面を選んで追加します</span></div><button type="button" class="video-dialog__close" data-video-close aria-label="閉じる">×</button></header><div class="video-dialog__content"><video class="video-dialog__player" data-video-player playsinline preload="metadata"></video><p class="video-dialog__error" data-video-error hidden></p><div class="video-dialog__controls"><button type="button" class="button button--ghost" data-video-play>再生</button><button type="button" class="button button--ghost" data-video-step="-1" aria-label="0.1秒戻す">◀ 0.1秒</button><input type="range" class="video-dialog__seek" data-video-seek min="0" max="0" step="0.01" value="0" aria-label="再生位置"><button type="button" class="button button--ghost" data-video-step="1" aria-label="0.1秒進める">0.1秒 ▶</button><span class="video-dialog__time" data-video-time>0:00.0 / 0:00.0</span></div></div><footer class="video-dialog__footer"><label class="video-dialog__quality"><input type="checkbox" data-video-original>元の解像度で取り込む</label><span class="video-dialog__spacer"></span><span class="video-dialog__count" data-video-status role="status" aria-live="polite">追加: 0件</span><button type="button" class="button button--ghost" data-video-capture-with-movie title="この場面を手順にしたうえで、動画をその手順へ添付します">動画つきで手順にする</button><button type="button" class="button button--ghost" data-video-capture>この場面を手順にする</button><button type="button" class="button button--primary" data-video-auto title="画面が切り替わる場面を自動で探し、押された場所に赤枠を付けて手順にします">自動で手順に分ける</button><button type="button" class="button button--ghost" data-video-close>閉じる</button></footer>';
 
     const player = dialog.querySelector('[data-video-player]');
     videoCapture.dialog = dialog;
     videoCapture.player = player;
 
     dialog.querySelectorAll('[data-video-close]').forEach((button) => {
-      button.addEventListener('click', () => dialog.close());
+      button.addEventListener('click', () => {
+        // 自動分割の最中に閉じられたら、シークの繰り返しを止める。
+        videoCapture.cancelAuto = true;
+        dialog.close();
+      });
     });
     dialog.querySelector('[data-video-play]').addEventListener('click', () => {
       if (player.paused) { player.play().catch(() => { }); } else { player.pause(); }
@@ -1416,6 +1551,7 @@
     });
     dialog.querySelector('[data-video-capture]').addEventListener('click', () => captureVideoFrame(false));
     dialog.querySelector('[data-video-capture-with-movie]').addEventListener('click', () => captureVideoFrame(true));
+    dialog.querySelector('[data-video-auto]').addEventListener('click', () => runAutoScenes());
     dialog.addEventListener('keydown', (event) => {
       if (event.target.matches('[data-video-seek]')) return;
       if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
@@ -2099,6 +2235,13 @@
       document.getElementById('project-package-input')?.click();
       return;
     }
+    const copilotDraftButton = event.target.closest('[data-copilot-draft]');
+    if (copilotDraftButton) {
+      const menu = copilotDraftButton.closest('details');
+      if (menu) menu.open = false;
+      openCopilotDialog();
+      return;
+    }
     const htmlExportButton = event.target.closest('[data-export-html]');
     if (htmlExportButton) {
       const menu = htmlExportButton.closest('details');
@@ -2714,6 +2857,270 @@
   const wakeHeartbeat = () => {
     if (Date.now() - heartbeatStartedAt < 2000) return;
     sendHeartbeat();
+  };
+
+  // ---------------------------------------------------------------
+  // Copilotに手順の下書きを作らせる
+  // ---------------------------------------------------------------
+  const copilotDraft = { dialog: null, timer: null, drafts: [], busy: false };
+
+  const stopCopilotPolling = () => {
+    if (copilotDraft.timer) {
+      window.clearInterval(copilotDraft.timer);
+      copilotDraft.timer = null;
+    }
+  };
+
+  const setCopilotView = (view) => {
+    const dialog = copilotDraft.dialog;
+    if (!dialog) return;
+    dialog.querySelectorAll('[data-copilot-view]').forEach((section) => {
+      section.hidden = section.dataset.copilotView !== view;
+    });
+    // 表示中のビューに対応するボタンだけを出す。
+    dialog.querySelector('[data-copilot-start]').hidden = view !== 'setup';
+    dialog.querySelector('[data-copilot-cancel]').hidden = view !== 'progress';
+    dialog.querySelector('[data-copilot-apply]').hidden = view !== 'review';
+    dialog.querySelector('[data-copilot-signin]').hidden = view === 'review';
+  };
+
+  // 同じ目印の要素が各ビューにあるため、まとめて書き換える。
+  // 見えているビューは1つなので、利用者には常に1か所だけ見える。
+  const setCopilotMessage = (message, detail = '') => {
+    const dialog = copilotDraft.dialog;
+    if (!dialog) return;
+    dialog.querySelectorAll('[data-copilot-message]').forEach((node) => { node.textContent = message; });
+    dialog.querySelectorAll('[data-copilot-detail]').forEach((node) => { node.textContent = detail; });
+  };
+
+  const escapeHtml = (value) => String(value ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+  // 下書きを1件ずつ確認できる形で並べる。
+  // 既に文章がある手順は、何がどう変わるかが分かるように今の内容も出す。
+  const renderCopilotDrafts = (drafts) => {
+    const list = copilotDraft.dialog.querySelector('[data-copilot-list]');
+    if (drafts.length === 0) {
+      list.innerHTML = '<p class="copilot-empty">採用できる下書きがありませんでした。</p>';
+      return;
+    }
+    list.innerHTML = drafts.map((draft, index) => {
+      const uncertain = draft.confident === false;
+      const dropped = draft.keep === false;
+      const flags = [];
+      if (dropped) flags.push('<span class="copilot-flag copilot-flag--drop">不要かもしれません</span>');
+      if (uncertain) flags.push('<span class="copilot-flag copilot-flag--unsure">自信なし</span>');
+      if (draft.clickLabel) flags.push(`<span class="copilot-flag">操作対象: ${escapeHtml(draft.clickLabel)}</span>`);
+      const reason = draft.reason ? `<p class="copilot-draft__reason">${escapeHtml(draft.reason)}</p>` : '';
+      const current = (draft.currentTitle || draft.currentDescription)
+        ? `<details class="copilot-draft__current"><summary>今の内容</summary><p>${escapeHtml(draft.currentTitle)}／${escapeHtml(draft.currentDescription)}</p></details>`
+        : '';
+      // 自信がない下書きと不要判定は、既定では採用しない。取りこぼしより誤採用を避ける。
+      const checked = (!uncertain && !dropped) ? ' checked' : '';
+      return `<article class="copilot-draft" data-copilot-draft-item data-step-id="${escapeHtml(draft.id)}">
+<label class="copilot-draft__accept"><input type="checkbox" data-copilot-accept${checked}><span>採用する</span></label>
+<div class="copilot-draft__body">
+<div class="copilot-draft__flags">${flags.join('')}</div>
+<label class="copilot-draft__field"><span>手順名</span><input type="text" data-copilot-title value="${escapeHtml(draft.title)}" maxlength="100"></label>
+<label class="copilot-draft__field"><span>説明</span><textarea data-copilot-description rows="3" maxlength="4000">${escapeHtml(draft.description)}</textarea></label>
+<label class="copilot-draft__field"><span>補足</span><input type="text" data-copilot-note value="${escapeHtml(draft.note)}" maxlength="2000"></label>
+${reason}${current}
+</div>
+<span class="copilot-draft__index">${index + 1}</span>
+</article>`;
+    }).join('');
+  };
+
+  const applyCopilotDrafts = async () => {
+    if (copilotDraft.busy) return;
+    const items = [...copilotDraft.dialog.querySelectorAll('[data-copilot-draft-item]')];
+    const accept = items
+      .filter((item) => item.querySelector('[data-copilot-accept]').checked)
+      .map((item) => ({
+        id: item.dataset.stepId,
+        title: item.querySelector('[data-copilot-title]').value,
+        description: item.querySelector('[data-copilot-description]').value,
+        note: item.querySelector('[data-copilot-note]').value
+      }));
+    if (accept.length === 0) {
+      showToast('採用する手順を1件以上選んでください。');
+      return;
+    }
+    copilotDraft.busy = true;
+    try {
+      // 日本語をフォーム形式で送ると本文が膨らむため、JSONのまま送る。
+      const response = await fetch('/api/copilot/draft/apply', {
+        method: 'POST',
+        headers: sessionHeaders({ 'Content-Type': 'application/json; charset=UTF-8' }),
+        body: JSON.stringify({ accept })
+      });
+      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      const result = await response.json();
+      // 採用ずみなので、閉じるときに破棄を送らないようにしてから閉じる。
+      copilotDraft.drafts = [];
+      copilotDraft.dialog.close();
+      await refreshWorkspace();
+      showToast(`${result.applied} 件の手順に文章を入れました。`, 'info');
+    } catch (error) {
+      showToast(error.message || '下書きを反映できませんでした。');
+    } finally {
+      copilotDraft.busy = false;
+    }
+  };
+
+  const finishCopilotJob = async (status) => {
+    stopCopilotPolling();
+    if (status.state === 'completed') {
+      const response = await fetch('/api/copilot/draft/result', { headers: sessionHeaders() });
+      const result = response.ok ? await response.json() : { drafts: [] };
+      copilotDraft.drafts = [...(result.drafts || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
+      renderCopilotDrafts(copilotDraft.drafts);
+      const failures = (result.failures || []).length;
+      setCopilotMessage(
+        `${copilotDraft.drafts.length} 件の下書きができました`,
+        failures > 0 ? `${failures} 件のまとまりは受け取れませんでした。あとで作り直せます。` : '採用するものを選んでください。'
+      );
+      setCopilotView('review');
+      return;
+    }
+    if (status.state === 'cancelled') {
+      setCopilotMessage('中止しました', '');
+      setCopilotView('setup');
+      return;
+    }
+    setCopilotMessage('下書きを作れませんでした', String(status.message || ''));
+    setCopilotView('setup');
+  };
+
+  const pollCopilotStatus = async () => {
+    try {
+      const response = await fetch('/api/copilot/draft/status', { headers: sessionHeaders() });
+      if (!response.ok) return;
+      const status = await response.json();
+      const progress = copilotDraft.dialog?.querySelector('[data-copilot-progress]');
+      if (progress) progress.style.width = `${Math.max(0, Math.min(100, Number(status.percent) || 0))}%`;
+      if (status.state === 'queued' || status.state === 'running') {
+        setCopilotMessage(String(status.message || '処理しています'), 'Copilotの画面は裏で動いています。編集は続けられます。');
+        return;
+      }
+      if (status.state === 'idle') return;
+      await finishCopilotJob(status);
+    } catch {
+      // 一時的に取れなくても次の巡回で拾う。
+    }
+  };
+
+  const startCopilotDraft = async () => {
+    const includeWritten = copilotDraft.dialog.querySelector('[data-copilot-include-written]').checked;
+    setCopilotMessage('Copilotの準備をしています', '初回はサインインを求められることがあります。');
+    setCopilotView('progress');
+    try {
+      const body = new URLSearchParams();
+      body.set('includeWritten', includeWritten ? 'true' : 'false');
+      const response = await fetch('/api/copilot/draft/start', {
+        method: 'POST',
+        headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' }),
+        body: body.toString()
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.message || `HTTP ${response.status}`);
+      stopCopilotPolling();
+      copilotDraft.timer = window.setInterval(pollCopilotStatus, 2000);
+    } catch (error) {
+      setCopilotMessage('下書きを始められませんでした', error.message || '');
+      setCopilotView('setup');
+    }
+  };
+
+  const createCopilotDialog = () => {
+    if (copilotDraft.dialog) return copilotDraft.dialog;
+    const dialog = document.createElement('dialog');
+    dialog.id = 'copilot-draft-dialog';
+    dialog.className = 'copilot-dialog';
+    dialog.innerHTML = '<header class="copilot-dialog__header"><div><strong>Copilotで手順の文章を作る</strong><span>画面と赤枠をMicrosoft 365 Copilotへ渡し、手順名と説明の下書きを受け取ります</span></div><button type="button" class="copilot-dialog__close" data-copilot-close aria-label="閉じる">×</button></header>'
+      + '<div class="copilot-dialog__content">'
+      + '<section data-copilot-view="setup">'
+      + '<p class="copilot-note">画像は普段お使いのMicrosoft 365 Copilotへ添付されます。会社の規程で扱えない画面が含まれていないか確かめてください。</p>'
+      + '<label class="copilot-option"><input type="checkbox" data-copilot-include-written><span>すでに文章を書いた手順も対象にする</span></label>'
+      + '<p class="copilot-capability" data-copilot-capability></p>'
+      + '<p class="copilot-dialog__error" data-copilot-detail></p>'
+      + '</section>'
+      + '<section data-copilot-view="progress" hidden>'
+      + '<div class="copilot-dialog__state" role="status" aria-live="polite"><strong data-copilot-message>準備しています</strong><span data-copilot-detail></span></div>'
+      + '<div class="excel-export-progress" role="progressbar" aria-label="下書きの進捗" aria-valuemin="0" aria-valuemax="100"><span data-copilot-progress></span></div>'
+      + '</section>'
+      + '<section data-copilot-view="review" hidden>'
+      + '<div class="copilot-dialog__state"><strong data-copilot-message></strong><span data-copilot-detail></span></div>'
+      + '<div class="copilot-list" data-copilot-list></div>'
+      + '</section>'
+      + '</div>'
+      + '<footer class="copilot-dialog__footer">'
+      + '<button type="button" class="button button--ghost" data-copilot-signin>Copilotの画面を開く</button>'
+      + '<span class="excel-export-dialog__spacer"></span>'
+      + '<button type="button" class="button button--ghost" data-copilot-cancel hidden>中止</button>'
+      + '<button type="button" class="button button--ghost" data-copilot-close>閉じる</button>'
+      + '<button type="button" class="button button--primary" data-copilot-start>下書きを作る</button>'
+      + '<button type="button" class="button button--primary" data-copilot-apply hidden>選んだ手順に入れる</button>'
+      + '</footer>';
+    document.body.appendChild(dialog);
+    copilotDraft.dialog = dialog;
+
+    dialog.querySelectorAll('[data-copilot-close]').forEach((button) => {
+      button.addEventListener('click', () => dialog.close());
+    });
+    dialog.querySelector('[data-copilot-start]').addEventListener('click', () => startCopilotDraft());
+    dialog.querySelector('[data-copilot-apply]').addEventListener('click', () => applyCopilotDrafts());
+    dialog.querySelector('[data-copilot-cancel]').addEventListener('click', async () => {
+      try {
+        await fetch('/api/copilot/draft/cancel', { method: 'POST', headers: sessionHeaders() });
+      } catch {
+        // 中止を伝えられなくても、次の巡回で状態が分かる。
+      }
+    });
+    dialog.querySelector('[data-copilot-signin]').addEventListener('click', async () => {
+      try {
+        const response = await fetch('/api/copilot/window', { method: 'POST', headers: sessionHeaders() });
+        if (!response.ok) {
+          const payload = await response.json().catch(() => null);
+          throw new Error(payload?.message || `HTTP ${response.status}`);
+        }
+        showToast('Copilotの画面を開きました。サインインしてから、この画面に戻ってください。', 'info');
+      } catch (error) {
+        showToast(error.message || 'Copilotの画面を開けませんでした。');
+      }
+    });
+    dialog.addEventListener('close', () => {
+      stopCopilotPolling();
+      // 確認せずに閉じた下書きは残さない。次に開いたとき古い結果が出ないようにする。
+      if (copilotDraft.drafts.length > 0) {
+        copilotDraft.drafts = [];
+        fetch('/api/copilot/draft/discard', { method: 'POST', headers: sessionHeaders() }).catch(() => { });
+      }
+    });
+    return dialog;
+  };
+
+  const openCopilotDialog = async () => {
+    const dialog = createCopilotDialog();
+    copilotDraft.drafts = [];
+    setCopilotView('setup');
+    setCopilotMessage('', '');
+
+    const capability = dialog.querySelector('[data-copilot-capability]');
+    capability.textContent = '文字認識の状態を確認しています…';
+    const capabilities = await loadCopilotCapabilities();
+    const notes = [];
+    if (capabilities?.ocr?.available) {
+      notes.push('画面の文字を読み取って赤枠と操作対象を補います。');
+    } else if (capabilities?.ocr?.reason) {
+      notes.push(`画面の文字は読み取れません（${capabilities.ocr.reason}）。赤枠は録画の変化だけで決まります。`);
+    }
+    if (capabilities?.narration?.available) {
+      notes.push('録画の音声も文字にして手がかりにします。');
+    }
+    capability.textContent = notes.join(' ');
+    dialog.showModal();
   };
 
   window.setInterval(pollCaptures, 1500);
