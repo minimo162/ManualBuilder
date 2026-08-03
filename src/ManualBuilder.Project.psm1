@@ -38,6 +38,7 @@ function New-MbStep {
         description = ''
         note        = ''
         imageId     = $null
+        videoId     = $null
         annotations = @()
         crop        = [pscustomobject]@{ x = 0.0; y = 0.0; width = 1.0; height = 1.0 }
         createdAt   = $now
@@ -69,6 +70,7 @@ function New-MbProject {
         selectedSheetId = $sheet.id
         sheets          = @($sheet)
         images          = @()
+        videos          = @()
         createdAt       = Get-MbUtcTimestamp
         updatedAt       = Get-MbUtcTimestamp
     }
@@ -96,11 +98,13 @@ function Repair-MbProject {
     Add-MbPropertyIfMissing $Project 'selectedSheetId' $null
     Add-MbPropertyIfMissing $Project 'sheets' @()
     Add-MbPropertyIfMissing $Project 'images' @()
+    Add-MbPropertyIfMissing $Project 'videos' @()
     Add-MbPropertyIfMissing $Project 'createdAt' (Get-MbUtcTimestamp)
     Add-MbPropertyIfMissing $Project 'updatedAt' (Get-MbUtcTimestamp)
 
     $Project.sheets = @($Project.sheets)
     $Project.images = @($Project.images)
+    $Project.videos = @($Project.videos)
     if ($Project.sheets.Count -eq 0) {
         $Project.sheets = @(New-MbSheet -Name '手順1')
     }
@@ -120,6 +124,7 @@ function Repair-MbProject {
             Add-MbPropertyIfMissing $step 'description' ''
             Add-MbPropertyIfMissing $step 'note' ''
             Add-MbPropertyIfMissing $step 'imageId' $null
+            Add-MbPropertyIfMissing $step 'videoId' $null
             Add-MbPropertyIfMissing $step 'annotations' @()
             Add-MbPropertyIfMissing $step 'crop' ([pscustomobject]@{ x = 0.0; y = 0.0; width = 1.0; height = 1.0 })
             Add-MbPropertyIfMissing $step 'createdAt' (Get-MbUtcTimestamp)
@@ -157,6 +162,7 @@ function Test-MbProject {
 
     $ids = New-Object 'System.Collections.Generic.HashSet[string]'
     $referencedImageIds = New-Object 'System.Collections.Generic.List[string]'
+    $referencedVideoIds = New-Object 'System.Collections.Generic.List[string]'
     foreach ($sheet in @($Project.sheets)) {
         if ([string]$sheet.id -notmatch '^sheet-[a-f0-9]{32}$') { throw 'シートIDの形式が不正です。' }
         if (-not $ids.Add([string]$sheet.id)) { throw 'シートIDが重複しています。' }
@@ -205,6 +211,7 @@ function Test-MbProject {
                 if ([string]$annotation.type -ne 'number' -and $label -ne 0) { throw '番号以外の注釈ラベルが不正です。' }
             }
             if ($step.imageId) { [void]$referencedImageIds.Add([string]$step.imageId) }
+            if ($step.videoId) { [void]$referencedVideoIds.Add([string]$step.videoId) }
         }
     }
 
@@ -223,6 +230,27 @@ function Test-MbProject {
     }
     foreach ($imageId in $referencedImageIds) {
         if (-not $imageIds.Contains($imageId)) { throw "手順が参照する画像が見つかりません: $imageId" }
+    }
+
+    # 動画はPowerPoint出力にだけ埋め込む。共有フォルダーへ置ける大きさに収めるため、
+    # 1本30MB・1マニュアル50本までとする。
+    if (@($Project.videos).Count -gt 50) { throw '動画は1マニュアル50本までです。' }
+    $videoIds = New-Object 'System.Collections.Generic.HashSet[string]'
+    foreach ($video in @($Project.videos)) {
+        if ([string]$video.id -notmatch '^video-[a-f0-9]{32}$') { throw '動画IDの形式が不正です。' }
+        if (-not $ids.Add([string]$video.id)) { throw '動画IDが重複しています。' }
+        [void]$videoIds.Add([string]$video.id)
+        if ([string]$video.fileName -notmatch '^video-[a-f0-9]{32}\.(mp4|webm)$') { throw '動画ファイル名の形式が不正です。' }
+        if ([string]$video.sha256 -notmatch '^[A-F0-9]{64}$') { throw '動画ハッシュの形式が不正です。' }
+        if ([long]$video.byteLength -lt 1 -or [long]$video.byteLength -gt (30 * 1024 * 1024)) { throw '動画ファイルサイズが範囲外です。' }
+        if ([string]$video.mimeType -notin @('video/mp4', 'video/webm')) { throw '動画MIMEタイプが不正です。' }
+        $duration = [double]$video.durationSec
+        if ([double]::IsNaN($duration) -or [double]::IsInfinity($duration) -or $duration -lt 0 -or $duration -gt 3600) {
+            throw '動画の長さが範囲外です。'
+        }
+    }
+    foreach ($videoId in $referencedVideoIds) {
+        if (-not $videoIds.Contains($videoId)) { throw "手順が参照する動画が見つかりません: $videoId" }
     }
 }
 

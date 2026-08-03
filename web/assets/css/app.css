@@ -1994,6 +1994,41 @@ kbd {
   flex: 1;
 }
 
+.step-video {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--surface-inset);
+  border-radius: 6px;
+}
+
+.step-video__mark {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 50%;
+  font-size: 11px;
+}
+
+.step-video__text {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.step-video__hint {
+  display: block;
+  color: var(--text-3);
+  font-size: 11px;
+}
+
 .video-dialog {
   width: min(94vw, 880px);
   max-width: none;

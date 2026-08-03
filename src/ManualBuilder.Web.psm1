@@ -82,13 +82,26 @@ function Render-MbStepNavigation {
     return $sb.ToString()
 }
 
+function Get-MbStepVideoEntry {
+    param(
+        [Parameter(Mandatory = $true)][object]$Project,
+        [Parameter(Mandatory = $true)][object]$Step
+    )
+    if ($Step.PSObject.Properties.Name -notcontains 'videoId') { return $null }
+    $videoId = [string]$Step.videoId
+    if ([string]::IsNullOrWhiteSpace($videoId)) { return $null }
+    if ($Project.PSObject.Properties.Name -notcontains 'videos') { return $null }
+    return (@($Project.videos | Where-Object { $_.id -eq $videoId }) | Select-Object -First 1)
+}
+
 function ConvertTo-MbStepCardHtml {
     param(
         [Parameter(Mandatory = $true)][object]$Step,
         [Parameter(Mandatory = $true)][int]$Number,
         [Parameter(Mandatory = $true)][int]$Total,
         [string]$Token = '',
-        [bool]$CanUndoImageReplacement = $false
+        [bool]$CanUndoImageReplacement = $false,
+        [AllowNull()][object]$Video = $null
     )
 
     $title = ConvertTo-MbHtml $Step.title
@@ -109,6 +122,18 @@ function ConvertTo-MbStepCardHtml {
     $isCropped = ([double]$crop.x -gt 0.000001 -or [double]$crop.y -gt 0.000001 -or [double]$crop.width -lt 0.999999 -or [double]$crop.height -lt 0.999999)
     $sb = New-Object System.Text.StringBuilder
 
+    # 動画はPowerPoint出力にだけ埋め込む。画面では添付されていることだけを示す。
+    $videoRow = ''
+    if ($Video) {
+        $videoSizeText = if ([long]$Video.byteLength -ge (1024 * 1024)) {
+            [string][Math]::Round([long]$Video.byteLength / 1MB, 1) + 'MB'
+        } else {
+            [string][Math]::Max(1, [Math]::Round([long]$Video.byteLength / 1KB)) + 'KB'
+        }
+        $videoLengthText = [string][Math]::Round([double]$Video.durationSec, 1) + '秒'
+        $videoRow = '<div class="step-video" data-step-video><span class="step-video__mark" aria-hidden="true">▶</span><span class="step-video__text">動画つき ' + (ConvertTo-MbHtml $videoLengthText) + ' ・ ' + (ConvertTo-MbHtml $videoSizeText) + '<span class="step-video__hint">PowerPointで作成すると再生できます</span></span><button type="button" class="image-secondary-button" data-detach-video>動画を外す</button></div>'
+    }
+
     $imageStateClass = if ($Step.imageId) { '' } else { ' step-card--no-image' }
     [void]$sb.AppendLine('<article class="step-card' + $imageStateClass + '" id="step-' + $stepId + '" data-step-id="' + $stepId + '">')
     [void]$sb.AppendLine('<input type="hidden" name="stepId" value="' + $stepId + '">')
@@ -125,7 +150,7 @@ function ConvertTo-MbStepCardHtml {
         $cropBadge = if ($isCropped) { '<span class="image-edit-button__badge crop-badge">切り抜き済み</span>' } else { '' }
         $undoButton = if ($CanUndoImageReplacement) { '<button type="button" class="image-secondary-button image-secondary-button--undo" data-undo-image-replace>元の画像へ戻す</button>' } else { '' }
         $annotationBadge = if ($annotations.Count -gt 0) { '<span class="image-edit-button__badge">注釈 <span class="annotation-count">' + $annotations.Count + '</span></span>' } else { '' }
-        [void]$sb.AppendLine('<div class="step-image-frame"><button type="button" class="step-image-button" data-image-preview="' + $imageUrl + '" aria-label="手順 ' + $Number + ' のスクリーンショットを拡大"><span class="step-image-viewport"><img class="step-image" src="' + $imageUrl + '" alt="手順 ' + $Number + ' のスクリーンショット" loading="lazy"><svg class="step-annotation-overlay" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true"></svg></span></button><div class="image-edit-actions" aria-label="画像の操作"><button type="button" class="image-edit-button" data-open-annotation title="切り抜き・赤枠・矢印・番号・黒塗り"><span class="image-edit-button__icon" aria-hidden="true">✎</span><span class="image-edit-button__copy"><strong>画像を編集</strong></span>' + $annotationBadge + $cropBadge + '</button><div class="image-secondary-actions"><button type="button" class="image-secondary-button" data-replace-image>差し替え</button>' + $undoButton + '</div></div></div>')
+        [void]$sb.AppendLine('<div class="step-image-frame"><button type="button" class="step-image-button" data-image-preview="' + $imageUrl + '" aria-label="手順 ' + $Number + ' のスクリーンショットを拡大"><span class="step-image-viewport"><img class="step-image" src="' + $imageUrl + '" alt="手順 ' + $Number + ' のスクリーンショット" loading="lazy"><svg class="step-annotation-overlay" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true"></svg></span></button><div class="image-edit-actions" aria-label="画像の操作"><button type="button" class="image-edit-button" data-open-annotation title="切り抜き・赤枠・矢印・番号・黒塗り"><span class="image-edit-button__icon" aria-hidden="true">✎</span><span class="image-edit-button__copy"><strong>画像を編集</strong></span>' + $annotationBadge + $cropBadge + '</button><div class="image-secondary-actions"><button type="button" class="image-secondary-button" data-replace-image>差し替え</button>' + $undoButton + '</div>' + $videoRow + '</div></div>')
         [void]$sb.AppendLine('<textarea class="step-annotations-data" hidden>' + (ConvertTo-MbHtml $annotationsJson) + '</textarea>')
         [void]$sb.AppendLine('<textarea class="step-crop-data" hidden>' + (ConvertTo-MbHtml $cropJson) + '</textarea>')
     } else {
@@ -186,7 +211,8 @@ function ConvertTo-MbCaptureSnapshotHtml {
     [void]$sb.AppendLine('<div class="capture-snapshot" data-capture-version="' + $Version + '" data-step-count="' + $steps.Count + '" data-import-status="' + $Status + '">')
     for ($i = 0; $i -lt $steps.Count; $i++) {
         $canUndo = $UndoImageStepIds -contains [string]$steps[$i].id
-        [void]$sb.AppendLine((ConvertTo-MbStepCardHtml -Step $steps[$i] -Number ($i + 1) -Total $steps.Count -Token $Token -CanUndoImageReplacement $canUndo))
+        $stepVideo = Get-MbStepVideoEntry -Project $Project -Step $steps[$i]
+        [void]$sb.AppendLine((ConvertTo-MbStepCardHtml -Step $steps[$i] -Number ($i + 1) -Total $steps.Count -Token $Token -CanUndoImageReplacement $canUndo -Video $stepVideo))
     }
     [void]$sb.AppendLine('</div>')
     return $sb.ToString()
@@ -294,7 +320,8 @@ function ConvertTo-MbWorkspaceHtml {
     } else {
         for ($i = 0; $i -lt $steps.Count; $i++) {
             $canUndo = $UndoImageStepIds -contains [string]$steps[$i].id
-            [void]$sb.AppendLine((ConvertTo-MbStepCardHtml -Step $steps[$i] -Number ($i + 1) -Total $steps.Count -Token $Token -CanUndoImageReplacement $canUndo))
+            $stepVideo = Get-MbStepVideoEntry -Project $Project -Step $steps[$i]
+            [void]$sb.AppendLine((ConvertTo-MbStepCardHtml -Step $steps[$i] -Number ($i + 1) -Total $steps.Count -Token $Token -CanUndoImageReplacement $canUndo -Video $stepVideo))
         }
     }
     [void]$sb.AppendLine('</section></main></div><div id="drop-overlay" class="drop-overlay" aria-hidden="true"><div>画像をドロップして手順を追加</div></div></div>')
