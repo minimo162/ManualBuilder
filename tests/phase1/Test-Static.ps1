@@ -41,6 +41,8 @@ $required = @(
     'src\Export-ManualBuilderExcel.ps1',
     'src\ManualBuilder.Word.psm1',
     'src\Export-ManualBuilderWord.ps1',
+    'src\ManualBuilder.PowerPoint.psm1',
+    'src\Export-ManualBuilderPowerPoint.ps1',
     'web\index.html',
     'web\assets\css\app.css',
     'web\assets\js\app.js',
@@ -68,6 +70,7 @@ $projectModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuil
 $webModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.Web.psm1'), [Text.Encoding]::UTF8)
 $excelModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.Excel.psm1'), [Text.Encoding]::UTF8)
 $wordModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.Word.psm1'), [Text.Encoding]::UTF8)
+$powerPointModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.PowerPoint.psm1'), [Text.Encoding]::UTF8)
 $cssText = [IO.File]::ReadAllText((Join-Path $repoRoot 'web\assets\css\app.css'), [Text.Encoding]::UTF8)
 $jsText = [IO.File]::ReadAllText((Join-Path $repoRoot 'web\assets\js\app.js'), [Text.Encoding]::UTF8)
 $indexText = [IO.File]::ReadAllText((Join-Path $repoRoot 'web\index.html'), [Text.Encoding]::UTF8)
@@ -90,7 +93,7 @@ Add-Result (($serverText -match '\$projectReady = \$false') -and ($serverText -m
 Add-Result ($serverText -match '\$storageLayout\.RuntimePath') '二重起動情報をユーザーデータ配下へ置く'
 Add-Result ($serverText -match '\$storageLayout\.ExportJobsRoot') 'Office一時ジョブをユーザーデータ配下へ置く'
 Add-Result (($runCommandText -match '%~dp0src\\Start-ManualBuilderLauncher\.ps1') -and ($runCommandText -notmatch '(?im)^cd /d')) 'UNC共有フォルダーから更新ランチャーを起動できる'
-Add-Result ([string]$appVersionManifest.appVersion -eq '0.23.0') '配布用アプリバージョンを0.23.0へ更新する'
+Add-Result ([string]$appVersionManifest.appVersion -eq '0.24.0') '配布用アプリバージョンを0.24.0へ更新する'
 Add-Result ($workspaceModuleText -notmatch "ManualBuilder\.Project\.psm1'\) -Force") 'WorkspaceがProjectコマンドを強制再読込しない'
 Add-Result ($launcherModuleText -match "'ManualBuilder\\app'") 'アプリ実行コードをLocalApplicationDataへキャッシュする'
 Add-Result ($launcherModuleText -match "@\('src', 'web', 'run\.cmd', 'app-version\.json'\)") 'キャッシュ対象からプロジェクトデータを除外する'
@@ -118,7 +121,18 @@ Add-Result ($jsText -match 'isSupportedVideo') '動画の判定を画面側で�
 Add-Result ($jsText -match 'VIDEO_FRAME_MAX_EDGE = 1280') '動画のコマを既定で長辺1280pxへ縮小する'
 Add-Result ($jsText -match "toBlob\(resolve, 'image/jpeg'") '動画のコマをJPEGで取り込む'
 Add-Result (($serverText -match "'paste', 'drop', 'file', 'video'") -and ($captureModuleText -match "'file', 'video'")) '取り込み元としてvideoを受け付ける'
-Add-Result ($serverText -notmatch 'video/mp4') '動画ファイルはサーバーへ保存も配信もしない'
+Add-Result ($serverText -notmatch 'video/mp4') '動画ファイルをブラウザーへ配信しない'
+Add-Result ($serverText -match '/api/videos/attach') '手順へ動画を添付するAPIを実装する'
+Add-Result ($serverText -match '/api/videos/detach') '手順から動画を外すAPIを実装する'
+Add-Result (($captureModuleText -match "'videos'") -and ($projectModuleText -match "'videos'")) '動画を画像とは別に保存する'
+Add-Result ($projectModuleText -match 'videoId') '手順に動画の紐づけを持つ'
+Add-Result ($serverText -match '/api/export/powerpoint/start') 'PowerPoint出力APIを実装する'
+Add-Result ($webModuleText -match 'data-export-powerpoint') 'PowerPoint出力の入口を画面へ置く'
+Add-Result ($powerPointModuleText -match 'AddMediaObject2') 'PowerPointへ動画を埋め込む'
+Add-Result ($powerPointModuleText -match 'SaveWithDocument') '動画をリンクではなくファイルへ取り込む'
+Add-Result ($powerPointModuleText -match 'MB_POWERPOINT_RUNNING') 'PowerPointが開いているときは作成を始めない'
+Add-Result (($powerPointModuleText -match 'GetWindowThreadProcessId') -and ($powerPointModuleText -match "ownershipMode -eq 'Hwnd'")) '所有を証明したPowerPointだけを終了させる'
+Add-Result ($powerPointModuleText -match 'ppSaveAsOpenXMLPresentation|SaveAs\(\$temporaryPath, 24\)') 'pptx形式で保存する'
 Add-Result ($serverText -match '/api/steps/reorder') '手順並べ替えAPIを実装する'
 Add-Result ($serverText -match '/api/sheets/reorder') 'シート並べ替えAPIを実装する'
 Add-Result ($serverText -match '/api/steps/move') '手順のシート移動APIを実装する'
