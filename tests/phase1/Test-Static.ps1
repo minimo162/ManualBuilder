@@ -95,7 +95,7 @@ Add-Result (($serverText -match '\$projectReady = \$false') -and ($serverText -m
 Add-Result ($serverText -match '\$storageLayout\.RuntimePath') '二重起動情報をユーザーデータ配下へ置く'
 Add-Result ($serverText -match '\$storageLayout\.ExportJobsRoot') 'Office一時ジョブをユーザーデータ配下へ置く'
 Add-Result (($runCommandText -match '%~dp0src\\Start-ManualBuilderLauncher\.ps1') -and ($runCommandText -notmatch '(?im)^cd /d')) 'UNC共有フォルダーから更新ランチャーを起動できる'
-Add-Result ([string]$appVersionManifest.appVersion -eq '0.27.1') '配布用アプリバージョンを0.27.1へ更新する'
+Add-Result ([string]$appVersionManifest.appVersion -eq '0.27.2') '配布用アプリバージョンを0.27.2へ更新する'
 Add-Result ($workspaceModuleText -notmatch "ManualBuilder\.Project\.psm1'\) -Force") 'WorkspaceがProjectコマンドを強制再読込しない'
 Add-Result ($launcherModuleText -match "'ManualBuilder\\app'") 'アプリ実行コードをLocalApplicationDataへキャッシュする'
 Add-Result ($launcherModuleText -match "@\('src', 'web', 'run\.cmd', 'app-version\.json'\)") 'キャッシュ対象からプロジェクトデータを除外する'
@@ -178,6 +178,12 @@ Add-Result ($excelModuleText -match '\.mb-excel-') 'Excelのフォルダー出�
 Add-Result ($excelModuleText -match '出力した動画数の自己検査に失敗しました') '出力した動画数を自己検査する'
 Add-Result ($serverText -match '\$snapshotVideoDirectory') 'Excel出力用に動画もスナップショットへ複製する'
 Add-Result ($jsText -match 'outputFolderName') 'フォルダー出力になったことを完了画面へ出す'
+# 文字リンクのままだと見出しの中で埋もれ、同じ行の「目次へ戻る」とも見分けが付かない。
+Add-Result (($excelModuleText -match '\$videoCell\.Interior\.Color = \$colorAccent') -and
+    ($excelModuleText -match '\$videoCell\.Font\.Color = \$colorWhite')) 'Excelの動画リンクは押せると分かる見た目にする'
+# 「フォルダーごとコピー」とだけ書いても次の操作へつながらないため、案内文はボタン名で指す。
+Add-Result (($jsText -match 'フォルダーを開く』?」から') -or ($jsText -match '「フォルダーを開く」から')) '配布の案内から次に押すボタンへつなぐ'
+Add-Result ($jsText -match "folderButton\.textContent = outputFolderName \? 'フォルダーを開く'") 'フォルダー出力のときはボタン名も「フォルダーを開く」にする'
 Add-Result (($webModuleText -match 'button--primary" data-export-excel') -and ($webModuleText -match 'button--secondary" data-export-html')) 'ExcelとHTMLのボタンを並べる'
 Add-Result ($serverText -match '/api/steps/reorder') '手順並べ替えAPIを実装する'
 Add-Result ($serverText -match '/api/sheets/reorder') 'シート並べ替えAPIを実装する'

@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const appVersion = '0.27.1';
+  const appVersion = '0.27.2';
   // 番号注釈はSVG属性で指定するためCSS変数を参照できない。
   // 編集画面とExcel・Word出力（New-MbAnnotatedImage）で同じ見た目にするため、基準フォントを揃える。
   const ANNOTATION_NUMBER_FONT = '"BIZ UDPGothic", "BIZ UDPゴシック", "BIZ UDGothic", "BIZ UDゴシック", Meiryo, "Yu Gothic UI", "MS Pゴシック", sans-serif';
@@ -1593,9 +1593,13 @@
     const videoNote = dialog.querySelector('[data-export-video-note]');
     const outputFolderName = state === 'completed' ? String(status.outputFolderName || '') : '';
     videoNote.hidden = !outputFolderName;
+    // 「フォルダーごとコピー」と言うだけでは次に何を押せばよいか分からないため、ボタン名で指す。
     videoNote.textContent = outputFolderName
-      ? `動画つきのため、ブックと動画をフォルダーにまとめました。配るときは「${outputFolderName}」をフォルダーごとコピーしてください。Excelファイルだけコピーすると動画が開けません。`
+      ? '動画つきのため、ブックと動画を1つのフォルダーにまとめました。配るときは下の「フォルダーを開く」から、フォルダーごとコピーしてください（Excelファイルだけでは動画が開けません）。'
       : '';
+    // 出力がフォルダーのときは、開くのが親フォルダーではなくそのフォルダー自体なので名前を合わせる。
+    const folderButton = dialog.querySelector('[data-export-open="folder"]');
+    folderButton.textContent = outputFolderName ? 'フォルダーを開く' : '保存先を開く';
     const mappings = dialog.querySelector('[data-export-mappings]');
     const mappingItems = Array.isArray(status.sheetNameMappings) ? status.sheetNameMappings : [];
     mappings.hidden = state !== 'completed' || !mappingItems.length;
@@ -1936,7 +1940,7 @@
     const dialog = document.createElement('dialog');
     dialog.id = 'html-export-dialog';
     dialog.className = 'excel-export-dialog html-export-dialog';
-    dialog.innerHTML = '<header class="excel-export-dialog__header"><div><strong>HTMLで作成</strong><span>ブラウザーで開けるマニュアルをフォルダーごと作ります</span></div><button type="button" class="excel-export-dialog__close" data-html-export-close aria-label="閉じる">×</button></header><div class="excel-export-dialog__content"><div class="excel-export-dialog__state" role="status" aria-live="polite"><span class="excel-export-dialog__mark" data-html-export-mark aria-hidden="true"></span><div><strong data-html-export-message>作成しています</strong><span data-html-export-detail>画像に注釈を焼き込んでいます</span></div></div><p class="excel-export-dialog__path" data-html-export-path hidden></p><p class="excel-export-dialog__note" data-html-publish-note hidden></p><p class="excel-export-dialog__error" data-html-export-error hidden></p></div><footer class="excel-export-dialog__footer"><button type="button" class="button button--secondary" data-html-publish hidden>共有フォルダーへ反映</button><span class="excel-export-dialog__spacer"></span><button type="button" class="button button--ghost" data-html-export-open="folder" hidden>保存先を開く</button><button type="button" class="button button--primary" data-html-export-open="file" hidden>マニュアルを開く</button><button type="button" class="button button--ghost" data-html-export-close data-html-export-done hidden>閉じる</button></footer>';
+    dialog.innerHTML = '<header class="excel-export-dialog__header"><div><strong>HTMLで作成</strong><span>ブラウザーで開けるマニュアルをフォルダーごと作ります</span></div><button type="button" class="excel-export-dialog__close" data-html-export-close aria-label="閉じる">×</button></header><div class="excel-export-dialog__content"><div class="excel-export-dialog__state" role="status" aria-live="polite"><span class="excel-export-dialog__mark" data-html-export-mark aria-hidden="true"></span><div><strong data-html-export-message>作成しています</strong><span data-html-export-detail>画像に注釈を焼き込んでいます</span></div></div><p class="excel-export-dialog__path" data-html-export-path hidden></p><p class="excel-export-dialog__note" data-html-publish-note hidden></p><p class="excel-export-dialog__error" data-html-export-error hidden></p></div><footer class="excel-export-dialog__footer"><button type="button" class="button button--secondary" data-html-publish hidden>共有フォルダーへ反映</button><span class="excel-export-dialog__spacer"></span><button type="button" class="button button--ghost" data-html-export-open="folder" hidden>フォルダーを開く</button><button type="button" class="button button--primary" data-html-export-open="file" hidden>マニュアルを開く</button><button type="button" class="button button--ghost" data-html-export-close data-html-export-done hidden>閉じる</button></footer>';
     dialog.querySelectorAll('[data-html-export-close]').forEach((button) => button.addEventListener('click', () => dialog.close()));
     dialog.querySelectorAll('[data-html-export-open]').forEach((button) => {
       button.addEventListener('click', async () => {
@@ -2012,9 +2016,12 @@
     const publishButton = dialog.querySelector('[data-html-publish]');
     publishButton.hidden = !htmlExport.publishTarget;
     publishButton.disabled = false;
+    // 反映先を知らないうち（＝最初の1回）は人がコピーする。ここでも次にどれを押すかを示す。
     const publishNote = dialog.querySelector('[data-html-publish-note]');
-    publishNote.hidden = !htmlExport.publishTarget;
-    publishNote.textContent = htmlExport.publishTarget ? `反映先: ${htmlExport.publishTarget}` : '';
+    publishNote.hidden = state !== 'completed';
+    publishNote.textContent = htmlExport.publishTarget
+      ? `反映先: ${htmlExport.publishTarget}`
+      : '配るときは下の「フォルダーを開く」から、フォルダーごと共有フォルダーへコピーしてください。次からは、そのフォルダーの「編集する.cmd」で開けば1回で反映できます。';
     const error = dialog.querySelector('[data-html-export-error]');
     error.hidden = state !== 'failed';
     error.textContent = state === 'failed' ? '内容を確認して、もう一度実行してください。' : '';
