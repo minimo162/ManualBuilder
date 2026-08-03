@@ -10,6 +10,7 @@
 - Excel COMによる主出力: 単発、10回連続、キャンセル、異常分岐を実機確認済み
 - 既存の未保存Excelブックへ影響しないことを実機確認済み
 - Word COMによる副出力の安全性と基本レイアウトを確認済み
+- Phase 1基盤 v0.23.0: 録画（mp4・webm）から場面を選んで手順にする取り込みを追加。動画はブラウザーで再生するだけでサーバーへは送らず、選んだコマだけをJPEGで取り込むため、注釈・切り抜き・黒塗り・Excel/Word出力は従来どおり使える
 - Phase 1基盤 v0.22.1: 撮影のためにタブが裏へ回るとブラウザーのハートビートが途切れ、スクリーンショット監視が止まって撮影ぶんが取り込めなくなる不具合を修正。ハートビートを間引きの対象外であるWorkerタイマーから送るようにし、失効までの猶予を90秒へ延長。失効後も既定15分は新着を保留し、タブへ戻った時点でまとめて取り込む
 - Phase 1基盤 v0.22.0: 注釈が1件だけの手順で編集画面から注釈が消えて失われる不具合、Word出力後にWINWORDが残る不具合、応答の送信中にサーバーが停止する不具合を修正。番号注釈をシート内で連番にし、1〜99の任意の番号へ変更できるようにした。基準フォントをBIZ UDPゴシックへ統一
 - Phase 1基盤 v0.21.8: アプリとExcelの注釈寸法を統一し、Office出力中の不明瞭な斜め矢印を標準的な処理中リングへ変更
@@ -70,7 +71,7 @@ v0.14.1以前のアプリ配下に `data\projects\default` がある場合、v0.
 
 初回は `tests\phase1\run-tests.cmd` を実行し、PowerShell 5.1構文、プロジェクト保存、localhostサーバーを確認してください。詳しくは [docs/PHASE1-FOUNDATION.md](docs/PHASE1-FOUNDATION.md) を参照してください。
 
-Phase 1 v0.22.1の再確認手順は [docs/RETEST-PHASE1-v0.22.1.md](docs/RETEST-PHASE1-v0.22.1.md)、v0.22.0は [docs/RETEST-PHASE1-v0.22.0.md](docs/RETEST-PHASE1-v0.22.0.md) にまとめています。
+Phase 1 v0.23.0の再確認手順は [docs/RETEST-PHASE1-v0.23.0.md](docs/RETEST-PHASE1-v0.23.0.md)、v0.22.1は [docs/RETEST-PHASE1-v0.22.1.md](docs/RETEST-PHASE1-v0.22.1.md)、v0.22.0は [docs/RETEST-PHASE1-v0.22.0.md](docs/RETEST-PHASE1-v0.22.0.md) にまとめています。
 
 ## 製品方針
 

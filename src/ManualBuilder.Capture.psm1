@@ -81,7 +81,7 @@ function Add-MbImageAsset {
         [Parameter(Mandatory = $true)][object]$Project,
         [Parameter(Mandatory = $true)][string]$ProjectPath,
         [Parameter(Mandatory = $true)][byte[]]$Bytes,
-        [ValidateSet('watcher', 'paste', 'drop', 'file')][string]$Source = 'file'
+        [ValidateSet('watcher', 'paste', 'drop', 'file', 'video')][string]$Source = 'file'
     )
 
     if ($Bytes.Length -lt 1) { throw '画像データが空です。' }
@@ -135,7 +135,7 @@ function Add-MbImageStep {
         [Parameter(Mandatory = $true)][string]$ProjectPath,
         [Parameter(Mandatory = $true)][string]$SheetId,
         [Parameter(Mandatory = $true)][byte[]]$Bytes,
-        [ValidateSet('watcher', 'paste', 'drop', 'file')][string]$Source = 'file'
+        [ValidateSet('watcher', 'paste', 'drop', 'file', 'video')][string]$Source = 'file'
     )
 
     $targetSheet = @($Project.sheets | Where-Object { $_.id -eq $SheetId }) | Select-Object -First 1
