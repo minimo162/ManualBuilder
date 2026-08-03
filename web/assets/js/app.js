@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const appVersion = '0.23.0';
+  const appVersion = '0.24.0';
   // 番号注釈はSVG属性で指定するためCSS変数を参照できない。
   // 編集画面とExcel・Word出力（New-MbAnnotatedImage）で同じ見た目にするため、基準フォントを揃える。
   const ANNOTATION_NUMBER_FONT = '"BIZ UDPGothic", "BIZ UDPゴシック", "BIZ UDGothic", "BIZ UDゴシック", Meiryo, "Yu Gothic UI", "MS Pゴシック", sans-serif';
@@ -1787,6 +1787,137 @@
     catch (error) { updateWordExportDialog({ state: 'failed', message: error.message || 'Wordファイルを作成できませんでした', errorCode: error.code, percent: 0 }); }
   };
 
+  // PowerPointは動画をファイルの中へ取り込める唯一の出力先。進捗の見せ方はWord出力と同じ。
+  const powerPointExport = { dialog: null, pollTimer: 0, state: 'idle' };
+
+  const powerPointExportRequest = async (path, body = null) => {
+    const options = { headers: sessionHeaders() };
+    if (body !== null) {
+      options.method = 'POST';
+      options.headers['Content-Type'] = 'application/x-www-form-urlencoded;charset=UTF-8';
+      options.body = body;
+    }
+    const response = await fetch(path, options);
+    let result = null;
+    try { result = await response.json(); } catch { }
+    if (!response.ok) {
+      const error = new Error(result?.message || `HTTP ${response.status}`);
+      error.code = result?.errorCode || '';
+      throw error;
+    }
+    return result;
+  };
+
+  const ensurePowerPointExportDialog = () => {
+    if (powerPointExport.dialog) return powerPointExport.dialog;
+    const dialog = document.createElement('dialog');
+    dialog.id = 'powerpoint-export-dialog';
+    dialog.className = 'excel-export-dialog powerpoint-export-dialog';
+    dialog.innerHTML = '<header class="excel-export-dialog__header"><div><strong>PowerPointで作成</strong><span>手順ごとに1枚のスライドを作り、動画つきの手順は動画を埋め込みます</span></div><button type="button" class="excel-export-dialog__close" data-ppt-export-close aria-label="閉じる">×</button></header><div class="excel-export-dialog__content"><div class="excel-export-dialog__state" role="status" aria-live="polite"><span class="excel-export-dialog__mark" data-ppt-export-mark aria-hidden="true"></span><div><strong data-ppt-export-message>準備しています</strong><span data-ppt-export-detail>プロジェクトを保存しています</span></div></div><div class="excel-export-progress" role="progressbar" aria-label="PowerPoint作成の進捗" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span data-ppt-export-progress></span></div><p class="excel-export-dialog__path" data-ppt-export-path hidden></p><p class="excel-export-dialog__error" data-ppt-export-error hidden></p></div><footer class="excel-export-dialog__footer"><button type="button" class="button button--ghost" data-ppt-export-cancel>中止</button><span class="excel-export-dialog__spacer"></span><button type="button" class="button button--ghost" data-ppt-export-open="folder" hidden>保存先を開く</button><button type="button" class="button button--primary" data-ppt-export-open="file" hidden>PowerPointを開く</button><button type="button" class="button button--ghost" data-ppt-export-close data-ppt-export-done hidden>閉じる</button></footer>';
+    dialog.querySelectorAll('[data-ppt-export-close]').forEach((button) => button.addEventListener('click', () => dialog.close()));
+    dialog.querySelector('[data-ppt-export-cancel]').addEventListener('click', async () => {
+      dialog.querySelector('[data-ppt-export-cancel]').disabled = true;
+      try { updatePowerPointExportDialog(await powerPointExportRequest('/api/export/powerpoint/cancel', new URLSearchParams())); }
+      catch (error) { showToast(error.message || 'PowerPoint作成を中止できませんでした。'); }
+    });
+    dialog.querySelectorAll('[data-ppt-export-open]').forEach((button) => {
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        try { await powerPointExportRequest('/api/export/powerpoint/open', new URLSearchParams({ mode: button.dataset.pptExportOpen })); }
+        catch (error) { showToast(error.message || '出力ファイルを開けませんでした。'); }
+        finally { button.disabled = false; }
+      });
+    });
+    dialog.addEventListener('cancel', (event) => {
+      if (['queued', 'running', 'finalizing'].includes(powerPointExport.state)) event.preventDefault();
+    });
+    dialog.addEventListener('close', () => stopPowerPointExportPolling());
+    document.body.appendChild(dialog);
+    powerPointExport.dialog = dialog;
+    return dialog;
+  };
+
+  const setPowerPointExportButtonsBusy = (busy) => {
+    document.querySelectorAll('[data-export-powerpoint]').forEach((button) => {
+      button.disabled = busy;
+      button.setAttribute('aria-busy', String(busy));
+    });
+  };
+
+  const updatePowerPointExportDialog = (status = {}) => {
+    const dialog = ensurePowerPointExportDialog();
+    const state = status.state || 'failed';
+    const percent = Math.max(0, Math.min(100, Number(status.percent) || 0));
+    const active = ['queued', 'running', 'finalizing'].includes(state);
+    const safeStop = state === 'failed' && ['MB_POWERPOINT_RUNNING', 'MB_CONNECTED_TO_EXISTING_POWERPOINT'].includes(status.errorCode || '');
+    powerPointExport.state = state;
+    dialog.dataset.state = state;
+    dialog.querySelector('[data-ppt-export-message]').textContent = safeStop
+      ? 'PowerPointが開いているため、作成を開始しませんでした'
+      : (status.message || 'PowerPoint出力の状態を確認できません');
+    const detail = dialog.querySelector('[data-ppt-export-detail]');
+    if (active) {
+      detail.textContent = status.totalSteps > 0 ? `${status.currentStep || 0} / ${status.totalSteps} 手順 · ${percent}%` : `${percent}%`;
+    } else if (state === 'completed') {
+      const videoCount = Number(status.videoCount) || 0;
+      detail.textContent = `${status.slideCount || 0} スライド · 動画 ${videoCount} 本を埋め込みました`;
+    } else if (state === 'cancelled') {
+      detail.textContent = 'プロジェクトの編集内容はそのまま残っています';
+    } else if (safeStop) {
+      detail.textContent = '開いているPowerPointとManualBuilderの入力内容には影響していません';
+    } else {
+      detail.textContent = 'ManualBuilderの入力内容は変更されていません';
+    }
+    const progress = dialog.querySelector('.excel-export-progress');
+    progress.setAttribute('aria-valuenow', String(percent));
+    dialog.querySelector('[data-ppt-export-progress]').style.width = `${percent}%`;
+    const path = dialog.querySelector('[data-ppt-export-path]');
+    path.hidden = state !== 'completed';
+    path.textContent = status.outputName || '';
+    const error = dialog.querySelector('[data-ppt-export-error]');
+    error.hidden = state !== 'failed';
+    error.textContent = state === 'failed'
+      ? (safeStop ? 'PowerPointを閉じて再実行してください。' : '内容を確認して、もう一度実行してください。')
+      : '';
+    dialog.querySelector('.excel-export-dialog__close').disabled = active;
+    dialog.querySelector('[data-ppt-export-cancel]').hidden = state === 'finalizing' || !active;
+    dialog.querySelector('[data-ppt-export-cancel]').disabled = false;
+    dialog.querySelectorAll('[data-ppt-export-open]').forEach((button) => { button.hidden = state !== 'completed'; });
+    dialog.querySelector('[data-ppt-export-done]').hidden = active;
+    dialog.querySelector('[data-ppt-export-mark]').textContent = state === 'completed' ? '✓' : state === 'failed' ? '!' : state === 'cancelled' ? '×' : '';
+    setPowerPointExportButtonsBusy(active);
+    if (active) startPowerPointExportPolling(); else stopPowerPointExportPolling();
+  };
+
+  const pollPowerPointExport = async () => {
+    try { updatePowerPointExportDialog(await powerPointExportRequest('/api/export/powerpoint/status')); }
+    catch (error) {
+      stopPowerPointExportPolling();
+      setPowerPointExportButtonsBusy(false);
+      showToast(error.message || 'PowerPoint作成の進捗を確認できませんでした。');
+    }
+  };
+
+  const startPowerPointExportPolling = () => {
+    if (!powerPointExport.pollTimer) powerPointExport.pollTimer = window.setInterval(pollPowerPointExport, 700);
+  };
+
+  const stopPowerPointExportPolling = () => {
+    if (!powerPointExport.pollTimer) return;
+    window.clearInterval(powerPointExport.pollTimer);
+    powerPointExport.pollTimer = 0;
+  };
+
+  const startPowerPointExport = async () => {
+    const dialog = ensurePowerPointExportDialog();
+    updatePowerPointExportDialog({ state: 'queued', message: '編集内容を保存しています', percent: 0, currentStep: 0, totalSteps: 0 });
+    if (!dialog.open) dialog.showModal();
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    await new Promise((resolve) => window.setTimeout(resolve, 500));
+    try { updatePowerPointExportDialog(await powerPointExportRequest('/api/export/powerpoint/start', new URLSearchParams())); }
+    catch (error) { updatePowerPointExportDialog({ state: 'failed', message: error.message || 'PowerPointファイルを作成できませんでした', errorCode: error.code, percent: 0 }); }
+  };
+
   document.body.addEventListener('htmx:configRequest', (event) => {
     event.detail.headers['X-Tab-Id'] = tabId;
   });
@@ -1822,6 +1953,13 @@
     const projectImportButton = event.target.closest('[data-import-project-package]');
     if (projectImportButton) {
       document.getElementById('project-package-input')?.click();
+      return;
+    }
+    const powerPointExportButton = event.target.closest('[data-export-powerpoint]');
+    if (powerPointExportButton) {
+      const menu = powerPointExportButton.closest('details');
+      if (menu) menu.open = false;
+      startPowerPointExport();
       return;
     }
     const wordExportButton = event.target.closest('[data-export-word]');
