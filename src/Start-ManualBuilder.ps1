@@ -112,18 +112,23 @@ function Show-MbExistingInstanceNotice {
     if (-not (Test-Path -LiteralPath $runtimePath)) { return $false }
     try {
         $runtime = [IO.File]::ReadAllText($runtimePath, [Text.Encoding]::UTF8) | ConvertFrom-Json
-        if ($runtime.url -and (Get-Process -Id ([int]$runtime.pid) -ErrorAction SilentlyContinue)) {
-            $message = "ManualBuilderはすでに起動しています。`r`n既存のブラウザータブへ戻ってください。"
-            try {
-                Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
-                [void][System.Windows.Forms.MessageBox]::Show(
-                    $message,
-                    'ManualBuilder',
-                    [System.Windows.Forms.MessageBoxButtons]::OK,
-                    [System.Windows.Forms.MessageBoxIcon]::Information
-                )
-            } catch {
-                Write-Host $message -ForegroundColor Yellow
+        $existingUrl = [string]$runtime.url
+        if (($existingUrl -match '^http://localhost:\d+/$') -and
+            (Get-Process -Id ([int]$runtime.pid) -ErrorAction SilentlyContinue)) {
+            Start-Process $existingUrl
+            if ($ImportFrom) {
+                $message = "起動中のManualBuilderをブラウザーで開きました。`r`nManualBuilderを終了してから、もう一度「編集する」を実行してください。"
+                try {
+                    Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+                    [void][System.Windows.Forms.MessageBox]::Show(
+                        $message,
+                        'ManualBuilder',
+                        [System.Windows.Forms.MessageBoxButtons]::OK,
+                        [System.Windows.Forms.MessageBoxIcon]::Information
+                    )
+                } catch {
+                    Write-Host $message -ForegroundColor Yellow
+                }
             }
             return $true
         }
