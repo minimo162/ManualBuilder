@@ -393,6 +393,7 @@ function Read-MbExcelExportStatus {
         return [pscustomobject]@{
             jobId = ''; state = 'idle'; phase = 'idle'; message = 'Excel出力を開始できます'; percent = 0
             currentStep = 0; totalSteps = 0; outputPath = ''; outputName = ''
+            outputFolder = ''; outputFolderName = ''; videoCount = 0
             outputDirectory = (Get-MbExcelOutputDirectory); sheetNameMappings = @()
             startedAt = ''; updatedAt = ''; completedAt = ''; errorCode = ''
         }
@@ -413,6 +414,7 @@ function Read-MbExcelExportStatus {
             jobId = [string]$script:ExcelExportJob.JobId; state = 'queued'; phase = 'queued'
             message = 'Excel出力を開始しています'; percent = 0; currentStep = 0
             totalSteps = [int]$script:ExcelExportJob.TotalSteps; outputPath = ''; outputName = ''
+            outputFolder = ''; outputFolderName = ''; videoCount = 0
             outputDirectory = [string]$script:ExcelExportJob.OutputDirectory
             sheetNameMappings = @()
             ownedExcelPid = 0; ownedExcelStartTimeUtc = ''; ownershipMode = ''; ownershipProven = $false
@@ -495,9 +497,34 @@ function Start-MbExcelExportJob {
         [IO.File]::Copy($sourcePath, (Join-Path $snapshotImageDirectory $fileName), $true)
     }
 
+    # 動画つきの手順があるとExcelはフォルダー出力になり、別プロセスが動画を読む。
+    # 出力中に元が差し替わっても影響しないよう、画像と同じくスナップショットへ複製する。
+    $referencedVideoIds = New-Object 'System.Collections.Generic.HashSet[string]'
+    foreach ($sheet in @($project.sheets)) {
+        foreach ($step in @($sheet.steps)) {
+            if ($step.PSObject.Properties.Name -contains 'videoId' -and -not [string]::IsNullOrWhiteSpace([string]$step.videoId)) {
+                [void]$referencedVideoIds.Add([string]$step.videoId)
+            }
+        }
+    }
+    if ($referencedVideoIds.Count -gt 0) {
+        $sourceVideoDirectory = Join-Path (Split-Path -Parent $ProjectPath) 'videos'
+        $snapshotVideoDirectory = Join-Path $jobDirectory 'videos'
+        [void](New-Item -ItemType Directory -Path $snapshotVideoDirectory -Force)
+        foreach ($video in @($project.videos)) {
+            if (-not $referencedVideoIds.Contains([string]$video.id)) { continue }
+            $fileName = [string]$video.fileName
+            if ($fileName -notmatch '^video-[a-f0-9]{32}\.(mp4|webm)$') { throw "動画ファイル名が不正です: $fileName" }
+            $sourcePath = Join-Path $sourceVideoDirectory $fileName
+            if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) { throw "動画ファイルが見つかりません: $fileName" }
+            [IO.File]::Copy($sourcePath, (Join-Path $snapshotVideoDirectory $fileName), $true)
+        }
+    }
+
     $queuedStatus = [pscustomobject]@{
         jobId = $jobId; state = 'queued'; phase = 'queued'; message = 'Excel出力を開始しています'; percent = 0
         currentStep = 0; totalSteps = $totalSteps; outputPath = ''; outputName = ''; outputDirectory = $outputDirectory
+        outputFolder = ''; outputFolderName = ''; videoCount = 0
         sheetNameMappings = @()
         ownedExcelPid = 0; ownedExcelStartTimeUtc = ''; ownershipMode = ''; ownershipProven = $false
         startedAt = [DateTime]::UtcNow.ToString('o'); updatedAt = [DateTime]::UtcNow.ToString('o'); completedAt = ''; errorCode = ''
@@ -547,8 +574,21 @@ function Open-MbExcelExportResult {
         throw '出力ファイルの場所を確認できません。'
     }
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw '出力したExcelファイルが見つかりません。' }
-    if ($Mode -eq 'file') { Start-Process -FilePath $path }
-    else { Start-Process -FilePath $root }
+    if ($Mode -eq 'file') {
+        Start-Process -FilePath $path
+        return $status
+    }
+    # 動画つきはフォルダー出力になる。その場合は保存先の親ではなく、そのフォルダー自体を開く。
+    $folderPath = $root
+    $outputFolder = if ($status.PSObject.Properties.Name -contains 'outputFolder') { [string]$status.outputFolder } else { '' }
+    if (-not [string]::IsNullOrWhiteSpace($outputFolder)) {
+        $candidate = [IO.Path]::GetFullPath($outputFolder)
+        if ($candidate.StartsWith($root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -and
+            (Test-Path -LiteralPath $candidate -PathType Container)) {
+            $folderPath = $candidate
+        }
+    }
+    Start-Process -FilePath $folderPath
     return $status
 }
 
@@ -1047,17 +1087,6 @@ function Get-MbCurrentPublishTarget {
     try { return [string](Get-MbPublishTarget -DataRoot $DataRoot -ProjectKey $script:ActiveProjectKey) } catch { return '' }
 }
 
-function Get-MbVideoStepCount {
-    param([Parameter(Mandatory = $true)][object]$Project)
-    $count = 0
-    foreach ($sheet in @($Project.sheets)) {
-        foreach ($step in @($sheet.steps)) {
-            if ($step.PSObject.Properties.Name -contains 'videoId' -and -not [string]::IsNullOrWhiteSpace([string]$step.videoId)) { $count++ }
-        }
-    }
-    return $count
-}
-
 function Test-MbOfficeExportActive {
     $excel = Read-MbExcelExportStatus
     $word = Read-MbWordExportStatus
@@ -1172,12 +1201,6 @@ function Invoke-MbRoute {
             }
             '/api/export/excel/status' {
                 $status = Read-MbExcelExportStatus
-                # 動画つきの手順があるかを添える。完了画面で「動画はExcelに入りません」と伝えるために使う。
-                $videoStepCount = 0
-                if ([string]$status.state -eq 'completed') {
-                    try { $videoStepCount = Get-MbVideoStepCount -Project (Get-MbProject -Path $ProjectPath) } catch { $videoStepCount = 0 }
-                }
-                $status | Add-Member -NotePropertyName 'videoStepCount' -NotePropertyValue $videoStepCount -Force
                 Write-MbResponse $Context ($status | ConvertTo-Json -Depth 8 -Compress) 200 'application/json; charset=utf-8'
                 return
             }

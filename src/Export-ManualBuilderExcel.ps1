@@ -32,6 +32,9 @@ try {
         totalSteps = 0
         outputPath = ''
         outputName = ''
+        outputFolder = ''
+        outputFolderName = ''
+        videoCount = 0
         outputDirectory = $OutputDirectory
         sheetNameMappings = @()
         ownedExcelPid = 0

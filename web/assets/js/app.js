@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const appVersion = '0.26.0';
+  const appVersion = '0.27.0';
   // 番号注釈はSVG属性で指定するためCSS変数を参照できない。
   // 編集画面とExcel・Word出力（New-MbAnnotatedImage）で同じ見た目にするため、基準フォントを揃える。
   const ANNOTATION_NUMBER_FONT = '"BIZ UDPGothic", "BIZ UDPゴシック", "BIZ UDGothic", "BIZ UDゴシック", Meiryo, "Yu Gothic UI", "MS Pゴシック", sans-serif';
@@ -1520,7 +1520,7 @@
     const dialog = document.createElement('dialog');
     dialog.id = 'excel-export-dialog';
     dialog.className = 'excel-export-dialog';
-    dialog.innerHTML = '<header class="excel-export-dialog__header"><div><strong>Excelで作成</strong><span>現在の内容を専用プロセスで出力します</span></div><button type="button" class="excel-export-dialog__close" data-export-close aria-label="閉じる">×</button></header><div class="excel-export-dialog__content"><div class="excel-export-dialog__state" role="status" aria-live="polite"><span class="excel-export-dialog__mark" data-export-mark aria-hidden="true"></span><div><strong data-export-message>準備しています</strong><span data-export-detail>プロジェクトを保存しています</span></div></div><div class="excel-export-progress" role="progressbar" aria-label="Excel作成の進捗" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span data-export-progress></span></div><p class="excel-export-dialog__path" data-export-path hidden></p><p class="excel-export-dialog__note" data-export-video-note hidden>動画はExcelには入りません。動画も一緒に配るときは「HTMLで作成」か「PowerPointで作成」を使ってください。</p><details class="excel-export-dialog__mappings" data-export-mappings hidden><summary>出力シート名を確認</summary><ul></ul></details><p class="excel-export-dialog__error" data-export-error hidden></p></div><footer class="excel-export-dialog__footer"><button type="button" class="button button--ghost" data-export-cancel>中止</button><span class="excel-export-dialog__spacer"></span><button type="button" class="button button--ghost" data-export-open="folder" hidden>保存先を開く</button><button type="button" class="button button--primary" data-export-open="file" hidden>Excelを開く</button><button type="button" class="button button--ghost" data-export-close data-export-done hidden>閉じる</button></footer>';
+    dialog.innerHTML = '<header class="excel-export-dialog__header"><div><strong>Excelで作成</strong><span>現在の内容を専用プロセスで出力します</span></div><button type="button" class="excel-export-dialog__close" data-export-close aria-label="閉じる">×</button></header><div class="excel-export-dialog__content"><div class="excel-export-dialog__state" role="status" aria-live="polite"><span class="excel-export-dialog__mark" data-export-mark aria-hidden="true"></span><div><strong data-export-message>準備しています</strong><span data-export-detail>プロジェクトを保存しています</span></div></div><div class="excel-export-progress" role="progressbar" aria-label="Excel作成の進捗" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span data-export-progress></span></div><p class="excel-export-dialog__path" data-export-path hidden></p><p class="excel-export-dialog__note" data-export-video-note hidden></p><details class="excel-export-dialog__mappings" data-export-mappings hidden><summary>出力シート名を確認</summary><ul></ul></details><p class="excel-export-dialog__error" data-export-error hidden></p></div><footer class="excel-export-dialog__footer"><button type="button" class="button button--ghost" data-export-cancel>中止</button><span class="excel-export-dialog__spacer"></span><button type="button" class="button button--ghost" data-export-open="folder" hidden>保存先を開く</button><button type="button" class="button button--primary" data-export-open="file" hidden>Excelを開く</button><button type="button" class="button button--ghost" data-export-close data-export-done hidden>閉じる</button></footer>';
     dialog.querySelectorAll('[data-export-close]').forEach((button) => {
       button.addEventListener('click', () => dialog.close());
     });
@@ -1586,10 +1586,16 @@
     dialog.querySelector('[data-export-progress]').style.width = `${percent}%`;
     const path = dialog.querySelector('[data-export-path]');
     path.hidden = state !== 'completed';
-    path.textContent = status.outputName || '';
-    // 動画つきの手順があるときだけ、Excelには動画が入らないことを一言添える。
+    path.textContent = status.outputFolderName
+      ? `${status.outputFolderName}\\${status.outputName || ''}`
+      : (status.outputName || '');
+    // 動画つきの手順があるとフォルダー出力になる。ブックだけコピーするとリンクが切れるので必ず伝える。
     const videoNote = dialog.querySelector('[data-export-video-note]');
-    videoNote.hidden = state !== 'completed' || !(Number(status.videoStepCount) > 0);
+    const outputFolderName = state === 'completed' ? String(status.outputFolderName || '') : '';
+    videoNote.hidden = !outputFolderName;
+    videoNote.textContent = outputFolderName
+      ? `動画つきのため、ブックと動画をフォルダーにまとめました。配るときは「${outputFolderName}」をフォルダーごとコピーしてください。Excelファイルだけコピーすると動画が開けません。`
+      : '';
     const mappings = dialog.querySelector('[data-export-mappings]');
     const mappingItems = Array.isArray(status.sheetNameMappings) ? status.sheetNameMappings : [];
     mappings.hidden = state !== 'completed' || !mappingItems.length;

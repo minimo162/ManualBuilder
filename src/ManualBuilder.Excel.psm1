@@ -4,6 +4,9 @@ Set-StrictMode -Version 2.0
 
 Add-Type -AssemblyName System.Drawing
 
+# 動画つきの手順があるときだけ、ブックと動画をこのフォルダー名でまとめて出力する。
+$script:MbExcelVideoFolderName = '動画'
+
 $script:MbExcelPInvokeAvailable = $false
 try {
     Add-Type -Namespace ManualBuilderExcel -Name NativeMethods -MemberDefinition @'
@@ -131,6 +134,73 @@ function Get-MbSafeExcelFileName {
         $suffix++
     }
     return $candidate + $Extension
+}
+
+function Get-MbSafeExcelFolderName {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Directory
+    )
+    $safe = $Name -replace '[\\/:*?"<>|]', '_'
+    $safe = ($safe.ToCharArray() | ForEach-Object { if ([int]$_ -lt 32) { '_' } else { $_ } }) -join ''
+    $safe = $safe.TrimEnd(' ', '.')
+    if ([string]::IsNullOrWhiteSpace($safe)) { $safe = 'manual' }
+    if ($safe -match '^(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)') { $safe = '_' + $safe }
+    if ($safe.Length -gt 100) { $safe = $safe.Substring(0, 100) }
+    while ((Join-Path $Directory $safe).Length -gt 200 -and $safe.Length -gt 8) {
+        $safe = $safe.Substring(0, $safe.Length - 8)
+    }
+    $candidate = $safe
+    $suffix = 2
+    while (Test-Path -LiteralPath (Join-Path $Directory $candidate)) {
+        $candidate = "${safe}_$suffix"
+        $suffix++
+    }
+    return $candidate
+}
+
+function Get-MbExcelVideoPlan {
+    param(
+        [Parameter(Mandatory = $true)][object]$Project,
+        [Parameter(Mandatory = $true)][string]$ProjectPath
+    )
+
+    # Excelは動画を埋め込めないが、同じフォルダーへ動画を置けば =HYPERLINK() の相対パスから再生できる。
+    # 相対パスはクリック時にブックの場所を基準に解決されるため、フォルダーごと移動しても効く。
+    # （Hyperlinks.Addは保存時に絶対パスへ変換されるため使わない。）
+    $stepLinks = @{}
+    $files = New-Object System.Collections.ArrayList
+    $namesByVideoId = @{}
+    if ($Project.PSObject.Properties.Name -notcontains 'videos') {
+        return [pscustomobject]@{ StepLinks = $stepLinks; Files = @(); Count = 0; FolderName = $script:MbExcelVideoFolderName }
+    }
+    $videoRoot = Join-Path (Split-Path -Parent $ProjectPath) 'videos'
+    foreach ($sheet in @($Project.sheets)) {
+        foreach ($step in @($sheet.steps)) {
+            if ($step.PSObject.Properties.Name -notcontains 'videoId') { continue }
+            $videoId = [string]$step.videoId
+            if ([string]::IsNullOrWhiteSpace($videoId)) { continue }
+            if (-not $namesByVideoId.ContainsKey($videoId)) {
+                $video = @($Project.videos | Where-Object { $_.id -eq $videoId }) | Select-Object -First 1
+                if (-not $video -or [string]$video.fileName -notmatch '^video-[a-f0-9]{32}\.(mp4|webm)$') {
+                    throw "手順が参照する動画が見つかりません: $($step.id)"
+                }
+                $sourcePath = Join-Path $videoRoot ([string]$video.fileName)
+                if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) { throw "動画ファイルが見つかりません: $($video.fileName)" }
+                # 同じ動画を複数の手順へ付けても、ファイルは1本だけ置く。
+                $fileName = ('動画{0:d3}' -f ($namesByVideoId.Count + 1)) + [IO.Path]::GetExtension([string]$video.fileName).ToLowerInvariant()
+                $namesByVideoId[$videoId] = $fileName
+                [void]$files.Add([pscustomobject]@{ SourcePath = $sourcePath; FileName = $fileName })
+            }
+            $stepLinks[[string]$step.id] = $script:MbExcelVideoFolderName + '\' + $namesByVideoId[$videoId]
+        }
+    }
+    return [pscustomobject]@{
+        StepLinks = $stepLinks
+        Files = @($files)
+        Count = @($files).Count
+        FolderName = $script:MbExcelVideoFolderName
+    }
 }
 
 function Get-MbSafeExcelWorksheetName {
@@ -521,11 +591,14 @@ function Add-MbExcelStepCard {
         [AllowEmptyString()][string]$Description,
         [AllowEmptyString()][string]$Note,
         [AllowEmptyString()][string]$ImagePath,
-        [Parameter(Mandatory = $true)][string]$FontName
+        [Parameter(Mandatory = $true)][string]$FontName,
+        # 動画つきの手順だけ、見出しの右へ「▶ 動画を見る」の相対リンクを置く。
+        [AllowEmptyString()][string]$VideoLinkPath = ''
     )
 
     $xlCenter = -4108
     $xlLeft = -4131
+    $xlRight = -4152
     $xlTop = -4160
     $xlMoveAndSize = 1
     $msoTrue = -1
@@ -586,9 +659,11 @@ function Add-MbExcelStepCard {
         } finally { Release-MbExcelComObject $rowRange }
     }
 
+    $hasVideoLink = -not [string]::IsNullOrWhiteSpace($VideoLinkPath)
     $headerBand = $null
     $numberCell = $null
     $titleArea = $null
+    $videoCell = $null
     $imageArea = $null
     $descriptionLabel = $null
     $descriptionArea = $null
@@ -601,7 +676,8 @@ function Add-MbExcelStepCard {
     try {
         $headerBand = $Worksheet.Range("A${headerRow}:L${headerRow}")
         $numberCell = $Worksheet.Range("A${headerRow}:A${headerRow}")
-        $titleArea = $Worksheet.Range("B${headerRow}:L${headerRow}")
+        $titleArea = if ($hasVideoLink) { $Worksheet.Range("B${headerRow}:I${headerRow}") } else { $Worksheet.Range("B${headerRow}:L${headerRow}") }
+        if ($hasVideoLink) { $videoCell = $Worksheet.Range("J${headerRow}:L${headerRow}") }
         if ($hasImage) { $imageArea = $Worksheet.Range("A${contentStart}:G${contentEnd}") }
         $descriptionLabel = $Worksheet.Range("${textColumn}${descriptionLabelRow}:L${descriptionLabelRow}")
         $descriptionArea = $Worksheet.Range("${textColumn}${descriptionStart}:L${descriptionEnd}")
@@ -629,6 +705,23 @@ function Add-MbExcelStepCard {
         $titleArea.Font.Color = $colorText
         $titleArea.HorizontalAlignment = $xlLeft
         $titleArea.VerticalAlignment = $xlCenter
+
+        if ($hasVideoLink) {
+            $videoCell.Merge()
+            # ここは数式のまま保存する。表示形式を文字列にすると数式が文字として残り、リンクにならない。
+            # =HYPERLINK() の相対パスはクリック時にブックの場所を基準に解決されるため、
+            # フォルダーごと共有フォルダーへコピーしても、そのまま再生できる。
+            $videoCell.Formula = '=HYPERLINK("' + ($VideoLinkPath -replace '"', '""') + '","▶ 動画を見る")'
+            $videoCell.Font.Name = $FontName
+            $videoCell.Font.Size = 11
+            $videoCell.Font.Bold = $true
+            $videoCell.Font.Color = $colorAccent
+            $videoCell.Font.Underline = 2
+            $videoCell.Interior.Color = $colorWhite
+            $videoCell.HorizontalAlignment = $xlRight
+            $videoCell.VerticalAlignment = $xlCenter
+            $videoCell.IndentLevel = 1
+        }
 
         if ($hasImage) {
             $imageArea.Merge()
@@ -733,6 +826,7 @@ function Add-MbExcelStepCard {
         Release-MbExcelComObject $descriptionArea
         Release-MbExcelComObject $descriptionLabel
         Release-MbExcelComObject $imageArea
+        Release-MbExcelComObject $videoCell
         Release-MbExcelComObject $titleArea
         Release-MbExcelComObject $numberCell
         Release-MbExcelComObject $headerBand
@@ -763,6 +857,9 @@ function Invoke-MbExcelExport {
         totalSteps = $totalSteps
         outputPath = ''
         outputName = ''
+        outputFolder = ''
+        outputFolderName = ''
+        videoCount = 0
         outputDirectory = $OutputDirectory
         sheetNameMappings = @()
         ownedExcelPid = 0
@@ -788,6 +885,10 @@ function Invoke-MbExcelExport {
     $ownPid = 0
     $temporaryPath = ''
     $outputPath = ''
+    $stagingDirectory = ''
+    $videoPlan = Get-MbExcelVideoPlan -Project $Project -ProjectPath $ProjectPath
+    # 動画つきの手順があるときだけフォルダーで出す。無い場合は今までどおり単体のxlsxのまま。
+    $usesFolderOutput = [int]$videoPlan.Count -gt 0
     $renderDirectory = Join-Path (Split-Path -Parent $StatusPath) 'rendered-images'
     # 注釈を合成した派生画像は出力専用のため、成功・失敗・中止のいずれでもfinallyで削除する。
     $generatedImages = New-Object System.Collections.ArrayList
@@ -1048,9 +1149,10 @@ function Invoke-MbExcelExport {
                         $expectedShapes++
                     }
 
+                    $videoLinkPath = if ($videoPlan.StepLinks.ContainsKey([string]$step.id)) { [string]$videoPlan.StepLinks[[string]$step.id] } else { '' }
                     $startRow = Add-MbExcelStepCard -Worksheet $worksheet -StartRow $startRow -StepNumber ($stepIndex + 1) `
                         -Title ([string]$step.title) -Description ([string]$step.description) -Note ([string]$step.note) `
-                        -ImagePath $imagePath -FontName $bodyFont
+                        -ImagePath $imagePath -FontName $bodyFont -VideoLinkPath $videoLinkPath
                 }
 
                 if ($steps.Count -eq 0) {
@@ -1182,10 +1284,38 @@ function Invoke-MbExcelExport {
         $workbookClosed = $true
         Test-MbExcelCancellation -CancelPath $CancelPath
 
-        $outputName = Get-MbSafeExcelFileName -Name (([string]$Project.title) + '_' + (Get-Date -Format 'yyyyMMdd_HHmmss')) -Directory $OutputDirectory
-        $outputPath = Join-Path $OutputDirectory $outputName
-        [IO.File]::Move($temporaryPath, $outputPath)
-        $temporaryPath = ''
+        $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+        if ($usesFolderOutput) {
+            # 動画つき。ブックと動画を1つのフォルダーへまとめ、相対リンクで再生できるようにする。
+            # 途中の状態を見せないよう、別名で組み立ててから最後にフォルダー名を差し替える。
+            $outputFolderName = Get-MbSafeExcelFolderName -Name (([string]$Project.title) + '_' + $stamp) -Directory $OutputDirectory
+            $outputFolderPath = Join-Path $OutputDirectory $outputFolderName
+            $stagingDirectory = Join-Path $OutputDirectory ('.mb-excel-' + $JobId)
+            if (Test-Path -LiteralPath $stagingDirectory) { Remove-Item -LiteralPath $stagingDirectory -Recurse -Force }
+            [void](New-Item -ItemType Directory -Path $stagingDirectory -Force)
+            $videoDirectory = Join-Path $stagingDirectory ([string]$videoPlan.FolderName)
+            [void](New-Item -ItemType Directory -Path $videoDirectory -Force)
+            foreach ($videoFile in @($videoPlan.Files)) {
+                [IO.File]::Copy([string]$videoFile.SourcePath, (Join-Path $videoDirectory ([string]$videoFile.FileName)), $true)
+            }
+            $copiedVideoCount = @(Get-ChildItem -LiteralPath $videoDirectory -File).Count
+            if ($copiedVideoCount -ne [int]$videoPlan.Count) { throw '出力した動画数の自己検査に失敗しました。' }
+
+            $outputName = Get-MbSafeExcelFileName -Name ([string]$Project.title) -Directory $stagingDirectory
+            [IO.File]::Move($temporaryPath, (Join-Path $stagingDirectory $outputName))
+            $temporaryPath = ''
+            [IO.Directory]::Move($stagingDirectory, $outputFolderPath)
+            $stagingDirectory = ''
+            $outputPath = Join-Path $outputFolderPath $outputName
+            $status.outputFolder = $outputFolderPath
+            $status.outputFolderName = $outputFolderName
+            $status.videoCount = [int]$videoPlan.Count
+        } else {
+            $outputName = Get-MbSafeExcelFileName -Name (([string]$Project.title) + '_' + $stamp) -Directory $OutputDirectory
+            $outputPath = Join-Path $OutputDirectory $outputName
+            [IO.File]::Move($temporaryPath, $outputPath)
+            $temporaryPath = ''
+        }
         $status.state = 'finalizing'
         $status.phase = 'finalizing'
         $status.message = 'Excelを安全に終了しています'
@@ -1248,6 +1378,10 @@ function Invoke-MbExcelExport {
                 Stop-Process -Id $ownPid -Force -ErrorAction SilentlyContinue
             }
         }
+        # 失敗・中止のときに、組み立て途中のフォルダーを保存先へ残さない。
+        if ($stagingDirectory -and (Test-Path -LiteralPath $stagingDirectory)) {
+            Remove-Item -LiteralPath $stagingDirectory -Recurse -Force -ErrorAction SilentlyContinue
+        }
         if ($temporaryPath -and (Test-Path -LiteralPath $temporaryPath)) {
             Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
         }
@@ -1271,6 +1405,8 @@ function Invoke-MbExcelExport {
 
 Export-ModuleMember -Function @(
     'Get-MbSafeExcelFileName',
+    'Get-MbSafeExcelFolderName',
+    'Get-MbExcelVideoPlan',
     'Get-MbSafeExcelWorksheetName',
     'Test-MbExcelWorksheetName',
     'Get-MbExcelStepCardLayout',
