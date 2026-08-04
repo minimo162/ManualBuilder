@@ -89,8 +89,12 @@ $imagelessStep = New-MbTestStep -AnnotationCount 0
 $imagelessStep.imageId = ''
 
 $testSheet = New-MbTestSheet -Steps @($completeStep, $incompleteStep, $imagelessStep)
+$testProject = [pscustomobject]@{ selectedSheetId = $testSheet.id; sheets = @($testSheet) }
 # Render-MbStepNavigation は公開していない補助関数のため、モジュールの内側で呼ぶ。
-$navHtml = & (Get-Module ManualBuilder.Web) { param($Sheet) Render-MbStepNavigation -Sheet $Sheet } $testSheet
+$navHtml = & (Get-Module ManualBuilder.Web) {
+    param($Sheet, $Project)
+    Render-MbStepNavigation -Sheet $Sheet -Project $Project
+} $testSheet $testProject
 # aria-label は role の無い span では支援技術へ届かない。目印には必ず role="img" を付ける（UX-10）。
 Assert-Mb ($navHtml -notmatch '<span class="step-nav__status"(?![^>]*role=")') '未完了の目印にrole="img"を付ける'
 Assert-Mb ($navHtml -match 'aria-label="説明未入力"') '説明未入力の手順に読み上げ可能な目印を出す'

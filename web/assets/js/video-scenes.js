@@ -161,6 +161,18 @@
     return clusterToRect(cluster, cols, rows);
   };
 
+  // 粗い走査の時刻列。間隔の端数がある動画でも、必ず実際の終端を含める。
+  const planSampleTimes = (durationMs, sampleIntervalMs = DEFAULTS.sampleIntervalMs) => {
+    const endMs = Math.max(0, Math.floor(Number(durationMs) || 0));
+    const intervalMs = Number(sampleIntervalMs) > 0
+      ? Math.max(1, Math.floor(Number(sampleIntervalMs)))
+      : DEFAULTS.sampleIntervalMs;
+    const times = [0];
+    for (let timeMs = intervalMs; timeMs < endMs; timeMs += intervalMs) times.push(timeMs);
+    if (endMs > 0) times.push(endMs);
+    return times;
+  };
+
   // 走査結果（[{timeMs, signature}]）から静止区間を求める。
   const detectStillRuns = (samples, options) => {
     const settings = { ...DEFAULTS, ...(options || {}) };
@@ -168,8 +180,10 @@
     if (!samples || samples.length === 0) return runs;
     let startIndex = 0;
     for (let i = 1; i <= samples.length; i += 1) {
-      const moved = i < samples.length &&
-        signatureDistance(samples[i - 1].signature, samples[i].signature) > settings.staticThreshold;
+      const moved = i < samples.length && (
+        signatureDistance(samples[i - 1].signature, samples[i].signature) > settings.staticThreshold ||
+        signatureDistance(samples[startIndex].signature, samples[i].signature) > settings.staticThreshold
+      );
       if (moved || i === samples.length) {
         runs.push({ startIndex, endIndex: i - 1 });
         startIndex = i;
@@ -313,13 +327,14 @@
 
     // 粗い走査。
     const samples = [];
-    const totalSamples = Math.max(2, Math.floor(durationMs / settings.sampleIntervalMs) + 1);
+    const sampleTimes = planSampleTimes(durationMs, settings.sampleIntervalMs);
+    const totalSamples = sampleTimes.length;
     for (let i = 0; i < totalSamples; i += 1) {
       if (shouldCancel()) return { cancelled: true, scenes: [] };
-      const timeMs = Math.min(durationMs, i * settings.sampleIntervalMs);
+      const timeMs = sampleTimes[i];
       await seekTo(player, timeMs / 1000);
       samples.push({ timeMs, signature: readSignature(player) });
-      onProgress({ phase: 'scan', percent: Math.round((i / totalSamples) * 60), message: '場面の切れ目を探しています' });
+      onProgress({ phase: 'scan', percent: Math.round(((i + 1) / totalSamples) * 60), message: '場面の切れ目を探しています' });
     }
 
     const runs = detectStillRuns(samples, settings);
@@ -378,6 +393,7 @@
     largestCluster,
     clusterToRect,
     locateChangeRect,
+    planSampleTimes,
     detectStillRuns,
     selectScenes,
     planScenes,

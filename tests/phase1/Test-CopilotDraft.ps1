@@ -16,10 +16,112 @@ function Add-Result {
 }
 
 Import-Module (Join-Path $srcRoot 'ManualBuilder.Project.psm1') -Force
+Import-Module (Join-Path $srcRoot 'ManualBuilder.Capture.psm1') -Force
 Import-Module (Join-Path $srcRoot 'ManualBuilder.Copilot.psm1') -Force
 Import-Module (Join-Path $srcRoot 'ManualBuilder.CopilotJob.psm1') -Force
 Import-Module (Join-Path $srcRoot 'ManualBuilder.Ocr.psm1') -Force
 Import-Module (Join-Path $srcRoot 'ManualBuilder.CopilotServer.psm1') -Force
+
+# ---------------------------------------------------------------------
+# 下書きジョブのスナップショット
+# ---------------------------------------------------------------------
+# Copilotを起動せず、ワーカー起動だけを差し替えて、ジョブが参照する画像を検査する。
+$snapshotRoot = Join-Path ([IO.Path]::GetTempPath()) ('mb-copilot-snapshot-test-' + [guid]::NewGuid().ToString('N'))
+$snapshotProjectRoot = Join-Path $snapshotRoot 'project'
+$snapshotJobsRoot = Join-Path $snapshotRoot 'jobs'
+$snapshotProfileRoot = Join-Path $snapshotRoot 'profile'
+[void](New-Item -ItemType Directory -Path (Join-Path $snapshotProjectRoot 'images') -Force)
+[void](New-Item -ItemType Directory -Path $snapshotJobsRoot -Force)
+[void](New-Item -ItemType Directory -Path $snapshotProfileRoot -Force)
+try {
+    $snapshotProjectPath = Join-Path $snapshotProjectRoot 'project.json'
+    $snapshotProject = New-MbProject
+    $snapshotSheet = $snapshotProject.sheets[0]
+    $targetImageId = 'image-' + ('1' * 32)
+    $writtenImageId = 'image-' + ('2' * 32)
+    $unusedImageId = 'image-' + ('3' * 32)
+    $snapshotProject.images = @(
+        [pscustomobject]@{ id = $targetImageId; fileName = "$targetImageId.png"; sha256 = ('A' * 64); width = 1; height = 1; byteLength = 4; mimeType = 'image/png'; source = 'recorder'; createdAt = [DateTime]::UtcNow.ToString('o') },
+        [pscustomobject]@{ id = $writtenImageId; fileName = "$writtenImageId.png"; sha256 = ('B' * 64); width = 1; height = 1; byteLength = 4; mimeType = 'image/png'; source = 'recorder'; createdAt = [DateTime]::UtcNow.ToString('o') },
+        [pscustomobject]@{ id = $unusedImageId; fileName = "$unusedImageId.png"; sha256 = ('C' * 64); width = 1; height = 1; byteLength = 4; mimeType = 'image/png'; source = 'recorder'; createdAt = [DateTime]::UtcNow.ToString('o') }
+    )
+    $targetStep = Add-MbStep -Project $snapshotProject -SheetId $snapshotSheet.id
+    $targetStep.imageId = $targetImageId
+    $writtenStep = Add-MbStep -Project $snapshotProject -SheetId $snapshotSheet.id
+    $writtenStep.imageId = $writtenImageId
+    $writtenStep.title = '記入済み'
+    $writtenStep.description = 'この手順は下書き対象外です。'
+    foreach ($image in @($snapshotProject.images)) {
+        [IO.File]::WriteAllBytes((Join-Path (Join-Path $snapshotProjectRoot 'images') ([string]$image.fileName)), [byte[]](1, 2, 3, 4))
+    }
+    [void](Save-MbProject -Project $snapshotProject -Path $snapshotProjectPath)
+
+    Initialize-MbCopilotServer -JobsRoot $snapshotJobsRoot -ScriptRoot $srcRoot -ProfileRoot $snapshotProfileRoot
+    $snapshotTestStartProcessCalls = 0
+    $workerStarter = {
+        param([string]$FilePath, [object[]]$ArgumentList)
+        $script:snapshotTestStartProcessCalls++
+        return [pscustomobject]@{ Id = $PID }
+    }
+
+    $jobStatus = Start-MbCopilotDraftJob -ProjectPath $snapshotProjectPath -WorkerStarter $workerStarter
+    $jobDirectories = @(Get-ChildItem -LiteralPath $snapshotJobsRoot -Directory)
+    Add-Result ([string]$jobStatus.state -eq 'queued') '実Copilotへ接続せず下書きジョブを開始できる'
+    Add-Result ($jobDirectories.Count -eq 1) '下書きジョブのスナップショットを1件作る'
+    if ($jobDirectories.Count -eq 1) {
+        $jobProjectPath = Join-Path $jobDirectories[0].FullName 'project.json'
+        $jobProject = Get-MbProject -Path $jobProjectPath
+        $resolvedTargetPath = Get-MbImageFilePath -Project $jobProject -ProjectPath $jobProjectPath -ImageId $targetImageId
+        Add-Result (Test-Path -LiteralPath $resolvedTargetPath -PathType Leaf) 'ワーカーが下書き対象画像をスナップショットから解決できる'
+        Add-Result (-not (Test-Path -LiteralPath (Join-Path $jobDirectories[0].FullName "images\$writtenImageId.png") -PathType Leaf)) '記入済みで対象外の画像は複製しない'
+        Add-Result (-not (Test-Path -LiteralPath (Join-Path $jobDirectories[0].FullName "images\$unusedImageId.png") -PathType Leaf)) '手順から参照されない画像は複製しない'
+    }
+    Add-Result ([int]$snapshotTestStartProcessCalls -eq 1) 'テストではワーカー起動を差し替え、Copilotへ接続しない'
+
+    # 必要な画像が欠けている場合は、不完全なジョブを起動・放置しない。
+    Remove-MbCopilotDraftJob
+    Remove-Item -LiteralPath (Join-Path (Join-Path $snapshotProjectRoot 'images') "$targetImageId.png") -Force
+    $missingImageRejected = $false
+    try {
+        [void](Start-MbCopilotDraftJob -ProjectPath $snapshotProjectPath -WorkerStarter $workerStarter)
+    } catch {
+        $missingImageRejected = $_.Exception.Message -like '*画像ファイルが見つかりません*'
+    }
+    Add-Result $missingImageRejected '下書き対象画像が欠けていればワーカー起動前に知らせる'
+    Add-Result ([int]$snapshotTestStartProcessCalls -eq 1) '画像欠損時はワーカーを起動しない'
+    Add-Result (@(Get-ChildItem -LiteralPath $snapshotJobsRoot -Directory).Count -eq 0) '画像欠損時は不完全なジョブを残さない'
+} finally {
+    Remove-MbCopilotDraftJob
+    Remove-Item -LiteralPath $snapshotRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# ---------------------------------------------------------------------
+# 録画で同じ画面へ戻った場面の取り込み
+# ---------------------------------------------------------------------
+$sceneRoot = Join-Path ([IO.Path]::GetTempPath()) ('mb-video-scene-test-' + [guid]::NewGuid().ToString('N'))
+[void](New-Item -ItemType Directory -Path $sceneRoot -Force)
+try {
+    $sceneProjectPath = Join-Path $sceneRoot 'project.json'
+    $sceneProject = New-MbProject
+    $sceneSheet = $sceneProject.sheets[0]
+    $sameFrame = [Convert]::FromBase64String('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==')
+
+    $firstVisit = Import-MbVideoScene -Project $sceneProject -ProjectPath $sceneProjectPath `
+        -SheetId ([string]$sceneSheet.id) -Bytes $sameFrame -TimeMs 1000 -SkipOcr
+    $returnVisit = Import-MbVideoScene -Project $sceneProject -ProjectPath $sceneProjectPath `
+        -SheetId ([string]$sceneSheet.id) -Bytes $sameFrame -TimeMs 5000 -SkipOcr
+
+    $sceneSteps = @($sceneProject.sheets[0].steps)
+    Add-Result ($firstVisit.status -eq 'added' -and $returnVisit.status -eq 'added') '同じ画面へ戻った場面も別の手順として取り込む'
+    Add-Result ($sceneSteps.Count -eq 2 -and [string]$sceneSteps[0].id -ne [string]$sceneSteps[1].id) '再訪した場面が別の手順IDを持つ'
+    Add-Result (@($sceneProject.images).Count -eq 1 -and [string]$sceneSteps[0].imageId -eq [string]$sceneSteps[1].imageId) '再訪した場面は画像実体を共有する'
+    Add-Result ([int]$sceneSteps[0].capture.videoTimeMs -eq 1000 -and [int]$sceneSteps[1].capture.videoTimeMs -eq 5000) '再訪した各手順に録画時刻を残す'
+    $retryVisit = Import-MbVideoScene -Project $sceneProject -ProjectPath $sceneProjectPath `
+        -SheetId ([string]$sceneSheet.id) -Bytes $sameFrame -TimeMs 5000 -SkipOcr
+    Add-Result ($retryVisit.status -eq 'duplicate' -and @($sceneProject.sheets[0].steps).Count -eq 2) '同じ場面の再実行では手順を二重にしない'
+} finally {
+    Remove-Item -LiteralPath $sceneRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 # ---------------------------------------------------------------------
 # 手順の一覧とパケット分割
