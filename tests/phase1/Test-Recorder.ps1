@@ -16,6 +16,7 @@ function Add-Result {
 }
 
 Import-Module (Join-Path $srcRoot 'ManualBuilder.Recorder.psm1') -Force
+Import-Module (Join-Path $srcRoot 'ManualBuilder.Project.psm1') -Force
 
 # ---------------------------------------------------------------------
 # status.json の読み書き競合
@@ -238,6 +239,15 @@ $invokeText = [pscustomobject]@{
 $selected = Select-MbUiaTargetInfo -Candidates @($page, $invokeText) -X 640 -Y 510
 Add-Result ($null -ne $selected -and [string]$selected.name -eq '次へ') 'Textとして公開された要素も操作パターンがあれば選ぶ'
 
+$namedText = [pscustomobject]@{
+    name = '承認依頼を送信'; controlType = 'ControlType.Text'; isActionable = $false
+    left = 700.0; top = 520.0; width = 140.0; height = 26.0
+}
+$inferred = Select-MbUiaNamedTargetInfo -Candidates @($page, $namedText) -X 740 -Y 530 `
+    -Window ([pscustomobject]@{ left = 0; top = 0; width = 1200; height = 800 })
+Add-Result ($null -ne $inferred -and [string]$inferred.name -eq '承認依頼を送信') '操作パターンが無い名前付き要素もクリック位置から補う'
+Add-Result ([bool]$inferred.isInferred) '推定で補った操作対象を識別できる'
+
 Add-Result ($null -eq (Select-MbUiaTargetInfo -Candidates @($page, $linkText) -X 200 -Y 430)) '操作できる候補が無ければページ全体の赤枠を付けない'
 
 $window = [pscustomobject]@{ left = 100.0; top = 100.0; width = 800.0; height = 600.0 }
@@ -294,6 +304,17 @@ Add-Result ($null -ne $focusCrop -and [double]$focusCrop.width -eq 0.55 -and [do
 Add-Result ([double]$focusCrop.x -ge 0 -and ([double]$focusCrop.x + [double]$focusCrop.width) -le 1) '対象周辺の切り抜きを画像内へ収める'
 $fallbackCrop = Get-MbRecorderTargetCrop -Rect $focusRect -TargetType 'ControlType.ClickPoint'
 Add-Result ($null -eq $fallbackCrop) '対象不明のクリックは自動で切り抜かない'
+
+$bulkProject = New-MbProject
+$sourceSheet = $bulkProject.sheets[0]
+$bulkStep1 = Add-MbStep -Project $bulkProject -SheetId $sourceSheet.id
+$bulkStep2 = Add-MbStep -Project $bulkProject -SheetId $sourceSheet.id
+$targetSheet = Add-MbSheet -Project $bulkProject
+[void](Move-MbStepsToSheet -Project $bulkProject -StepIds @($bulkStep1.id, $bulkStep2.id) -TargetSheetId $targetSheet.id)
+Add-Result (@($sourceSheet.steps).Count -eq 0 -and @($targetSheet.steps).Count -eq 2) '複数手順をまとめて別シートへ移動する'
+Add-Result ([string]$targetSheet.steps[0].id -eq [string]$bulkStep1.id -and [string]$targetSheet.steps[1].id -eq [string]$bulkStep2.id) '複数手順の順序を保って移動する'
+Remove-MbSteps -Project $bulkProject -StepIds @($bulkStep1.id, $bulkStep2.id)
+Add-Result (@($targetSheet.steps).Count -eq 0) '複数手順をまとめて削除する'
 
 $events = @(
     [pscustomobject]@{ index = 1; timeMs = 5000 },
