@@ -65,7 +65,7 @@ $script:WordExportCancelRequestedAt = $null
 $script:WordExportCancelReason = ''
 $script:WordExportJobsRoot = [string]$storageLayout.ExportJobsRoot
 $script:WordExportWorkerPath = Join-Path $PSScriptRoot 'Export-ManualBuilderWord.ps1'
-# Copilot連携。Edgeの専用プロファイルと設定はユーザーごとのローカル領域に置き、
+# Copilot連携。Copilot操作用のプロファイルと設定はユーザーごとのローカル領域に置き、
 # 共有フォルダーへアプリを置いても利用者どうしで混ざらないようにする。
 $script:CopilotJobsRoot = Join-Path $DataRoot 'copilot-jobs'
 $script:CopilotProfileRoot = Join-Path $DataRoot 'copilot-edge-profile'
@@ -74,9 +74,7 @@ Initialize-MbCopilotServer -JobsRoot $script:CopilotJobsRoot -ScriptRoot $PSScri
     -ProfileRoot $script:CopilotProfileRoot -ConfigPath $script:CopilotConfigPath
 # 操作記録。記録した画面はジョブ配下に置き、取り込んだ時点でプロジェクトへ移る。
 $script:RecordingJobsRoot = Join-Path $DataRoot 'recording-jobs'
-$script:RecordingEdgeProfileRoot = Join-Path $DataRoot 'recorder-edge-profile'
-Initialize-MbRecorderServer -JobsRoot $script:RecordingJobsRoot -ScriptRoot $PSScriptRoot `
-    -EdgeProfileRoot $script:RecordingEdgeProfileRoot
+Initialize-MbRecorderServer -JobsRoot $script:RecordingJobsRoot -ScriptRoot $PSScriptRoot
 $script:ImageReplacementHistory = @{}
 $script:HtmlExportResult = $null
 $script:ProjectHomeVisible = -not $usesExplicitProjectPath
@@ -1196,9 +1194,9 @@ function Invoke-MbRoute {
             $form = Read-MbForm -Request $request
             # 音声はマイクを入れ、Microsoftのオンライン音声認識へ送る。既定では行わない。
             $withNarration = ([string](Get-MbFormValue -Form $form -Name 'withNarration')) -match '^(?i:true|1|on|yes)$'
-            $mode = ([string](Get-MbFormValue -Form $form -Name 'mode')).Trim().ToLowerInvariant()
-            if ($mode -notin @('edge', 'desktop')) { $mode = 'edge' }
-            $status = Start-MbRecordingJob -WithNarration:$withNarration -Mode $mode
+            # 普段使っているEdgeを含む、現在のデスクトップだけを記録する。
+            # クライアントから旧modeが送られても専用プロファイルは起動しない。
+            $status = Start-MbRecordingJob -WithNarration:$withNarration
             Write-MbLog '操作の記録を開始しました。' 'OK'
             Write-MbResponse $Context ($status | ConvertTo-Json -Depth 6 -Compress) 200 'application/json; charset=utf-8'
         } catch {

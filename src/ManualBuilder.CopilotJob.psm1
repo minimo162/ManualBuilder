@@ -52,6 +52,7 @@ function Get-MbCopilotStepList {
         foreach ($step in @($sheet.steps)) {
             $order++
             $indexInSheet++
+            $imageEntry = @($Project.images | Where-Object { [string]$_.id -eq [string]$step.imageId }) | Select-Object -First 1
             [void]$list.Add([pscustomobject]@{
                 id           = [string]$step.id
                 sheetId      = [string]$sheet.id
@@ -62,6 +63,8 @@ function Get-MbCopilotStepList {
                 description  = [string]$step.description
                 note         = [string]$step.note
                 imageId      = [string]$step.imageId
+                imageWidth   = $(if ($null -ne $imageEntry) { [int]$imageEntry.width } else { 0 })
+                imageHeight  = $(if ($null -ne $imageEntry) { [int]$imageEntry.height } else { 0 })
                 annotations  = @($step.annotations)
                 crop         = $step.crop
                 clickLabel   = [string](Get-MbStepCaptureValue -Step $step -Name 'clickLabel')
@@ -343,6 +346,10 @@ function ConvertFrom-MbCopilotStepAnswer {
             $visualConfident = $false
             if ([string]::IsNullOrWhiteSpace($visualReason)) { $visualReason = 'Copilotが一覧にない候補を返しました。' }
         }
+        $selectedCandidate = $null
+        if (-not [string]::IsNullOrWhiteSpace($targetCandidateId) -and $targetCandidateId -ne 'none') {
+            $selectedCandidate = @($source.targetCandidates | Where-Object { [string]$_.id -eq $targetCandidateId }) | Select-Object -First 1
+        }
 
         # 校正で3項目とも空なら、直すところが無いという意味。確認画面へ出さない。
         if ($Mode -eq 'review' -and
@@ -369,7 +376,14 @@ function ConvertFrom-MbCopilotStepAnswer {
             currentTitle    = [string]$source.title
             currentDescription = [string]$source.description
             currentNote     = [string]$source.note
-            clickLabel      = [string]$source.clickLabel
+            imageId         = [string]$source.imageId
+            imageWidth      = $(if ($source.PSObject.Properties.Name -contains 'imageWidth') { [int]$source.imageWidth } else { 0 })
+            imageHeight     = $(if ($source.PSObject.Properties.Name -contains 'imageHeight') { [int]$source.imageHeight } else { 0 })
+            targetRect      = $(if ($null -ne $selectedCandidate) { $selectedCandidate.rect } else { $null })
+            clickLabel      = $(if ($null -ne $selectedCandidate -and
+                -not [string]::IsNullOrWhiteSpace([string]$selectedCandidate.label)) {
+                    [string]$selectedCandidate.label
+                } elseif ($targetCandidateId -eq 'none') { '' } else { [string]$source.clickLabel })
         })
     }
     return @($drafts)

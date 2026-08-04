@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const appVersion = '0.36.0';
+  const appVersion = '0.36.1';
   // 番号注釈はSVG属性で指定するためCSS変数を参照できない。
   // 編集画面とExcel・Word出力（New-MbAnnotatedImage）で同じ見た目にするため、基準フォントを揃える。
   const ANNOTATION_NUMBER_FONT = '"BIZ UDPGothic", "BIZ UDPゴシック", "BIZ UDGothic", "BIZ UDゴシック", Meiryo, "Yu Gothic UI", "MS Pゴシック", sans-serif';
@@ -2354,7 +2354,13 @@
       const card = previewButton.closest('.step-card');
       const dialog = ensureImagePreview();
       const image = dialog.querySelector('img');
-      const previewAnnotations = card ? readCardAnnotations(card) : [];
+      let previewAnnotations = card ? readCardAnnotations(card) : [];
+      if (!card && previewButton.dataset.previewRect) {
+        const values = previewButton.dataset.previewRect.split(',').map(Number);
+        if (values.length === 4 && values.every(Number.isFinite)) {
+          previewAnnotations = [{ id: 'copilot-preview', type: 'rect', x1: values[0], y1: values[1], x2: values[2], y2: values[3] }];
+        }
+      }
       const previewCrop = card ? readCardCrop(card) : fullCrop();
       image.onload = () => {
         window.requestAnimationFrame(() => renderImagePreview(dialog, previewAnnotations, previewCrop));
@@ -3001,7 +3007,7 @@
   // ---------------------------------------------------------------
   // 操作を記録して手順にする
   // ---------------------------------------------------------------
-  const recorder = { dialog: null, timer: null, events: [], busy: false, active: false, mode: 'edge' };
+  const recorder = { dialog: null, timer: null, events: [], busy: false, active: false };
 
   const stopRecorderPolling = () => {
     if (recorder.timer) {
@@ -3019,6 +3025,15 @@
     dialog.querySelector('[data-recorder-start]').hidden = view !== 'setup';
     dialog.querySelector('[data-recorder-stop]').hidden = view !== 'recording';
     dialog.querySelector('[data-recorder-import]').hidden = view !== 'review';
+    dialog.querySelectorAll('[data-recorder-phase]').forEach((item) => {
+      const phase = item.dataset.recorderPhase;
+      const current = (phase === 'record' && view !== 'review') || (phase === 'review' && view === 'review');
+      const done = phase === 'record' && view === 'review';
+      item.classList.toggle('is-current', current);
+      item.classList.toggle('is-done', done);
+      if (current) item.setAttribute('aria-current', 'step');
+      else item.removeAttribute('aria-current');
+    });
   };
 
   const setRecorderMessage = (message, detail = '') => {
@@ -3041,7 +3056,7 @@
       const fallback = item.targetType === 'ControlType.ClickPoint';
       const label = item.targetName || (fallback ? 'クリック位置（対象を特定できませんでした）' : '（名前を取得できませんでした）');
       const kind = item.kind === 'input' ? '入力' : (item.kind === 'right-click' ? '右クリック' : 'クリック');
-      const source = item.targetSource === 'DOM' ? 'Edgeで特定' : '';
+      const source = item.targetSource === 'DOM' ? 'Edgeの候補' : '';
       const detail = fallback
         ? `${kind}・対象不明（空クリックならチェックを外せます）`
         : [kind, source, item.windowTitle || ''].filter(Boolean).join('・');
@@ -3059,6 +3074,7 @@
     const response = await fetch('/api/recorder/events', { headers: sessionHeaders() });
     const payload = response.ok ? await response.json() : { events: [] };
     recorder.events = payload.events || [];
+    recorder.active = false;
     renderRecordedEvents(recorder.events);
     const named = recorder.events.filter((item) => item.targetName).length;
     setRecorderMessage(
@@ -3101,10 +3117,8 @@
     setRecorderView('recording');
     try {
       const withNarration = recorder.dialog.querySelector('[data-recorder-narration]').checked;
-      recorder.mode = recorder.dialog.querySelector('[data-recorder-mode]:checked')?.value || 'edge';
       const body = new URLSearchParams();
       body.set('withNarration', withNarration ? 'true' : 'false');
-      body.set('mode', recorder.mode);
       const response = await fetch('/api/recorder/start', {
         method: 'POST',
         headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' }),
@@ -3120,13 +3134,12 @@
       }
       setRecorderMessage(
         '0 件の操作を記録中',
-        recorder.mode === 'edge'
-          ? '開いた記録用Edgeで操作してください。専用プロファイルのログイン状態は次回も引き継がれます。'
-          : '記録したいアプリへ切り替えて操作してください。'
+        '記録したいアプリや、普段お使いのEdgeへ切り替えて操作してください。'
       );
       stopRecorderPolling();
       recorder.timer = window.setInterval(pollRecorderStatus, 700);
     } catch (error) {
+      recorder.active = false;
       setRecorderMessage('記録を始められませんでした', error.message || '');
       setRecorderView('setup');
     }
@@ -3178,7 +3191,16 @@
       await refreshWorkspace();
       const parts = [`${result.added} 件の手順を作りました`];
       if (result.skipped > 0) parts.push(`${result.skipped} 件は画像を読み取れず除きました`);
-      showToast(`${parts.join('、')}。続けてCopilotで文章を作れます。`, 'info');
+      if (result.added > 0) {
+        showToast(`${parts.join('、')}。Copilotで赤枠候補と文章を確認します。`, 'info');
+        try {
+          await openCopilotDialog('draft');
+        } catch (error) {
+          showToast(`手順は取り込み済みです。Copilotの確認画面だけ開けませんでした。${error.message || ''}`);
+        }
+      } else {
+        showToast(parts.join('、'));
+      }
     } catch (error) {
       showToast(error.message || '記録した操作を取り込めませんでした。');
     } finally {
@@ -3192,14 +3214,12 @@
     dialog.id = 'recorder-dialog';
     dialog.className = 'copilot-dialog';
     dialog.setAttribute('aria-label', '操作を記録して手順にする');
-    dialog.innerHTML = '<header class="copilot-dialog__header"><div><strong>操作を記録して手順にする</strong><span>クリックや入力の画面と操作対象を記録します</span></div><button type="button" class="copilot-dialog__close" data-recorder-close aria-label="閉じる">×</button></header>'
+    dialog.innerHTML = '<header class="copilot-dialog__header"><div><strong>操作を記録して手順書を作る</strong><span>記録、操作確認、Copilot提案の順に進みます</span></div><button type="button" class="copilot-dialog__close" data-recorder-close aria-label="閉じる">×</button></header>'
       + '<div class="copilot-dialog__content">'
+      + '<ol class="recorder-flow" aria-label="作成の流れ"><li data-recorder-phase="record"><span>1</span>操作を記録</li><li data-recorder-phase="review"><span>2</span>使う操作を確認</li><li data-recorder-phase="copilot"><span>3</span>Copilotの提案</li></ol>'
       + '<section data-recorder-view="setup">'
-      + '<p class="copilot-note">記録するのは「画面」と「操作したコントロールの名前」だけで、<strong>押したキーそのものは読み取りません</strong>。入力手順の画像には画面上の文字が写ります。隠したい箇所は、手順へ取り込んだ後に「画像を編集」から黒塗りしてください。</p>'
-      + '<div class="recorder-mode-options" role="radiogroup" aria-label="記録するアプリ">'
-      + '<label class="recorder-mode-option"><input type="radio" name="recorder-mode" value="edge" data-recorder-mode checked><span><strong>記録用Edgeを使う（推奨）</strong><small>専用プロファイルを次回も使い、クリック前のWeb要素を高い精度で特定します。初回にEdgeへサインインして同期すると、許可されているお気に入りや保存パスワードを利用できます。各Webサイトへのログインは専用Edgeで最初の1回だけ必要です。</small></span></label>'
-      + '<label class="recorder-mode-option"><input type="radio" name="recorder-mode" value="desktop" data-recorder-mode><span><strong>その他のアプリを記録する</strong><small>クリック前にWindowsの操作対象を保持し、エクスプローラーや業務アプリのボタン・項目を検出します。</small></span></label>'
-      + '</div>'
+      + '<p class="copilot-note">クリックや入力の時刻、画面、ウィンドウ名、操作対象の候補を記録します。<strong>押したキーそのものは保存しません</strong>が、入力した文字は画面画像に写ります。隠したい箇所は、取り込み後に「画像を編集」から黒塗りしてください。</p>'
+      + '<div class="recorder-scope"><strong>普段の画面をそのまま記録</strong><span>Edge、Excel、エクスプローラーなど、いつものアプリで操作してください。記録中に行った他アプリの操作も候補に入るため、終了後に不要な操作を外してください。Copilotは保存した赤枠候補から合うものを選び、候補がなければ「枠なし」を提案します。</span></div>'
       + '<label class="copilot-option"><input type="checkbox" data-recorder-narration><span>操作しながら話した内容も記録する</span></label>'
       + '<p class="copilot-note copilot-note--warn" data-recorder-narration-note hidden>マイクを使い、<strong>音声はMicrosoftのオンライン音声認識へ送られます</strong>。Windowsの音声入力（Win+H）と同じ仕組みです。話した内容は手順の手がかりとして使い、そのまま文章にはしません。</p>'
       + '<p class="copilot-capability" data-recorder-capability></p>'
@@ -3207,7 +3227,7 @@
       + '</section>'
       + '<section data-recorder-view="recording" hidden>'
       + '<div class="copilot-dialog__state" role="status" aria-live="polite"><strong data-recorder-message>記録しています</strong><span data-recorder-detail></span></div>'
-      + '<p class="copilot-note">記録したい操作を行ってから、［記録を終了］を押してください。記録用Edgeを選んだ場合は、開始時に開いたEdgeだけがDOMによる高精度な対象検出の対象です。この画面に戻る操作は記録されません。</p>'
+      + '<p class="copilot-note">普段お使いのEdgeやアプリで、記録したい操作を行ってから［記録を終了］を押してください。この画面に戻る操作は記録されません。</p>'
       + '</section>'
       + '<section data-recorder-view="review" hidden>'
       + '<div class="copilot-dialog__state"><strong data-recorder-message></strong><span data-recorder-detail></span></div>'
@@ -3220,13 +3240,22 @@
       + '<button type="button" class="button button--ghost" data-recorder-close>閉じる</button>'
       + '<button type="button" class="button button--primary" data-recorder-start>記録を開始</button>'
       + '<button type="button" class="button button--primary" data-recorder-stop hidden>記録を終了</button>'
-      + '<button type="button" class="button button--primary" data-recorder-import hidden>選んだ操作を手順にする</button>'
+      + '<button type="button" class="button button--primary" data-recorder-import hidden>選んだ操作を取り込み、Copilotへ</button>'
       + '</footer>';
     document.body.appendChild(dialog);
     recorder.dialog = dialog;
 
+    const requestClose = () => {
+      if (recorder.active && !window.confirm('操作を記録中です。記録を終了して破棄しますか？')) return;
+      if (!recorder.active && recorder.events.length > 0 && !window.confirm('まだ取り込んでいない操作を破棄しますか？')) return;
+      dialog.close();
+    };
     dialog.querySelectorAll('[data-recorder-close]').forEach((button) => {
-      button.addEventListener('click', () => dialog.close());
+      button.addEventListener('click', requestClose);
+    });
+    dialog.addEventListener('cancel', (event) => {
+      event.preventDefault();
+      requestClose();
     });
     dialog.querySelector('[data-recorder-start]').addEventListener('click', () => startRecording());
     dialog.querySelector('[data-recorder-narration]').addEventListener('change', (event) => {
@@ -3254,6 +3283,7 @@
     setRecorderMessage('', '');
 
     const capability = dialog.querySelector('[data-recorder-capability]');
+    capability.hidden = false;
     capability.textContent = '記録できるか確認しています…';
     const narrationToggle = dialog.querySelector('[data-recorder-narration]');
     narrationToggle.checked = false;
@@ -3263,25 +3293,16 @@
       const response = await fetch('/api/recorder/capabilities', { headers: sessionHeaders() });
       const payload = response.ok ? await response.json() : null;
       available = Boolean(payload?.available);
-      const edgeAvailable = Boolean(payload?.edge?.available);
-      const edgeToggle = dialog.querySelector('[data-recorder-mode][value="edge"]');
-      const desktopToggle = dialog.querySelector('[data-recorder-mode][value="desktop"]');
-      edgeToggle.disabled = !edgeAvailable;
-      edgeToggle.closest('.recorder-mode-option')?.classList.toggle('is-disabled', !edgeAvailable);
-      if (edgeAvailable) edgeToggle.checked = true;
-      else desktopToggle.checked = true;
-      const notes = [available
-        ? (edgeAvailable
-          ? '記録用EdgeではWebページの要素を直接取得し、取得できない場合だけWindowsの検出へ切り替えます。'
-          : `記録用Edgeは利用できません。その他のアプリの記録は利用できます。${payload?.edge?.reason || ''}`)
-        : String(payload?.reason || 'この環境では操作を記録できません。')];
+      const notes = available ? [] : [String(payload?.reason || 'この環境では操作を記録できません。')];
       // 音声が使えない理由は、対処が分かるようにそのまま出す。
       const narration = payload?.narration;
       narrationToggle.disabled = !narration?.available;
       if (!narration?.available && narration?.reason) notes.push(narration.reason);
       capability.textContent = notes.join(' ');
+      capability.hidden = notes.length === 0;
     } catch {
       capability.textContent = 'この環境で記録できるかを確認できませんでした。';
+      capability.hidden = false;
       narrationToggle.disabled = true;
     }
     dialog.querySelector('[data-recorder-start]').disabled = !available;
@@ -3354,11 +3375,25 @@
           ? `<p class="copilot-draft__before"><span>今の内容</span>${currentText}</p>`
           : `<details class="copilot-draft__current"><summary>今の内容</summary><p>${currentText}</p></details>`)
         : '';
+      const rect = draft.targetRect;
+      const hasRect = rect && [rect.x1, rect.y1, rect.x2, rect.y2].every(Number.isFinite)
+        && rect.x2 > rect.x1 && rect.y2 > rect.y1;
+      const imageUrl = draft.imageId ? `/images/${encodeURIComponent(draft.imageId)}?token=${encodeURIComponent(token)}` : '';
+      const imageAspect = Number(draft.imageWidth) > 0 && Number(draft.imageHeight) > 0
+        ? `${Number(draft.imageWidth)} / ${Number(draft.imageHeight)}` : '16 / 9';
+      const previewRect = hasRect ? [rect.x1, rect.y1, rect.x2, rect.y2].join(',') : '';
+      const targetBox = hasRect
+        ? `<span class="copilot-draft__target-box" style="left:${rect.x1 * 100}%;top:${rect.y1 * 100}%;width:${(rect.x2 - rect.x1) * 100}%;height:${(rect.y2 - rect.y1) * 100}%"></span>`
+        : '';
+      const visual = (!review && imageUrl)
+        ? `<button type="button" class="copilot-draft__visual" data-image-preview="${escapeHtml(imageUrl)}" data-preview-rect="${escapeHtml(previewRect)}" aria-label="Copilotが選んだ赤枠候補を拡大表示"><span class="copilot-draft__visual-stage" style="aspect-ratio:${escapeHtml(imageAspect)}"><img src="${escapeHtml(imageUrl)}" alt=""><span class="copilot-draft__visual-overlay">${targetBox}</span></span><span>${hasRect ? 'Copilotが選んだ赤枠候補（クリックで拡大）' : '合う赤枠候補なし'}</span></button>`
+        : '';
       // 自信がない下書きと不要判定は、既定では採用しない。取りこぼしより誤採用を避ける。
       const checked = (review || (!uncertain && !visualUncertain && !dropped)) ? ' checked' : '';
       return `<article class="copilot-draft" data-copilot-draft-item data-step-id="${escapeHtml(draft.id)}" data-target-candidate-id="${escapeHtml(draft.targetCandidateId || '')}" data-zoom="${escapeHtml(draft.zoom || 'keep')}">
 <label class="copilot-draft__accept"><input type="checkbox" data-copilot-accept${checked}><span>採用する</span></label>
 <div class="copilot-draft__body">
+${visual}
 <div class="copilot-draft__flags">${flags.join('')}</div>
 <label class="copilot-draft__field"><span>手順名</span><input type="text" data-copilot-title value="${escapeHtml(draft.title)}" maxlength="100"></label>
 <label class="copilot-draft__field"><span>説明</span><textarea data-copilot-description rows="3" maxlength="4000">${escapeHtml(draft.description)}</textarea></label>
@@ -3490,7 +3525,7 @@ ${review ? current + reason : reason + current}
     dialog.id = 'copilot-draft-dialog';
     dialog.className = 'copilot-dialog';
     dialog.setAttribute('aria-label', 'Copilotで手順の文章を作る');
-    dialog.innerHTML = '<header class="copilot-dialog__header"><div><strong data-copilot-title>Copilotで手順の文章を作る</strong><span data-copilot-subtitle>画面と赤枠をMicrosoft 365 Copilotへ渡し、手順名と説明の下書きを受け取ります</span></div><button type="button" class="copilot-dialog__close" data-copilot-close aria-label="閉じる">×</button></header>'
+    dialog.innerHTML = '<header class="copilot-dialog__header"><div><strong data-copilot-title>Copilotの赤枠候補と文章を確認する</strong><span data-copilot-subtitle>画面と候補をMicrosoft 365 Copilotへ渡し、候補の選択と文章の提案を受け取ります</span></div><button type="button" class="copilot-dialog__close" data-copilot-close aria-label="閉じる">×</button></header>'
       + '<div class="copilot-dialog__content">'
       + '<section data-copilot-view="setup">'
       + '<p class="copilot-note" data-copilot-note>画像は普段お使いのMicrosoft 365 Copilotへ添付されます。会社の規程で扱えない画面が含まれていないか確かめてください。</p>'
@@ -3561,12 +3596,12 @@ ${review ? current + reason : reason + current}
     setCopilotMessage('', '');
 
     const review = mode === 'review';
-    const dialogTitle = review ? 'Copilotで文章を整える' : 'Copilotで手順の文章を作る';
+    const dialogTitle = review ? 'Copilotで文章を整える' : 'Copilotの赤枠候補と文章を確認する';
     dialog.setAttribute('aria-label', dialogTitle);
     dialog.querySelector('[data-copilot-title]').textContent = dialogTitle;
     dialog.querySelector('[data-copilot-subtitle]').textContent = review
       ? '敬体の統一、表記ゆれ、用語の不統一、誤字を確認します'
-      : '画面と赤枠をMicrosoft 365 Copilotへ渡し、手順名と説明の下書きを受け取ります';
+      : '画面と操作対象の候補をMicrosoft 365 Copilotへ渡し、赤枠と文章の提案を受け取ります';
     dialog.querySelector('[data-copilot-note]').textContent = review
       ? '手順の文章だけをMicrosoft 365 Copilotへ渡します。画像は渡しません。'
       : '画像は普段お使いのMicrosoft 365 Copilotへ添付されます。会社の規程で扱えない画面が含まれていないか確かめてください。';
@@ -3587,7 +3622,7 @@ ${review ? current + reason : reason + current}
     if (capabilities?.ocr?.available) {
       notes.push('画面の文字を読み取って赤枠と操作対象を補います。');
     } else if (capabilities?.ocr?.reason) {
-      notes.push(`画面の文字は読み取れません（${capabilities.ocr.reason}）。赤枠は録画の変化だけで決まります。`);
+      notes.push(`画面の文字は読み取れません（${capabilities.ocr.reason}）。操作対象は録画の変化などから作った候補をCopilotが確認します。`);
     }
     capability.textContent = notes.join(' ');
     dialog.showModal();
