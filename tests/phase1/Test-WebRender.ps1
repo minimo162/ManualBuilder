@@ -7,6 +7,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+Import-Module (Join-Path $repoRoot 'src\ManualBuilder.Project.psm1') -Force
 Import-Module (Join-Path $repoRoot 'src\ManualBuilder.Web.psm1') -Force
 
 function Assert-Mb {
@@ -102,6 +103,37 @@ Assert-Mb ($navHtml -match 'aria-label="画像なし"') '画像なしの手順�
 Assert-Mb (([regex]::Matches($navHtml, 'step-nav__status')).Count -eq 2) '入力済みの手順には目印を出さない'
 # ドラッグしか案内していないと、キーボードだけを使う人が並べ替えに気付けない（UX-08）。
 Assert-Mb ($navHtml -match 'data-step-nav-drag-handle[^>]*↑↓ キー') '手順の取っ手がキーボード操作を案内する'
+
+Write-Host ''
+Write-Host '--- 録画から手順書を作る主導線 ---' -ForegroundColor Cyan
+
+function New-MbTestProject {
+    param([object[]]$Steps)
+    $sheet = New-MbTestSheet -Steps $Steps
+    return [pscustomobject]@{
+        id              = 'project-1'
+        title           = 'テストマニュアル'
+        revision        = 1
+        selectedSheetId = $sheet.id
+        sheets          = @($sheet)
+        videos          = @()
+    }
+}
+
+$emptyWorkspaceHtml = ConvertTo-MbWorkspaceHtml -Project (New-MbTestProject -Steps @()) -Token 'testtoken'
+Assert-Mb ($emptyWorkspaceHtml -match '録画から手順書を自動作成') '空の画面で主機能を成果が分かる見出しにする'
+Assert-Mb ($emptyWorkspaceHtml -match 'empty-state__main-button[^>]*data-open-video-picker[^>]*>録画ファイルを選ぶ') '空の画面で録画選択を主ボタンにする'
+Assert-Mb (([regex]::Matches($emptyWorkspaceHtml, 'button button--primary[^>]*data-open-video-picker')).Count -eq 1) '空の画面では録画の主ボタンを重複させない'
+Assert-Mb ($emptyWorkspaceHtml -match 'data-record-operations>操作を今から記録') 'ライブ記録をメニュー外から選べる'
+Assert-Mb (([regex]::Matches($emptyWorkspaceHtml, 'data-record-operations>操作を今から記録')).Count -eq 1) '空の画面ではライブ記録の入口を重複させない'
+Assert-Mb ($emptyWorkspaceHtml -match '録画を選ぶ.+場面を自動分割.+Copilotで文章化') '主機能の3段階を最初に示す'
+Assert-Mb ($emptyWorkspaceHtml -match 'accept="video/mp4,video/webm"') '主ボタンから選べる動画形式を制限する'
+
+$filledWorkspaceHtml = ConvertTo-MbWorkspaceHtml -Project (New-MbTestProject -Steps @((New-MbTestStep -AnnotationCount 0))) -Token 'testtoken'
+Assert-Mb ($filledWorkspaceHtml -notmatch 'class="empty-state') '手順がある画面では開始案内を重複表示しない'
+Assert-Mb ($filledWorkspaceHtml -match 'topbar__main-action[^>]*data-open-video-picker[^>]*>録画から手順書を作る') '編集中も主機能へスクロールせず戻れる'
+Assert-Mb (([regex]::Matches($filledWorkspaceHtml, 'button button--primary[^>]*data-open-video-picker')).Count -eq 1) '編集中も録画の主ボタンを重複させない'
+Assert-Mb ($filledWorkspaceHtml -match 'topbar__record-action[^>]*data-record-operations') '編集中も操作記録へメニューを開かず進める'
 
 Write-Host ''
 Write-Host 'Web rendering tests passed.' -ForegroundColor Green
