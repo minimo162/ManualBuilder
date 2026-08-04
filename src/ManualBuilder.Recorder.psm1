@@ -670,6 +670,151 @@ function Get-MbUiaTargetAtPoint {
     }
 }
 
+# クリック前のカーソル下を問い合わせる。FromPointは論理ツリーの根に近い要素を返すことが
+# あるため、親だけでなく必要ならウィンドウ全枝も調べる。重い検索は別プロセスへ隔離され、
+# 画面取得とクリック検知の60Hzループを止めない。
+function Get-MbUiaHoverTargetAtPoint {
+    param(
+        [Parameter(Mandatory = $true)][int]$X,
+        [Parameter(Mandatory = $true)][int]$Y,
+        [AllowNull()]$Window = $null
+    )
+
+    try {
+        $target = Get-MbUiaTargetAtPoint -X $X -Y $Y -Window $Window
+        if ($null -eq $target -or [string]$target.controlType -eq 'ControlType.ClickPoint') { return $null }
+        return $target
+    } catch {
+        return $null
+    }
+}
+
+function Write-MbUiaTargetCache {
+    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)]$Value)
+
+    $temporary = $Path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+    $backup = $Path + '.' + [guid]::NewGuid().ToString('N') + '.bak'
+    try {
+        [IO.File]::WriteAllText($temporary, ($Value | ConvertTo-Json -Depth 12 -Compress), (New-Object Text.UTF8Encoding($false)))
+        foreach ($delay in @(0, 25, 50, 100, 200)) {
+            if ([int]$delay -gt 0) { Start-Sleep -Milliseconds ([int]$delay) }
+            try {
+                if ([IO.File]::Exists($Path)) {
+                    [IO.File]::Replace($temporary, $Path, $backup, $true)
+                } else {
+                    [IO.File]::Move($temporary, $Path)
+                }
+                return
+            } catch [IO.IOException] {
+                if ([int]$delay -eq 200) { throw }
+            } catch [UnauthorizedAccessException] {
+                if ([int]$delay -eq 200) { throw }
+            }
+        }
+    } finally {
+        Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Get-MbUiaTargetFromCache {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][int]$X,
+        [Parameter(Mandatory = $true)][int]$Y,
+        [AllowNull()]$Window,
+        [int]$MaxAgeMs = 1800
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+    try {
+        $share = [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
+        $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)
+        try {
+            $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $true, 4096, $false)
+            try { $raw = $reader.ReadToEnd() } finally { $reader.Dispose() }
+        } finally { $stream.Dispose() }
+        $cache = $raw | ConvertFrom-Json
+        if ($null -eq $cache -or $null -eq $cache.target -or $null -eq $Window) { return $null }
+        $updated = [DateTime]::Parse([string]$cache.updatedAtUtc).ToUniversalTime()
+        $ageMs = ([DateTime]::UtcNow - $updated).TotalMilliseconds
+        if ($ageMs -gt $MaxAgeMs) { return $null }
+        $sameWindow = [long]$cache.windowHandle -eq [long]$Window.handle
+        # クリックで標準ダイアログが即座に開いた場合、記録側が見る前面ウィンドウはすでに
+        # 新しいHWNDになる。十分新しく、同じクリック点を含むキャッシュだけは元画面として使う。
+        if (-not $sameWindow -and $ageMs -gt 650) { return $null }
+        $distance = [Math]::Sqrt(
+            [Math]::Pow(([double]$cache.cursorX - $X), 2.0) +
+            [Math]::Pow(([double]$cache.cursorY - $Y), 2.0)
+        )
+        if ($distance -gt 36.0) { return $null }
+        $target = $cache.target
+        if (-not (Test-MbUsableElementInfo -Info $target)) { return $null }
+        if ([string]$target.controlType -eq 'ControlType.ClickPoint') { return $null }
+        if (-not (Test-MbPointWithinElementInfo -Info $target -X $X -Y $Y -Tolerance 18.0)) { return $null }
+        $target | Add-Member -NotePropertyName 'provider' -NotePropertyValue 'UIA-CACHE' -Force
+        if ($cache.PSObject.Properties.Name -contains 'window' -and $null -ne $cache.window) {
+            $target | Add-Member -NotePropertyName 'captureWindow' -NotePropertyValue $cache.window -Force
+        }
+        return $target
+    } catch {
+        return $null
+    }
+}
+
+# UI Automationはクリック後だと、画面遷移やフォルダー移動で元の要素が消えていることがある。
+# 画面記録とは別プロセスでカーソル下を先に保持し、記録の60Hzループを止めない。
+function Invoke-MbUiaTargetCacheLoop {
+    param(
+        [Parameter(Mandatory = $true)][string]$CachePath,
+        [Parameter(Mandatory = $true)][string]$StopPath,
+        [AllowEmptyString()][string]$LogPath = '',
+        [string[]]$IgnoreTitlePatterns = @(),
+        [int]$PollIntervalMs = 55
+    )
+
+    Initialize-MbRecorderNative
+    [void](Set-MbProcessDpiAware)
+    [void](Initialize-MbRecorderUia)
+    $lastX = [int]::MinValue
+    $lastY = [int]::MinValue
+    $lastHandle = 0L
+    $lastChecked = [DateTime]::MinValue
+    while (-not (Test-Path -LiteralPath $StopPath -PathType Leaf)) {
+        try {
+            $point = New-Object 'MbRecorderNative+POINT'
+            [void][MbRecorderNative]::GetCursorPos([ref]$point)
+            $window = Get-MbForegroundWindowInfo
+            if (-not (Test-MbIgnoredWindow -Window $window -IgnoreTitlePatterns $IgnoreTitlePatterns)) {
+                $elapsed = ([DateTime]::UtcNow - $lastChecked).TotalMilliseconds
+                $moved = [Math]::Abs([int]$point.X - $lastX) -gt 2 -or [Math]::Abs([int]$point.Y - $lastY) -gt 2
+                $windowChanged = [long]$window.handle -ne $lastHandle
+                # UIAプロバイダーをマウス移動のたびに連打しない。動いている間は最大約10Hz、
+                # 静止中も画面内容の変化に備えて450msごとに更新する。
+                $movementRefresh = ($moved -or $windowChanged) -and $elapsed -ge 90
+                if ($movementRefresh -or $elapsed -ge 450) {
+                    $target = Get-MbUiaHoverTargetAtPoint -X ([int]$point.X) -Y ([int]$point.Y) -Window $window
+                    Write-MbUiaTargetCache -Path $CachePath -Value ([pscustomobject]@{
+                        updatedAtUtc = [DateTime]::UtcNow.ToString('o')
+                        cursorX = [int]$point.X; cursorY = [int]$point.Y
+                        windowHandle = [long]$window.handle; window = $window; target = $target
+                    })
+                    $lastX = [int]$point.X; $lastY = [int]$point.Y
+                    $lastHandle = [long]$window.handle; $lastChecked = [DateTime]::UtcNow
+                }
+            }
+        } catch {
+            if (-not [string]::IsNullOrWhiteSpace($LogPath)) {
+                try {
+                    $line = [DateTime]::UtcNow.ToString('o') + "`t" + $_.Exception.Message + [Environment]::NewLine
+                    [IO.File]::AppendAllText($LogPath, $line, (New-Object Text.UTF8Encoding($false)))
+                } catch { }
+            }
+        }
+        Start-Sleep -Milliseconds $PollIntervalMs
+    }
+}
+
 function Get-MbUiaFocusedElement {
     if (-not (Initialize-MbRecorderUia)) { return $null }
     try {
@@ -1020,16 +1165,31 @@ function ConvertFrom-MbDomSnapshotTarget {
         if ([double]::IsNaN($dpr) -or [double]::IsInfinity($dpr) -or $dpr -lt 0.5 -or $dpr -gt 4.0) { return $null }
         $clientX = [double]$Snapshot.clientX
         $clientY = [double]$Snapshot.clientY
+        $anchorX = $X
+        $anchorY = $Y
+        if ($Snapshot.PSObject.Properties.Name -contains 'screenX' -and
+            $Snapshot.PSObject.Properties.Name -contains 'screenY') {
+            $snapshotScreenX = [double]$Snapshot.screenX
+            $snapshotScreenY = [double]$Snapshot.screenY
+            $anchorDistance = [Math]::Sqrt(
+                [Math]::Pow(($snapshotScreenX - $X), 2.0) + [Math]::Pow(($snapshotScreenY - $Y), 2.0)
+            )
+            if (-not [double]::IsNaN($anchorDistance) -and -not [double]::IsInfinity($anchorDistance) -and
+                $anchorDistance -le 64.0) {
+                $anchorX = $snapshotScreenX
+                $anchorY = $snapshotScreenY
+            }
+        }
         $width = [double]$Snapshot.rect.width * $dpr
         $height = [double]$Snapshot.rect.height * $dpr
-        $left = $X + (([double]$Snapshot.rect.left - $clientX) * $dpr)
-        $top = $Y + (([double]$Snapshot.rect.top - $clientY) * $dpr)
+        $left = $anchorX + (([double]$Snapshot.rect.left - $clientX) * $dpr)
+        $top = $anchorY + (([double]$Snapshot.rect.top - $clientY) * $dpr)
         foreach ($number in @($clientX, $clientY, $width, $height, $left, $top)) {
             if ([double]::IsNaN([double]$number) -or [double]::IsInfinity([double]$number)) { return $null }
         }
         if ($width -le 1.0 -or $height -le 1.0 -or $width -gt 12000 -or $height -gt 12000) { return $null }
-        if ($X -lt ($left - 16.0) -or $X -gt ($left + $width + 16.0) -or
-            $Y -lt ($top - 16.0) -or $Y -gt ($top + $height + 16.0)) { return $null }
+        if ($anchorX -lt ($left - 16.0) -or $anchorX -gt ($left + $width + 16.0) -or
+            $anchorY -lt ($top - 16.0) -or $anchorY -gt ($top + $height + 16.0)) { return $null }
 
         $role = ([string]$Snapshot.role).ToLowerInvariant()
         $tag = ([string]$Snapshot.tag).ToLowerInvariant()
@@ -1072,6 +1232,7 @@ function ConvertFrom-MbDomSnapshotTarget {
             controlType = $controlType
             automationId = ''
             className = $tag
+            inputType = $type
             left = $left; top = $top; width = $width; height = $height
             isActionable = $true; isFallback = $false
             provider = 'DOM'; confidence = 'high'
@@ -1101,12 +1262,6 @@ function Get-MbDomTargetFromCache {
         if ($null -eq $cache -or $null -eq $cache.page) { return $null }
         $updated = [DateTime]::Parse([string]$cache.updatedAtUtc).ToUniversalTime()
         if (([DateTime]::UtcNow - $updated).TotalMilliseconds -gt 2500) { return $null }
-        $cursorDistance = [Math]::Sqrt(
-            [Math]::Pow(([double]$cache.cursorX - $X), 2.0) +
-            [Math]::Pow(([double]$cache.cursorY - $Y), 2.0)
-        )
-        if ($cursorDistance -gt 36.0) { return $null }
-
         $pageTitle = ([string]$cache.page.title).Trim()
         $windowTitle = if ($null -ne $Window) { [string]$Window.title } else { '' }
         $snapshotTitle = ''
@@ -1132,6 +1287,18 @@ function Get-MbDomTargetFromCache {
             }
         }
         if ($null -eq $snapshot) { return $null }
+        # pointerdown時の物理座標があれば、監視ワーカーが後で読んだカーソル位置より優先する。
+        $expectedX = [double]$cache.cursorX
+        $expectedY = [double]$cache.cursorY
+        if ($snapshot.PSObject.Properties.Name -contains 'screenX' -and
+            $snapshot.PSObject.Properties.Name -contains 'screenY') {
+            $expectedX = [double]$snapshot.screenX
+            $expectedY = [double]$snapshot.screenY
+        }
+        $cursorDistance = [Math]::Sqrt(
+            [Math]::Pow(($expectedX - $X), 2.0) + [Math]::Pow(($expectedY - $Y), 2.0)
+        )
+        if ($cursorDistance -gt 64.0) { return $null }
         $titleMatches = [string]::IsNullOrWhiteSpace($pageTitle) -and [string]::IsNullOrWhiteSpace($snapshotTitle)
         if (-not [string]::IsNullOrWhiteSpace($pageTitle) -and
             $windowTitle.IndexOf($pageTitle, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $titleMatches = $true }
@@ -1202,6 +1369,7 @@ function Invoke-MbRecordingLoop {
         [Parameter(Mandatory = $true)][string]$StopPath,
         [Parameter(Mandatory = $true)][string]$JobId,
         [AllowEmptyString()][string]$DomTargetPath = '',
+        [AllowEmptyString()][string]$UiaTargetPath = '',
         [string[]]$IgnoreTitlePatterns = @(),
         [int]$PollIntervalMs = 16,
         [int]$TypingIdleMs = 1200,
@@ -1353,6 +1521,29 @@ function Invoke-MbRecordingLoop {
                             $target = Get-MbDomTargetFromCache -Path $DomTargetPath -X ([int]$point.X) -Y ([int]$point.Y) -Window $window
                         }
                     }
+                    $domFileInput = $null -ne $target -and
+                        $target.PSObject.Properties.Name -contains 'provider' -and [string]$target.provider -eq 'DOM' -and
+                        $target.PSObject.Properties.Name -contains 'inputType' -and [string]$target.inputType -eq 'file'
+                    if ($null -eq $target -or $domFileInput) {
+                        # エクスプローラーや標準ダイアログではクリック後すぐに元要素が消える。
+                        # 別プロセスがクリック前に保持した対象を、同じクリック点の新しい記録に限って使う。
+                        $cachedTarget = Get-MbUiaTargetFromCache -Path $UiaTargetPath -X ([int]$point.X) -Y ([int]$point.Y) -Window $window
+                        $useCachedTarget = $null -eq $target -and $null -ne $cachedTarget
+                        if ($domFileInput -and $null -ne $cachedTarget) {
+                            # type=fileはDOM上ではボタンと未選択表示が1矩形になる。Windowsが
+                            # 内側のButtonを公開する場合は、その小さい実コントロールへ赤枠を寄せる。
+                            $domArea = [double]$target.width * [double]$target.height
+                            $cachedArea = [double]$cachedTarget.width * [double]$cachedTarget.height
+                            $useCachedTarget = [string]$cachedTarget.controlType -eq 'ControlType.Button' -or
+                                ($domArea -gt 0 -and $cachedArea -lt ($domArea * 0.8))
+                        }
+                        if ($useCachedTarget) { $target = $cachedTarget }
+                        if ($useCachedTarget -and $target.PSObject.Properties.Name -contains 'captureWindow' -and
+                            $null -ne $target.captureWindow) {
+                            # スクリーンショットもクリック前なので、切り出すウィンドウ範囲とタイトルを揃える。
+                            $window = $target.captureWindow
+                        }
+                    }
                     if ($null -eq $target) {
                         $target = Get-MbUiaTargetAtPoint -X ([int]$point.X) -Y ([int]$point.Y) -Window $window
                     }
@@ -1422,6 +1613,9 @@ Export-ModuleMember -Function @(
     'Initialize-MbRecorderUia',
     'Get-MbRecorderCapability',
     'Get-MbUiaTargetAtPoint',
+    'Get-MbUiaHoverTargetAtPoint',
+    'Get-MbUiaTargetFromCache',
+    'Invoke-MbUiaTargetCacheLoop',
     'Get-MbUiaFocusedElement',
     'ConvertFrom-MbDomSnapshotTarget',
     'Get-MbDomTargetFromCache',

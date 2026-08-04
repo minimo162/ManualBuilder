@@ -83,6 +83,23 @@ function Read-MbRecordingStatus {
                     '記録用EdgeのDOM監視を開始できなかったため、Windowsの対象検出で記録を続けています。' -Force
             }
         }
+        if ($script:MbRecordingJob.PSObject.Properties.Name -contains 'UiaWorkerProcessId') {
+            $uiaWorkerAlive = $false
+            $uiaWorkerProcessId = [int]$script:MbRecordingJob.UiaWorkerProcessId
+            if ($uiaWorkerProcessId -gt 0) {
+                try {
+                    $uiaWorkerAlive = $null -ne (Get-Process -Id $uiaWorkerProcessId -ErrorAction SilentlyContinue)
+                } catch { $uiaWorkerAlive = $false }
+            }
+            if (-not $uiaWorkerAlive) {
+                $uiaWarning = 'クリック前のWindows対象監視を開始できなかったため、クリック後の対象検出で記録を続けています。'
+                if ($status.PSObject.Properties.Name -contains 'warning' -and
+                    -not [string]::IsNullOrWhiteSpace([string]$status.warning)) {
+                    $uiaWarning = [string]$status.warning + ' ' + $uiaWarning
+                }
+                $status | Add-Member -NotePropertyName 'warning' -NotePropertyValue $uiaWarning -Force
+            }
+        }
     }
     if ([string]$status.state -ne 'recording' -and
         $script:MbRecordingJob.PSObject.Properties.Name -contains 'Mode' -and
@@ -128,7 +145,9 @@ function Start-MbRecordingJob {
     $narrationPath = Join-Path $jobDirectory 'narration.jsonl'
     $narrationStatusPath = Join-Path $jobDirectory 'narration-status.json'
     $domTargetPath = Join-Path $jobDirectory 'dom-target.json'
+    $uiaTargetPath = Join-Path $jobDirectory 'uia-target.json'
     $edgeLogPath = Join-Path $jobDirectory 'edge-monitor.log'
+    $uiaLogPath = Join-Path $jobDirectory 'uia-monitor.log'
 
     $queued = [pscustomobject]@{
         jobId = $jobId; state = 'recording'; count = 0
@@ -164,13 +183,36 @@ function Start-MbRecordingJob {
             throw
         }
     }
+
+    # エクスプローラーや標準ダイアログはクリック直後に対象が消えることがあるため、
+    # クリック前のカーソル下を別プロセスで保持する。起動に失敗しても従来のクリック後検索は使える。
+    $uiaWorkerProcessId = 0
+    try {
+        $uiaWorkerPath = Join-Path $script:MbRecordingScriptRoot 'Invoke-ManualBuilderUiaRecorder.ps1'
+        $uiaArguments = @(
+            '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-STA', '-File', (& $quote $uiaWorkerPath),
+            '-CachePath', (& $quote $uiaTargetPath),
+            '-StopPath', (& $quote $stopPath),
+            '-LogPath', (& $quote $uiaLogPath)
+        )
+        if (@($IgnoreTitlePatterns).Count -gt 0) {
+            $uiaArguments += @('-IgnoreTitlePatterns', (& $quote ((@($IgnoreTitlePatterns) -join ','))))
+        }
+        $uiaWorker = Start-Process -FilePath $powerShellPath -ArgumentList $uiaArguments -WindowStyle Hidden -PassThru
+        $uiaWorkerProcessId = [int]$uiaWorker.Id
+        $uiaWorker.Dispose()
+    } catch {
+        $uiaWorkerProcessId = 0
+    }
+
     $arguments = @(
         '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-STA', '-File', (& $quote $workerPath),
         '-EventsDirectory', (& $quote $eventsDirectory),
         '-EventsPath', (& $quote $eventsPath),
         '-StatusPath', (& $quote $statusPath),
         '-StopPath', (& $quote $stopPath),
-        '-JobId', (& $quote $jobId)
+        '-JobId', (& $quote $jobId),
+        '-UiaTargetPath', (& $quote $uiaTargetPath)
     )
     if ($Mode -eq 'edge') {
         $arguments += @('-DomTargetPath', (& $quote $domTargetPath))
@@ -185,6 +227,9 @@ function Start-MbRecordingJob {
         $processId = [int]$worker.Id
         $worker.Dispose()
     } catch {
+        if ($uiaWorkerProcessId -gt 0) {
+            try { (Get-Process -Id $uiaWorkerProcessId -ErrorAction SilentlyContinue).Kill() } catch { }
+        }
         if ($edgeWorkerProcessId -gt 0) {
             try { (Get-Process -Id $edgeWorkerProcessId -ErrorAction SilentlyContinue).Kill() } catch { }
         }
@@ -221,7 +266,8 @@ function Start-MbRecordingJob {
         NarrationPath = $narrationPath; NarrationStatusPath = $narrationStatusPath
         DictationProcessId = $dictationProcessId
         Mode = $Mode; DomTargetPath = $domTargetPath
-        EdgeLogPath = $edgeLogPath
+        UiaTargetPath = $uiaTargetPath; UiaLogPath = $uiaLogPath
+        UiaWorkerProcessId = $uiaWorkerProcessId; EdgeLogPath = $edgeLogPath
         EdgeWorkerProcessId = $edgeWorkerProcessId; EdgePort = $script:MbRecordingEdgePort
     }
     return (Read-MbRecordingStatus)
@@ -479,6 +525,8 @@ function Remove-MbRecordingJob {
     if ($job.PSObject.Properties.Name -contains 'DictationProcessId') { $dictationProcessId = [int]$job.DictationProcessId }
     $edgeWorkerProcessId = 0
     if ($job.PSObject.Properties.Name -contains 'EdgeWorkerProcessId') { $edgeWorkerProcessId = [int]$job.EdgeWorkerProcessId }
+    $uiaWorkerProcessId = 0
+    if ($job.PSObject.Properties.Name -contains 'UiaWorkerProcessId') { $uiaWorkerProcessId = [int]$job.UiaWorkerProcessId }
     $mode = if ($job.PSObject.Properties.Name -contains 'Mode') { [string]$job.Mode } else { 'desktop' }
     $stopPath = if ($job.PSObject.Properties.Name -contains 'StopPath') { [string]$job.StopPath } else { '' }
     if (-not [string]::IsNullOrWhiteSpace($stopPath)) {
@@ -488,7 +536,7 @@ function Remove-MbRecordingJob {
     }
     $script:MbRecordingJob = $null
     # まだ記録プロセスが動いていたら止める。放置すると画面を撮り続ける。
-    foreach ($id in @($processId, $dictationProcessId, $edgeWorkerProcessId)) {
+    foreach ($id in @($processId, $dictationProcessId, $edgeWorkerProcessId, $uiaWorkerProcessId)) {
         if ($id -le 0) { continue }
         try {
             $process = Get-Process -Id $id -ErrorAction SilentlyContinue

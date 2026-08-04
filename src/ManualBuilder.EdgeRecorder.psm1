@@ -202,7 +202,16 @@ function Invoke-MbEdgeRecorderCdpOnSocket {
         if ($parsed -and $parsed.PSObject.Properties.Name -contains 'method' -and
             [string]$parsed.method -eq 'Runtime.bindingCalled' -and
             $parsed.params -and [string]$parsed.params.name -eq '__manualBuilderRecorderEmit') {
-            try { $script:MbEdgeRecorderPendingPointer = ([string]$parsed.params.payload | ConvertFrom-Json) } catch { }
+            try {
+                $pointer = ([string]$parsed.params.payload | ConvertFrom-Json)
+                # bindingはpointerdown直後に届く。この時点の物理座標をDOM情報へ固定し、
+                # 記録側が数十ms後に読むまでにマウスが動いても赤枠をずらさない。
+                $screenPoint = New-Object 'MbEdgeRecorderNative+POINT'
+                [void][MbEdgeRecorderNative]::GetCursorPos([ref]$screenPoint)
+                $pointer | Add-Member -NotePropertyName 'screenX' -NotePropertyValue ([int]$screenPoint.X) -Force
+                $pointer | Add-Member -NotePropertyName 'screenY' -NotePropertyValue ([int]$screenPoint.Y) -Force
+                $script:MbEdgeRecorderPendingPointer = $pointer
+            } catch { }
             continue
         }
         if ($parsed -and $parsed.PSObject.Properties.Name -contains 'id' -and [int]$parsed.id -eq $requestId) {
