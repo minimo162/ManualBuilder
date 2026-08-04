@@ -125,6 +125,10 @@ Add-Result ($null -eq $clamped) '範囲の外に出た操作対象は矩形に�
 $whole = [pscustomobject]@{ left = 100.0; top = 100.0; width = 800.0; height = 600.0 }
 Add-Result ($null -eq (ConvertTo-MbRegionRect -Region $capturedRegion -Target $whole)) '範囲いっぱいの矩形は赤枠にしない'
 
+# ブラウザーのページ領域は、タブやサイドバーを除くため画像の96%未満でも十分大きい。
+$largePage = [pscustomobject]@{ left = 120.0; top = 120.0; width = 740.0; height = 520.0 }
+Add-Result ($null -eq (ConvertTo-MbRegionRect -Region $capturedRegion -Target $largePage)) 'ページ全体に近い矩形は赤枠にしない'
+
 $sliver = [pscustomobject]@{ left = 500.0; top = 400.0; width = 0.5; height = 30.0 }
 Add-Result ($null -eq (ConvertTo-MbRegionRect -Region $capturedRegion -Target $sliver)) '潰れた矩形は赤枠にしない'
 
@@ -191,6 +195,39 @@ $infinite = [pscustomobject]@{ name = 'x'; controlType = 'ControlType.Button'; l
 Add-Result ((Test-MbUsableElementInfo -Info $infinite) -eq $false) '画面に出ていない要素は使わない'
 
 Add-Result ((Test-MbUsableElementInfo -Info $null) -eq $false) 'nullは使わない'
+
+# ブラウザーではFromPointがページ全体のDocumentを返すことがある。
+# 同じ点を含む候補から、実際に押せるリンク・ボタンの最小矩形を選ぶ。
+$page = [pscustomobject]@{
+    name = '申請画面'; controlType = 'ControlType.Document'; isActionable = $false
+    left = 0.0; top = 0.0; width = 1200.0; height = 800.0
+}
+$link = [pscustomobject]@{
+    name = '添付ファイルをダウンロード'; controlType = 'ControlType.Hyperlink'; isActionable = $true
+    left = 140.0; top = 420.0; width = 340.0; height = 28.0
+}
+$linkText = [pscustomobject]@{
+    name = '添付ファイルをダウンロード'; controlType = 'ControlType.Text'; isActionable = $false
+    left = 146.0; top = 423.0; width = 300.0; height = 20.0
+}
+$selected = Select-MbUiaTargetInfo -Candidates @($page, $link, $linkText) -X 200 -Y 430
+Add-Result ($null -ne $selected -and [string]$selected.controlType -eq 'ControlType.Hyperlink') 'ページ全体ではなくクリックしたリンクを選ぶ'
+
+$unnamedButton = [pscustomobject]@{
+    name = ''; controlType = 'ControlType.Button'; isActionable = $true
+    left = 500.0; top = 300.0; width = 90.0; height = 26.0
+}
+$selected = Select-MbUiaTargetInfo -Candidates @($page, $unnamedButton) -X 520 -Y 312
+Add-Result ($null -ne $selected -and [string]$selected.controlType -eq 'ControlType.Button') '名前が空でもクリックしたボタンの矩形を選ぶ'
+
+$invokeText = [pscustomobject]@{
+    name = '次へ'; controlType = 'ControlType.Text'; isActionable = $true
+    left = 620.0; top = 500.0; width = 60.0; height = 22.0
+}
+$selected = Select-MbUiaTargetInfo -Candidates @($page, $invokeText) -X 640 -Y 510
+Add-Result ($null -ne $selected -and [string]$selected.name -eq '次へ') 'Textとして公開された要素も操作パターンがあれば選ぶ'
+
+Add-Result ($null -eq (Select-MbUiaTargetInfo -Candidates @($page, $linkText) -X 200 -Y 430)) '操作できる候補が無ければページ全体の赤枠を付けない'
 
 # ---------------------------------------------------------------------
 # 入力の検出に使うキー
