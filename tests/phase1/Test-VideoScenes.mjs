@@ -37,6 +37,21 @@ const setBlock = (signature, col, row, value) => {
 };
 
 // ---------------------------------------------------------------
+console.log('planSampleTimes');
+{
+  const planSampleTimes = scenes.planSampleTimes;
+  check('サンプル時刻を計算する関数を公開する', typeof planSampleTimes === 'function');
+  if (typeof planSampleTimes === 'function') {
+    check('300ms未満の動画でも始端と終端を読む',
+      JSON.stringify(planSampleTimes(200, 300)) === JSON.stringify([0, 200]));
+    check('300msの非整数倍でも終端を読む',
+      JSON.stringify(planSampleTimes(1000, 300)) === JSON.stringify([0, 300, 600, 900, 1000]));
+    check('300msの整数倍では終端を重複させない',
+      JSON.stringify(planSampleTimes(900, 300)) === JSON.stringify([0, 300, 600, 900]));
+  }
+}
+
+// ---------------------------------------------------------------
 console.log('createSignature');
 {
   // 左半分が黒、右半分が白の4x2画像。ブロック平均が左右で分かれること。
@@ -142,6 +157,29 @@ console.log('detectStillRuns / selectScenes');
   // 遷移の1コマだけの区間は手順にしない。
   const shortRun = runs.find((run) => run.durationMs === 0);
   check('遷移中の単発コマは短い区間として現れる', Boolean(shortRun));
+}
+
+// ---------------------------------------------------------------
+console.log('detectStillRuns の境界と緩やかな変化');
+{
+  const still = makeSignature(0.4);
+  const boundarySamples = [0, 300, 600, 700]
+    .map((timeMs) => ({ timeMs, signature: still }));
+  const boundaryRuns = scenes.detectStillRuns(boundarySamples, {});
+  check('700msちょうどの静止区間を保持する',
+    boundaryRuns.length === 1 && boundaryRuns[0].durationMs === 700,
+    JSON.stringify(boundaryRuns));
+  check('700msちょうどの静止区間を場面として選ぶ',
+    scenes.selectScenes(boundarySamples, boundaryRuns, {}).length === 1);
+
+  const gradualSamples = [];
+  for (let i = 0; i < 8; i += 1) {
+    gradualSamples.push({ timeMs: i * 300, signature: makeSignature(0.2 + i * 0.006) });
+  }
+  const gradualRuns = scenes.detectStillRuns(gradualSamples, {});
+  check('閾値未満ずつ続く変化を長い静止と誤認しない',
+    gradualRuns.every((run) => run.durationMs < scenes.DEFAULTS.minStillMs),
+    JSON.stringify(gradualRuns.map((run) => run.durationMs)));
 }
 
 // ---------------------------------------------------------------

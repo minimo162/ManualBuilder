@@ -106,7 +106,7 @@ Add-Result (($serverText -match '\$projectReady = \$false') -and ($serverText -m
 Add-Result ($serverText -match '\$storageLayout\.RuntimePath') '二重起動情報をユーザーデータ配下へ置く'
 Add-Result ($serverText -match '\$storageLayout\.ExportJobsRoot') 'Office一時ジョブをユーザーデータ配下へ置く'
 Add-Result (($runCommandText -match '%~dp0src\\Start-ManualBuilderLauncher\.ps1') -and ($runCommandText -notmatch '(?im)^cd /d')) 'UNC共有フォルダーから更新ランチャーを起動できる'
-Add-Result ([string]$appVersionManifest.appVersion -eq '0.34.1') '配布用アプリバージョンを0.34.1へ更新する'
+Add-Result ([string]$appVersionManifest.appVersion -eq '0.35.0') '配布用アプリバージョンを0.35.0へ更新する'
 Add-Result ($workspaceModuleText -notmatch "ManualBuilder\.Project\.psm1'\) -Force") 'WorkspaceがProjectコマンドを強制再読込しない'
 Add-Result ($launcherModuleText -match "'ManualBuilder\\app'") 'アプリ実行コードをLocalApplicationDataへキャッシュする'
 Add-Result ($launcherModuleText -match "@\('src', 'web', 'run\.cmd', 'app-version\.json'\)") 'キャッシュ対象からプロジェクトデータを除外する'
@@ -363,6 +363,7 @@ $copilotJobText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder
 $sceneText = [IO.File]::ReadAllText((Join-Path $repoRoot 'web\assets\js\video-scenes.js'), [Text.Encoding]::UTF8)
 Add-Result ($indexText -match 'video-scenes\.js') '場面分割のスクリプトを読み込む'
 Add-Result ($jsText -match 'data-video-auto') '録画を自動で手順へ分けるボタンがある'
+Add-Result ($jsText -match 'data-video-open-draft') '録画の取り込み後にCopilot下書きへ進める'
 Add-Result ($sceneText -match 'locateChangeRect') '遷移の入口から操作位置を求める'
 Add-Result ($serverText -match '/api/videos/scenes/import') '場面の取り込み口がある'
 Add-Result ($serverText -match '/api/copilot/draft/start') 'Copilot下書きの開始口がある'

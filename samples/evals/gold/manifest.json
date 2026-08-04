@@ -1,0 +1,190 @@
+{
+  "schemaVersion": 1,
+  "fixtureVersion": "1.0.0",
+  "coordinateSystem": "normalized-0-to-1",
+  "evaluationDefaults": {
+    "sceneCountMustMatch": true,
+    "minimumRectIoU": 0.35,
+    "maximumCriticalFactualErrors": 0,
+    "minimumWritingScoreOutOf5": 4
+  },
+  "scenarios": [
+    {
+      "id": "expense-application",
+      "videoFile": "../videos/expense-application.webm",
+      "byteLength": 94086,
+      "sha256": "7cd1ac2d42d3b21eeed40f8f02f3367048643ecc2b9789946c95bab37c312565",
+      "durationMs": 7400,
+      "summary": "申請一覧から出張費申請を作成し、保存結果を確認する。",
+      "expectedSceneCount": 5,
+      "scenes": [
+        {
+          "order": 1,
+          "state": "申請一覧",
+          "representativeTimeRangeMs": [200, 600],
+          "operationKind": "click",
+          "operationTarget": "新規申請",
+          "expectedRect": { "x1": 0.7604, "y1": 0.1852, "x2": 0.9271, "y2": 0.2741 },
+          "expectedTitle": "新規申請の開始",
+          "expectedDescription": "［新規申請］を選択します。申請の作成画面が表示されます。",
+          "requiredConcepts": ["新規申請", "選択"],
+          "forbiddenClaims": ["申請を送信", "承認完了"]
+        },
+        {
+          "order": 2,
+          "state": "申請作成フォーム",
+          "representativeTimeRangeMs": [1800, 2300],
+          "operationKind": "click",
+          "operationTarget": "申請の種類",
+          "expectedRect": { "x1": 0.2292, "y1": 0.3426, "x2": 0.7708, "y2": 0.4352 },
+          "expectedTitle": "申請種類の選択",
+          "expectedDescription": "［申請の種類］を選択します。種類の一覧が表示されます。",
+          "requiredConcepts": ["申請の種類", "選択"],
+          "forbiddenClaims": ["出張費を保存", "申請を提出"]
+        },
+        {
+          "order": 3,
+          "state": "申請種類の一覧",
+          "representativeTimeRangeMs": [3300, 3800],
+          "operationKind": "click",
+          "operationTarget": "出張費",
+          "expectedRect": { "x1": 0.2396, "y1": 0.4667, "x2": 0.7604, "y2": 0.5667 },
+          "expectedTitle": "出張費の選択",
+          "expectedDescription": "申請の種類から［出張費］を選択します。",
+          "requiredConcepts": ["出張費", "選択"],
+          "forbiddenClaims": ["備品購入", "承認"]
+        },
+        {
+          "order": 4,
+          "state": "入力済み申請フォーム",
+          "representativeTimeRangeMs": [4800, 5300],
+          "operationKind": "click",
+          "operationTarget": "保存",
+          "expectedRect": { "x1": 0.7604, "y1": 0.8333, "x2": 0.9271, "y2": 0.9222 },
+          "expectedTitle": "申請の保存",
+          "expectedDescription": "入力内容を確認し、［保存］を選択します。",
+          "requiredConcepts": ["保存", "選択"],
+          "forbiddenClaims": ["送信", "承認"]
+        },
+        {
+          "order": 5,
+          "state": "保存完了",
+          "representativeTimeRangeMs": [6300, 6900],
+          "operationKind": "result",
+          "operationTarget": "",
+          "expectedRect": null,
+          "expectedTitle": "保存結果の確認",
+          "expectedDescription": "申請が保存され、状態が「下書き」と表示されたことを確認します。",
+          "requiredConcepts": ["保存", "下書き", "確認"],
+          "forbiddenClaims": ["申請が承認", "申請を送信"]
+        }
+      ]
+    },
+    {
+      "id": "settings-roundtrip",
+      "videoFile": "../videos/settings-roundtrip.webm",
+      "byteLength": 70527,
+      "sha256": "00d1ac9e6d80f879ebf3bdd006100d5a436d979bc3c724b3b06cbe05daf958cf",
+      "durationMs": 4600,
+      "summary": "ホームから通知設定へ移動し、ホームへ戻る。",
+      "expectedSceneCount": 3,
+      "scenes": [
+        {
+          "order": 1,
+          "state": "ホーム",
+          "representativeTimeRangeMs": [200, 600],
+          "operationKind": "click",
+          "operationTarget": "通知設定",
+          "expectedRect": { "x1": 0.7292, "y1": 0.6296, "x2": 0.9271, "y2": 0.7185 },
+          "expectedTitle": "通知設定を開く",
+          "expectedDescription": "［通知設定］を選択します。通知設定画面が表示されます。",
+          "requiredConcepts": ["通知設定", "選択"],
+          "forbiddenClaims": ["通知を有効", "設定を保存"]
+        },
+        {
+          "order": 2,
+          "state": "通知設定",
+          "representativeTimeRangeMs": [1800, 2300],
+          "operationKind": "click",
+          "operationTarget": "ホームへ戻る",
+          "expectedRect": { "x1": 0.2135, "y1": 0.1704, "x2": 0.4115, "y2": 0.2593 },
+          "expectedTitle": "ホームへ戻る",
+          "expectedDescription": "［ホームへ戻る］を選択します。",
+          "requiredConcepts": ["ホームへ戻る", "選択"],
+          "forbiddenClaims": ["メール通知を変更", "設定を保存"]
+        },
+        {
+          "order": 3,
+          "state": "ホームへの再訪",
+          "representativeTimeRangeMs": [3300, 3900],
+          "operationKind": "result",
+          "operationTarget": "",
+          "expectedRect": null,
+          "expectedTitle": "ホーム画面の確認",
+          "expectedDescription": "ホーム画面へ戻ったことを確認します。",
+          "requiredConcepts": ["ホーム", "戻った", "確認"],
+          "forbiddenClaims": ["通知設定を保存", "ログアウト"]
+        }
+      ]
+    },
+    {
+      "id": "terms-slow-scroll",
+      "videoFile": "../videos/terms-slow-scroll.webm",
+      "byteLength": 214765,
+      "sha256": "122908f963a4fc8a7f02ae1ec51d883a4c5d5a0ed43653083039be3c74093c96",
+      "durationMs": 7400,
+      "summary": "利用規約をゆっくりスクロールし、確認ダイアログで同意する。",
+      "expectedSceneCount": 4,
+      "scenes": [
+        {
+          "order": 1,
+          "state": "利用規約の上部",
+          "representativeTimeRangeMs": [200, 600],
+          "operationKind": "scroll",
+          "operationTarget": "ページ下部",
+          "expectedRect": null,
+          "expectedTitle": "利用規約の確認",
+          "expectedDescription": "利用規約を確認しながら、ページ下部までスクロールします。",
+          "requiredConcepts": ["利用規約", "スクロール"],
+          "forbiddenClaims": ["同意完了", "保存"]
+        },
+        {
+          "order": 2,
+          "state": "利用規約の下部",
+          "representativeTimeRangeMs": [3200, 3700],
+          "operationKind": "click",
+          "operationTarget": "同意する",
+          "expectedRect": { "x1": 0.7188, "y1": 0.8148, "x2": 0.8958, "y2": 0.9037 },
+          "expectedTitle": "利用規約への同意",
+          "expectedDescription": "内容を確認し、［同意する］を選択します。",
+          "requiredConcepts": ["同意する", "選択"],
+          "forbiddenClaims": ["同意が完了", "ホームを開く"]
+        },
+        {
+          "order": 3,
+          "state": "同意確認ダイアログ",
+          "representativeTimeRangeMs": [4800, 5300],
+          "operationKind": "click",
+          "operationTarget": "同意して続行",
+          "expectedRect": { "x1": 0.5417, "y1": 0.6019, "x2": 0.7396, "y2": 0.6907 },
+          "expectedTitle": "同意の確定",
+          "expectedDescription": "確認ダイアログで［同意して続行］を選択します。",
+          "requiredConcepts": ["同意して続行", "選択"],
+          "forbiddenClaims": ["キャンセル", "設定を保存"]
+        },
+        {
+          "order": 4,
+          "state": "同意完了",
+          "representativeTimeRangeMs": [6300, 6900],
+          "operationKind": "result",
+          "operationTarget": "",
+          "expectedRect": null,
+          "expectedTitle": "同意結果の確認",
+          "expectedDescription": "利用規約への同意が完了したことを確認します。",
+          "requiredConcepts": ["同意", "完了", "確認"],
+          "forbiddenClaims": ["ホームを開いた", "ログイン"]
+        }
+      ]
+    }
+  ]
+}

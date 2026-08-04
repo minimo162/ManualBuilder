@@ -47,6 +47,8 @@ Desktop.ini
 .vscode/
 .idea/
 *.code-workspace
+__pycache__/
+*.py[cod]
 
 # Test artifacts generated inside Phase 0
 /tests/phase0/test-images/

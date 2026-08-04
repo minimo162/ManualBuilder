@@ -38,6 +38,13 @@ function New-MbAnnotationId {
     return 'annotation-' + [guid]::NewGuid().ToString('N')
 }
 
+function Get-MbVideoSceneHash {
+    param([Parameter(Mandatory = $true)][byte[]]$Bytes)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return [BitConverter]::ToString($sha.ComputeHash($Bytes)).Replace('-', '') }
+    finally { $sha.Dispose() }
+}
+
 # 1コマを手順として追加し、操作位置の赤枠と、読み取った文字を書き込む。
 function Import-MbVideoScene {
     param(
@@ -50,7 +57,25 @@ function Import-MbVideoScene {
         [switch]$SkipOcr
     )
 
-    $added = Add-MbImageStep -Project $Project -ProjectPath $ProjectPath -SheetId $SheetId -Bytes $Bytes -Source 'video'
+    # 途中失敗後の再実行で、同じ時刻の同じ場面を二重に追加しない。
+    $sceneHash = Get-MbVideoSceneHash -Bytes $Bytes
+    $existingImage = @($Project.images | Where-Object { [string]$_.sha256 -eq $sceneHash }) | Select-Object -First 1
+    if ($null -ne $existingImage) {
+        $targetSheet = @($Project.sheets | Where-Object { [string]$_.id -eq $SheetId }) | Select-Object -First 1
+        if ($null -ne $targetSheet) {
+            foreach ($existingStep in @($targetSheet.steps | Where-Object { [string]$_.imageId -eq [string]$existingImage.id })) {
+                if ($existingStep.PSObject.Properties.Name -contains 'capture' -and $null -ne $existingStep.capture -and
+                    [string]$existingStep.capture.kind -eq 'video-scene' -and [int]$existingStep.capture.videoTimeMs -eq $TimeMs) {
+                    return [pscustomobject]@{ status = 'duplicate'; stepId = [string]$existingStep.id; clickLabel = [string]$existingStep.capture.clickLabel; ocrAvailable = $false }
+                }
+            }
+        }
+    }
+
+    # 同じ画面へ戻る操作も、時刻が異なれば別の手順として残す。画像実体は Add-MbImageAsset の
+    # ハッシュ重複排除で共有されるため、ファイルが二重に保存されることはない。
+    $added = Add-MbImageStep -Project $Project -ProjectPath $ProjectPath -SheetId $SheetId -Bytes $Bytes `
+        -Source 'video' -AllowDuplicateStep
     if ($added.Status -ne 'added') {
         # 同じ画面がすでに取り込まれている。場面分割で拾い切れなかった重複。
         return [pscustomobject]@{ status = $added.Status; stepId = ''; clickLabel = ''; ocrAvailable = $false }
@@ -144,11 +169,61 @@ function Read-MbCopilotDraftStatus {
     return $status
 }
 
+# ワーカーはスナップショットの project.json と同じ場所にある images を読む。
+# 下書き対象の手順が参照する画像だけをジョブ側へ複製し、実行中の編集や削除から隔離する。
+function Copy-MbCopilotDraftSnapshotImages {
+    param(
+        [Parameter(Mandatory = $true)][object]$Project,
+        [Parameter(Mandatory = $true)][string]$SourceProjectPath,
+        [Parameter(Mandatory = $true)][string]$SnapshotProjectPath,
+        [switch]$IncludeWritten,
+        [ValidateSet('draft', 'review')][string]$Mode = 'draft'
+    )
+
+    # 校正は文章だけを渡すため、画像のスナップショットは不要。
+    if ($Mode -eq 'review') { return 0 }
+
+    $targetImageIds = New-Object 'System.Collections.Generic.HashSet[string]'
+    foreach ($sheet in @($Project.sheets)) {
+        foreach ($step in @($sheet.steps)) {
+            $imageId = [string]$step.imageId
+            if ([string]::IsNullOrWhiteSpace($imageId)) { continue }
+            $needsDraft = [string]::IsNullOrWhiteSpace([string]$step.title) -or
+                [string]::IsNullOrWhiteSpace([string]$step.description)
+            if ($IncludeWritten -or $needsDraft) { [void]$targetImageIds.Add($imageId) }
+        }
+    }
+
+    if ($targetImageIds.Count -eq 0) { return 0 }
+    $snapshotImageDirectory = Join-Path (Split-Path -Parent ([IO.Path]::GetFullPath($SnapshotProjectPath))) 'images'
+    [void](New-Item -ItemType Directory -Path $snapshotImageDirectory -Force)
+
+    $copied = 0
+    foreach ($imageId in $targetImageIds) {
+        $image = @($Project.images | Where-Object { [string]$_.id -eq $imageId }) | Select-Object -First 1
+        if ($null -eq $image) { throw "下書きに使う画像の情報が見つかりません: $imageId" }
+        $fileName = [string]$image.fileName
+        # Get-MbProject の検証に加え、コピー先でもファイル名だけを受け入れて経路逸脱を防ぐ。
+        if ($fileName -notmatch '^image-[a-f0-9]{32}\.(png|jpg|bmp)$' -or
+            [IO.Path]::GetFileName($fileName) -ne $fileName) {
+            throw "下書きに使う画像ファイル名が不正です: $imageId"
+        }
+        $sourcePath = Get-MbImageFilePath -Project $Project -ProjectPath $SourceProjectPath -ImageId $imageId
+        if ([string]::IsNullOrWhiteSpace($sourcePath) -or -not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+            throw "下書きに使う画像ファイルが見つかりません: $fileName"
+        }
+        [IO.File]::Copy($sourcePath, (Join-Path $snapshotImageDirectory $fileName), $true)
+        $copied++
+    }
+    return $copied
+}
+
 function Start-MbCopilotDraftJob {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectPath,
         [switch]$IncludeWritten,
-        [ValidateSet('draft', 'review')][string]$Mode = 'draft'
+        [ValidateSet('draft', 'review')][string]$Mode = 'draft',
+        [scriptblock]$WorkerStarter = $null
     )
 
     $current = Read-MbCopilotDraftStatus
@@ -170,10 +245,16 @@ function Start-MbCopilotDraftJob {
     $jobDirectory = Join-Path $script:MbCopilotJobsRoot $jobId
     [void](New-Item -ItemType Directory -Path $jobDirectory -Force)
     $snapshotPath = Join-Path $jobDirectory 'project.json'
-    [IO.File]::Copy($ProjectPath, $snapshotPath, $true)
+    try {
+        [IO.File]::Copy($ProjectPath, $snapshotPath, $true)
+        [void](Copy-MbCopilotDraftSnapshotImages -Project $project -SourceProjectPath $ProjectPath `
+            -SnapshotProjectPath $snapshotPath -IncludeWritten:$IncludeWritten -Mode $Mode)
+    } catch {
+        # 不完全なスナップショットを残さず、ワーカーも起動しない。
+        Remove-Item -LiteralPath $jobDirectory -Recurse -Force -ErrorAction SilentlyContinue
+        throw
+    }
 
-    # 画像は元のプロジェクト側を読む。Copilotへ渡すのは焼き込んだ複製なので、
-    # 出力ジョブのように画像一式を退避する必要はない。
     $statusPath = Join-Path $jobDirectory 'status.json'
     $resultPath = Join-Path $jobDirectory 'result.json'
     $cancelPath = Join-Path $jobDirectory 'cancel.requested'
@@ -207,9 +288,17 @@ function Start-MbCopilotDraftJob {
     $arguments += '-Mode'
     $arguments += $Mode
 
-    $worker = Start-Process -FilePath $powerShellPath -ArgumentList $arguments -WindowStyle Hidden -PassThru
+    if ($null -eq $WorkerStarter) {
+        $worker = Start-Process -FilePath $powerShellPath -ArgumentList $arguments -WindowStyle Hidden -PassThru
+    } else {
+        # プロセス起動を伴わずにジョブ境界を検査できるよう、テスト時だけ起動処理を差し替える。
+        $worker = & $WorkerStarter $powerShellPath $arguments
+    }
+    if ($null -eq $worker -or $worker.PSObject.Properties.Name -notcontains 'Id') {
+        throw 'Copilot下書きワーカーを起動できませんでした。'
+    }
     $processId = [int]$worker.Id
-    $worker.Dispose()
+    if ($worker.PSObject.Methods.Name -contains 'Dispose') { $worker.Dispose() }
 
     $script:MbCopilotJob = [pscustomobject]@{
         JobId = $jobId; ProcessId = $processId; JobDirectory = $jobDirectory
