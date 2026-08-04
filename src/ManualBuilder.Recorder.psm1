@@ -683,6 +683,33 @@ function Write-MbRecordingEvent {
     [IO.File]::AppendAllText($EventsPath, $line + [Environment]::NewLine, (New-Object Text.UTF8Encoding($false)))
 }
 
+# UI Automation の Name は、Webページのコンテナなどで画面中の文章をまとめて返すことがある。
+# 取り込み側の操作対象は200文字までなので、記録時点から表示・進捗・保存のすべてを同じ長さへ
+# 揃える。入力・右クリックの補足も上限の内側に収める。
+function ConvertTo-MbRecorderTargetName {
+    param(
+        [AllowNull()][object]$Value,
+        [string]$Suffix = '',
+        [int]$MaxLength = 200
+    )
+
+    if ($MaxLength -le 0) { return '' }
+    $text = if ($null -eq $Value) { '' } else { [string]$Value }
+    $text = ($text.Replace("`r`n", ' ').Replace("`r", ' ').Replace("`n", ' ') -replace '\s+', ' ').Trim()
+    if ([string]::IsNullOrWhiteSpace($text)) { return '' }
+
+    if ($Suffix.Length -gt $MaxLength) { $Suffix = $Suffix.Substring(0, $MaxLength) }
+    $available = $MaxLength - $Suffix.Length
+    if ($text.Length -gt $available) {
+        if ($available -le 1) {
+            $text = if ($available -eq 1) { '…' } else { '' }
+        } else {
+            $text = $text.Substring(0, $available - 1).TrimEnd() + '…'
+        }
+    }
+    return $text + $Suffix
+}
+
 function Write-MbRecordingStatus {
     param(
         [Parameter(Mandatory = $true)][string]$StatusPath,
@@ -755,7 +782,7 @@ function Save-MbRecordingEvent {
     $targetName = ''
     $targetType = ''
     if ($null -ne $Target) {
-        $targetName = [string]$Target.name
+        $targetName = ConvertTo-MbRecorderTargetName -Value $Target.name
         $targetType = [string]$Target.controlType
     }
     $record = @{
@@ -979,6 +1006,7 @@ Export-ModuleMember -Function @(
     'Get-MbForegroundWindowInfo',
     'Get-MbVirtualScreenBounds',
     'Get-MbCaptureRegion',
+    'ConvertTo-MbRecorderTargetName',
     'Copy-MbScreenBitmap',
     'Save-MbBitmapRegion',
     'ConvertTo-MbRegionRect',
