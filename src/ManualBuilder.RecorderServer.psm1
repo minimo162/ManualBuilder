@@ -71,6 +71,18 @@ function Read-MbRecordingStatus {
             $status.state = 'failed'
             $status.message = '記録が途中で終わりました。もう一度実行してください。'
         }
+        if ($script:MbRecordingJob.PSObject.Properties.Name -contains 'Mode' -and
+            [string]$script:MbRecordingJob.Mode -eq 'edge' -and
+            $script:MbRecordingJob.PSObject.Properties.Name -contains 'EdgeWorkerProcessId') {
+            $edgeWorkerAlive = $false
+            try {
+                $edgeWorkerAlive = $null -ne (Get-Process -Id ([int]$script:MbRecordingJob.EdgeWorkerProcessId) -ErrorAction SilentlyContinue)
+            } catch { $edgeWorkerAlive = $false }
+            if (-not $edgeWorkerAlive) {
+                $status | Add-Member -NotePropertyName 'warning' -NotePropertyValue `
+                    '記録用EdgeのDOM監視を開始できなかったため、Windowsの対象検出で記録を続けています。' -Force
+            }
+        }
     }
     if ([string]$status.state -ne 'recording' -and
         $script:MbRecordingJob.PSObject.Properties.Name -contains 'Mode' -and
@@ -116,6 +128,7 @@ function Start-MbRecordingJob {
     $narrationPath = Join-Path $jobDirectory 'narration.jsonl'
     $narrationStatusPath = Join-Path $jobDirectory 'narration-status.json'
     $domTargetPath = Join-Path $jobDirectory 'dom-target.json'
+    $edgeLogPath = Join-Path $jobDirectory 'edge-monitor.log'
 
     $queued = [pscustomobject]@{
         jobId = $jobId; state = 'recording'; count = 0
@@ -139,6 +152,7 @@ function Start-MbRecordingJob {
                 '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-STA', '-File', (& $quote $edgeWorkerPath),
                 '-CachePath', (& $quote $domTargetPath),
                 '-StopPath', (& $quote $stopPath),
+                '-LogPath', (& $quote $edgeLogPath),
                 '-Port', ([string]$script:MbRecordingEdgePort)
             )
             $edgeWorker = Start-Process -FilePath $powerShellPath -ArgumentList $edgeArguments -WindowStyle Hidden -PassThru
@@ -207,6 +221,7 @@ function Start-MbRecordingJob {
         NarrationPath = $narrationPath; NarrationStatusPath = $narrationStatusPath
         DictationProcessId = $dictationProcessId
         Mode = $Mode; DomTargetPath = $domTargetPath
+        EdgeLogPath = $edgeLogPath
         EdgeWorkerProcessId = $edgeWorkerProcessId; EdgePort = $script:MbRecordingEdgePort
     }
     return (Read-MbRecordingStatus)
