@@ -48,7 +48,10 @@ function Render-MbSheetNavigation {
 }
 
 function Render-MbStepNavigation {
-    param([Parameter(Mandatory = $true)][object]$Sheet)
+    param(
+        [Parameter(Mandatory = $true)][object]$Sheet,
+        [Parameter(Mandatory = $true)][object]$Project
+    )
 
     $steps = @($Sheet.steps)
     $sb = New-Object System.Text.StringBuilder
@@ -82,9 +85,19 @@ function Render-MbStepNavigation {
         $active = if ($i -eq 0) { ' step-nav__item--active' } else { '' }
         [void]$sb.AppendLine('<div class="step-nav__item step-nav__item--' + $status + $active + '" data-step-nav-item data-step-id="' + $stepId + '">')
         [void]$sb.AppendLine('<button type="button" class="step-nav__drag" draggable="true" data-step-nav-drag-handle title="ドラッグ、または ↑↓ キーで並べ替え" aria-label="手順 ' + ($i + 1) + ' の並べ替え。ドラッグするか、↑↓ キーで移動">⠿</button>')
+        [void]$sb.AppendLine('<input class="step-nav__select" type="checkbox" data-step-select aria-label="手順 ' + ($i + 1) + ' を選択">')
         [void]$sb.AppendLine('<button type="button" class="step-nav__main" data-step-jump="' + $stepId + '"><span class="step-nav__number">' + ($i + 1) + '</span><span class="' + $titleClass + '">' + (ConvertTo-MbHtml $title) + '</span>' + $statusMark + '</button>')
         [void]$sb.AppendLine('<div class="step-nav__actions"><button type="button" class="step-nav__delete" data-step-nav-delete title="この手順を削除" aria-label="手順 ' + ($i + 1) + ' を削除">×</button></div></div>')
     }
+    [void]$sb.AppendLine('</div>')
+    [void]$sb.AppendLine('<div class="step-nav__bulk" data-step-bulk-actions hidden>')
+    [void]$sb.AppendLine('<div class="step-nav__bulk-heading"><strong data-step-selection-count aria-live="polite">0件選択</strong><button type="button" data-step-selection-clear>選択解除</button></div>')
+    [void]$sb.AppendLine('<select data-step-bulk-target aria-label="選択した手順の移動先"><option value="">移動先のシートを選択</option>')
+    foreach ($targetSheet in @($Project.sheets | Where-Object { $_.id -ne $Sheet.id })) {
+        [void]$sb.AppendLine('<option value="' + (ConvertTo-MbHtml $targetSheet.id) + '">' + (ConvertTo-MbHtml $targetSheet.name) + '</option>')
+    }
+    [void]$sb.AppendLine('</select>')
+    [void]$sb.AppendLine('<div class="step-nav__bulk-buttons"><button type="button" class="button button--secondary" data-step-bulk-move disabled>まとめて移動</button><button type="button" class="button button--ghost step-nav__bulk-delete" data-step-bulk-delete>まとめて削除</button></div>')
     [void]$sb.AppendLine('</div></nav>')
     return $sb.ToString()
 }
@@ -237,7 +250,7 @@ function ConvertTo-MbProjectLibraryHtml {
     )
 
     $sb = New-Object System.Text.StringBuilder
-    [void]$sb.AppendLine('<div id="workspace" class="workspace project-library" data-app-version="0.32.10">')
+    [void]$sb.AppendLine('<div id="workspace" class="workspace project-library" data-app-version="0.32.11">')
     [void]$sb.AppendLine('<header class="topbar project-library__topbar"><button type="button" class="brand brand--home" data-project-home hx-post="/api/projects/home" hx-target="#workspace" hx-swap="outerHTML" title="マニュアル一覧" aria-label="マニュアル一覧" aria-current="page"><span class="brand__mark" aria-hidden="true">M</span><span>ManualBuilder</span></button><div class="project-library__topbar-title">マニュアル一覧</div><div></div><div class="topbar__actions"><details class="action-menu topbar-menu"><summary class="icon-button" title="その他" aria-label="その他の操作">…</summary><div class="action-menu__panel action-menu__panel--right"><button type="button" class="menu-command menu-command--danger" hx-post="/api/shutdown" hx-target="body" hx-swap="none" hx-confirm="ManualBuilderを終了しますか？">ManualBuilderを終了</button></div></details></div></header>')
     [void]$sb.AppendLine('<main class="project-library__main">')
     [void]$sb.AppendLine('<section class="project-library__intro"><div><p class="eyebrow">作成したマニュアル</p><h1>マニュアルを選ぶ</h1></div><div class="project-library__actions"><input id="project-package-input" type="file" accept=".zip,application/zip" hidden><button type="button" class="button button--ghost" data-import-project-package>ZIPを取り込む</button><form class="project-create" hx-post="/api/projects/create" hx-target="#workspace" hx-swap="outerHTML"><label><span class="sr-only">新しいマニュアルの名前</span><input type="text" name="title" maxlength="100" placeholder="新しいマニュアルの名前"></label><button type="submit" class="button button--primary">＋ 新規作成</button></form></div></section>')
@@ -275,7 +288,7 @@ function ConvertTo-MbProjectLibraryHtml {
         }
         [void]$sb.AppendLine('</div></details>')
     }
-    [void]$sb.AppendLine('<footer class="project-library__footer"><span>v0.32.10</span></footer></main></div>')
+    [void]$sb.AppendLine('<footer class="project-library__footer"><span>v0.32.11</span></footer></main></div>')
     return $sb.ToString()
 }
 
@@ -297,7 +310,7 @@ function ConvertTo-MbWorkspaceHtml {
     $steps = @($sheet.steps)
     $sb = New-Object System.Text.StringBuilder
 
-    [void]$sb.AppendLine('<div id="workspace" class="workspace" data-app-version="0.32.10" data-revision="' + [int]$Project.revision + '" data-capture-version="' + $CaptureVersion + '">')
+    [void]$sb.AppendLine('<div id="workspace" class="workspace" data-app-version="0.32.11" data-revision="' + [int]$Project.revision + '" data-capture-version="' + $CaptureVersion + '">')
     [void]$sb.AppendLine('<header class="topbar">')
     [void]$sb.AppendLine('<button type="button" class="brand brand--home" data-project-home hx-post="/api/projects/home" hx-target="#workspace" hx-swap="outerHTML" title="マニュアル一覧へ戻る" aria-label="マニュアル一覧へ戻る"><span class="brand__mark" aria-hidden="true">M</span><span>ManualBuilder</span></button>')
     [void]$sb.AppendLine('<label class="project-title editable-name name-field" data-editable-name title="マニュアル名を編集"><span class="sr-only">マニュアル名</span><input type="text" name="title" maxlength="100" value="' + $title + '" aria-label="マニュアル名。入力して変更" hx-post="/api/project/title" hx-trigger="input changed delay:700ms, change" hx-target="#save-status" hx-swap="outerHTML"></label>')
@@ -306,7 +319,7 @@ function ConvertTo-MbWorkspaceHtml {
     [void]$sb.AppendLine('</header>')
 
     [void]$sb.AppendLine('<div class="app-layout">')
-    [void]$sb.AppendLine('<aside class="sidebar">' + (Render-MbSheetNavigation -Project $Project) + (Render-MbStepNavigation -Sheet $sheet) + '<div class="sidebar__footer"><span class="sidebar__version">v0.32.10</span></div></aside>')
+    [void]$sb.AppendLine('<aside class="sidebar">' + (Render-MbSheetNavigation -Project $Project) + (Render-MbStepNavigation -Sheet $sheet -Project $Project) + '<div class="sidebar__footer"><span class="sidebar__version">v0.32.11</span></div></aside>')
     [void]$sb.AppendLine('<main class="editor">')
     # 編集画面の見出しは入力欄なので、文書構造としての見出しが無い。読み上げの目次から
     # 何を編集中か分かるよう、画面には出さない h1 を置く。
