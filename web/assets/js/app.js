@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const appVersion = '0.33.0';
+  const appVersion = '0.33.1';
   // 番号注釈はSVG属性で指定するためCSS変数を参照できない。
   // 編集画面とExcel・Word出力（New-MbAnnotatedImage）で同じ見た目にするため、基準フォントを揃える。
   const ANNOTATION_NUMBER_FONT = '"BIZ UDPGothic", "BIZ UDPゴシック", "BIZ UDGothic", "BIZ UDゴシック", Meiryo, "Yu Gothic UI", "MS Pゴシック", sans-serif';
@@ -3015,7 +3015,7 @@
       if (status.state === 'recording') {
         setRecorderMessage(
           `${status.count} 件の操作を記録中`,
-          status.lastTarget ? `直前: ${status.lastTarget}` : 'この画面は最小化しても記録は続きます。'
+          status.warning || (status.lastTarget ? `直前: ${status.lastTarget}` : 'この画面は最小化しても記録は続きます。')
         );
         return;
       }

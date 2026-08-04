@@ -295,8 +295,12 @@ function Initialize-MbEdgeRecorderPage {
     $source = Get-MbEdgeRecorderInjectionScript
     $null = Invoke-MbEdgeRecorderCdpOnSocket -WebSocket $WebSocket -Method 'Runtime.enable' -TimeoutMilliseconds 3000
     $null = Invoke-MbEdgeRecorderCdpOnSocket -WebSocket $WebSocket -Method 'Page.enable' -TimeoutMilliseconds 3000
-    $null = Invoke-MbEdgeRecorderCdpOnSocket -WebSocket $WebSocket -Method 'Runtime.addBinding' `
-        -Params @{ name = '__manualBuilderRecorderEmit' } -TimeoutMilliseconds 3000
+    try {
+        $null = Invoke-MbEdgeRecorderCdpOnSocket -WebSocket $WebSocket -Method 'Runtime.addBinding' `
+            -Params @{ name = '__manualBuilderRecorderEmit' } -TimeoutMilliseconds 3000
+    } catch {
+        # 同じページへ再接続するとbindingは残っている。重複エラーでもポーリング経路は使える。
+    }
     $null = Invoke-MbEdgeRecorderCdpOnSocket -WebSocket $WebSocket -Method 'Page.addScriptToEvaluateOnNewDocument' `
         -Params @{ source = $source } -TimeoutMilliseconds 3000
     $null = Invoke-MbEdgeRecorderEvalOnSocket -WebSocket $WebSocket -Expression $source -TimeoutMilliseconds 3000
@@ -308,10 +312,21 @@ function Write-MbEdgeRecorderCache {
     $backup = $Path + '.' + [guid]::NewGuid().ToString('N') + '.bak'
     try {
         [IO.File]::WriteAllText($temporary, ($Value | ConvertTo-Json -Depth 20 -Compress), (New-Object Text.UTF8Encoding($false)))
-        if ([IO.File]::Exists($Path)) {
-            [IO.File]::Replace($temporary, $Path, $backup, $true)
-        } else {
-            [IO.File]::Move($temporary, $Path)
+        $delaysMs = @(0, 25, 50, 100, 200, 400)
+        for ($attempt = 0; $attempt -lt $delaysMs.Count; $attempt++) {
+            if ([int]$delaysMs[$attempt] -gt 0) { Start-Sleep -Milliseconds ([int]$delaysMs[$attempt]) }
+            try {
+                if ([IO.File]::Exists($Path)) {
+                    [IO.File]::Replace($temporary, $Path, $backup, $true)
+                } else {
+                    [IO.File]::Move($temporary, $Path)
+                }
+                return
+            } catch [IO.IOException] {
+                if ($attempt -eq ($delaysMs.Count - 1)) { throw }
+            } catch [UnauthorizedAccessException] {
+                if ($attempt -eq ($delaysMs.Count - 1)) { throw }
+            }
         }
     } finally {
         Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
@@ -342,6 +357,7 @@ function Invoke-MbEdgeRecorderCacheLoop {
     param(
         [Parameter(Mandatory = $true)][string]$CachePath,
         [Parameter(Mandatory = $true)][string]$StopPath,
+        [AllowEmptyString()][string]$LogPath = '',
         [int]$Port = 9465,
         [int]$PollIntervalMs = 90
     )
@@ -352,19 +368,19 @@ function Invoke-MbEdgeRecorderCacheLoop {
     $nextTargetRefresh = [DateTime]::MinValue
     try {
         while (-not (Test-Path -LiteralPath $StopPath -PathType Leaf)) {
-            if ($null -eq $socket -or [DateTime]::UtcNow -ge $nextTargetRefresh) {
-                $page = Get-MbEdgeRecorderVisiblePage -Port $Port
-                $nextTargetRefresh = [DateTime]::UtcNow.AddMilliseconds(700)
-                if ($null -eq $page) { Start-Sleep -Milliseconds 200; continue }
-                if ($null -eq $socket -or [string]$page.id -ne $targetId) {
-                    if ($null -ne $socket) { try { $socket.Dispose() } catch { } }
-                    $socket = Connect-MbEdgeRecorderWebSocket -WebSocketUrl ([string]$page.webSocketDebuggerUrl)
-                    $targetId = [string]$page.id
-                    Initialize-MbEdgeRecorderPage -WebSocket $socket
-                }
-            }
-
             try {
+                if ($null -eq $socket -or [DateTime]::UtcNow -ge $nextTargetRefresh) {
+                    $page = Get-MbEdgeRecorderVisiblePage -Port $Port
+                    $nextTargetRefresh = [DateTime]::UtcNow.AddMilliseconds(700)
+                    if ($null -eq $page) { Start-Sleep -Milliseconds 200; continue }
+                    if ($null -eq $socket -or [string]$page.id -ne $targetId) {
+                        if ($null -ne $socket) { try { $socket.Dispose() } catch { } }
+                        $socket = Connect-MbEdgeRecorderWebSocket -WebSocketUrl ([string]$page.webSocketDebuggerUrl)
+                        $targetId = [string]$page.id
+                        Initialize-MbEdgeRecorderPage -WebSocket $socket
+                    }
+                }
+
                 $value = Invoke-MbEdgeRecorderEvalOnSocket -WebSocket $socket `
                     -Expression '(window.__manualBuilderRecorderRead ? window.__manualBuilderRecorderRead() : null)' `
                     -TimeoutMilliseconds 1200
@@ -383,16 +399,26 @@ function Invoke-MbEdgeRecorderCacheLoop {
                     })
                 }
             } catch {
+                if (-not [string]::IsNullOrWhiteSpace($LogPath)) {
+                    try {
+                        $line = [DateTime]::UtcNow.ToString('o') + "`t" + $_.Exception.Message + [Environment]::NewLine
+                        [IO.File]::AppendAllText($LogPath, $line, (New-Object Text.UTF8Encoding($false)))
+                    } catch { }
+                }
                 if ($null -ne $socket) { try { $socket.Dispose() } catch { } }
                 $socket = $null
                 $targetId = ''
                 $nextTargetRefresh = [DateTime]::MinValue
+                Start-Sleep -Milliseconds 250
+                continue
             }
             Start-Sleep -Milliseconds $PollIntervalMs
         }
     } finally {
         if ($null -ne $socket) { try { $socket.Dispose() } catch { } }
-        Stop-MbRecorderEdge -Port $Port
+        # 監視エラーでワーカーが落ちてもEdgeを巻き添えで閉じない。
+        # 明示的な停止要求が届いた場合だけ、専用Edgeを閉じる。
+        if (Test-Path -LiteralPath $StopPath -PathType Leaf) { Stop-MbRecorderEdge -Port $Port }
     }
 }
 
