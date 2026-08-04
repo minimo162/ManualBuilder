@@ -48,6 +48,14 @@ function New-MbStepCapture {
     }
 }
 
+function New-MbStepReview {
+    return [pscustomobject]@{
+        required = $false
+        action   = ''       # review / delete。空は確認済み
+        reason   = ''       # Copilotが要確認とした理由
+    }
+}
+
 function New-MbStep {
     $now = Get-MbUtcTimestamp
     return [pscustomobject]@{
@@ -60,6 +68,7 @@ function New-MbStep {
         annotations = @()
         crop        = [pscustomobject]@{ x = 0.0; y = 0.0; width = 1.0; height = 1.0 }
         capture     = New-MbStepCapture
+        review      = New-MbStepReview
         createdAt   = $now
         updatedAt   = $now
     }
@@ -147,6 +156,7 @@ function Repair-MbProject {
             Add-MbPropertyIfMissing $step 'annotations' @()
             Add-MbPropertyIfMissing $step 'crop' ([pscustomobject]@{ x = 0.0; y = 0.0; width = 1.0; height = 1.0 })
             Add-MbPropertyIfMissing $step 'capture' (New-MbStepCapture)
+            Add-MbPropertyIfMissing $step 'review' (New-MbStepReview)
             Add-MbPropertyIfMissing $step 'createdAt' (Get-MbUtcTimestamp)
             Add-MbPropertyIfMissing $step 'updatedAt' (Get-MbUtcTimestamp)
             $step.annotations = @($step.annotations)
@@ -169,6 +179,13 @@ function Repair-MbProject {
                 Add-MbPropertyIfMissing $step.capture 'targetCandidateId' ''
                 Add-MbPropertyIfMissing $step.capture 'targetCandidates' @()
                 $step.capture.targetCandidates = @($step.capture.targetCandidates)
+            }
+            if ($null -eq $step.review) {
+                $step.review = New-MbStepReview
+            } else {
+                Add-MbPropertyIfMissing $step.review 'required' $false
+                Add-MbPropertyIfMissing $step.review 'action' ''
+                Add-MbPropertyIfMissing $step.review 'reason' ''
             }
         }
     }
@@ -211,6 +228,12 @@ function Test-MbProject {
             [void](Get-MbText -Value $step.title -MaxLength 100 -FieldName '手順タイトル')
             [void](Get-MbText -Value $step.description -MaxLength 4000 -FieldName '説明')
             [void](Get-MbText -Value $step.note -MaxLength 2000 -FieldName '補足')
+            if ([bool]$step.review.required) {
+                if ([string]$step.review.action -notin @('review', 'delete')) { throw '要確認の操作が不正です。' }
+                [void](Get-MbText -Value $step.review.reason -MaxLength 500 -FieldName '要確認の理由')
+            } elseif (-not [string]::IsNullOrWhiteSpace([string]$step.review.action)) {
+                throw '確認済み手順に要確認の操作が残っています。'
+            }
             foreach ($cropProperty in @('x', 'y', 'width', 'height')) {
                 if ($step.crop.PSObject.Properties.Name -notcontains $cropProperty) { throw '切り抜き範囲が不足しています。' }
                 $cropValue = [double]$step.crop.$cropProperty
@@ -449,12 +472,28 @@ function Set-MbSheetOrder {
 }
 
 function Add-MbStep {
-    param([object]$Project, [string]$SheetId)
+    param(
+        [object]$Project,
+        [string]$SheetId,
+        [AllowEmptyString()][string]$AfterStepId = ''
+    )
     $sheet = @($Project.sheets | Where-Object { $_.id -eq $SheetId }) | Select-Object -First 1
     if (-not $sheet) { throw '対象シートが見つかりません。' }
     if (@($sheet.steps).Count -ge 500) { throw '1シートの手順は500件までです。' }
     $step = New-MbStep
-    $sheet.steps = @($sheet.steps) + @($step)
+    $currentSteps = @($sheet.steps)
+    if ([string]::IsNullOrWhiteSpace($AfterStepId)) {
+        $sheet.steps = $currentSteps + @($step)
+    } else {
+        $afterIndex = -1
+        for ($i = 0; $i -lt $currentSteps.Count; $i++) {
+            if ([string]$currentSteps[$i].id -eq $AfterStepId) { $afterIndex = $i; break }
+        }
+        if ($afterIndex -lt 0) { throw '追加位置の手順が見つかりません。' }
+        $before = if ($afterIndex -ge 0) { @($currentSteps | Select-Object -First ($afterIndex + 1)) } else { @() }
+        $after = @($currentSteps | Select-Object -Skip ($afterIndex + 1))
+        $sheet.steps = @($before) + @($step) + @($after)
+    }
     $sheet.updatedAt = Get-MbUtcTimestamp
     return $step
 }
@@ -836,6 +875,26 @@ function Remove-MbStep {
     throw '対象手順が見つかりません。'
 }
 
+function Set-MbStepReview {
+    param(
+        [Parameter(Mandatory = $true)][object]$Project,
+        [Parameter(Mandatory = $true)][string]$StepId,
+        [ValidateSet('', 'review', 'delete')][string]$Action = '',
+        [AllowEmptyString()][string]$Reason = ''
+    )
+
+    $target = Get-MbStepById -Project $Project -StepId $StepId
+    if (-not $target) { throw '対象手順が見つかりません。' }
+    $safeReason = Get-MbText -Value $Reason -MaxLength 500 -FieldName '要確認の理由'
+    $target.review = [pscustomobject]@{
+        required = -not [string]::IsNullOrWhiteSpace($Action)
+        action   = $Action
+        reason   = if ([string]::IsNullOrWhiteSpace($Action)) { '' } else { $safeReason }
+    }
+    $target.updatedAt = Get-MbUtcTimestamp
+    return $target
+}
+
 function Remove-MbSteps {
     param(
         [Parameter(Mandatory = $true)][object]$Project,
@@ -863,6 +922,7 @@ Export-ModuleMember -Function @(
     'New-MbSheet',
     'New-MbStep',
     'New-MbStepCapture',
+    'New-MbStepReview',
     'Get-MbStepById',
     'Test-MbNormalizedRect',
     'Set-MbStepCapture',
@@ -884,6 +944,7 @@ Export-ModuleMember -Function @(
     'Move-MbStepsToSheet',
     'Set-MbStepAnnotations',
     'Set-MbStepImageEdits',
+    'Set-MbStepReview',
     'Remove-MbStep',
     'Remove-MbSteps'
 )

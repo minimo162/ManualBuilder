@@ -35,6 +35,7 @@ function New-MbTestStep {
         imageId     = 'image-' + ([guid]::NewGuid().ToString('N'))
         annotations = @($annotations)
         crop        = [pscustomobject]@{ x = 0.0; y = 0.0; width = 1.0; height = 1.0 }
+        review      = [pscustomobject]@{ required = $false; action = ''; reason = '' }
     }
 }
 
@@ -103,6 +104,9 @@ Assert-Mb ($navHtml -match 'aria-label="画像なし"') '画像なしの手順�
 Assert-Mb (([regex]::Matches($navHtml, 'step-nav__status')).Count -eq 2) '入力済みの手順には目印を出さない'
 # ドラッグしか案内していないと、キーボードだけを使う人が並べ替えに気付けない（UX-08）。
 Assert-Mb ($navHtml -match 'data-step-nav-drag-handle[^>]*↑↓ キー') '手順の取っ手がキーボード操作を案内する'
+Assert-Mb ($navHtml -match 'data-step-select-mode[^>]*>複数選択') '複数選択を明示的に開始できる'
+Assert-Mb ($navHtml -match 'data-step-selection-all[^>]*>すべて選択') '手順をすべて選択できる'
+Assert-Mb (([regex]::Matches($navHtml, 'data-step-bulk-order=')).Count -eq 4) '選択した手順を一括で上下・先頭・末尾へ移動できる'
 
 Write-Host ''
 Write-Host '--- 録画から手順書を作る主導線 ---' -ForegroundColor Cyan
@@ -134,6 +138,45 @@ Assert-Mb ($filledWorkspaceHtml -notmatch 'class="empty-state') '手順がある
 Assert-Mb ($filledWorkspaceHtml -match 'topbar__main-action[^>]*data-record-operations[^>]*>操作を記録') '編集中も主機能へスクロールせず戻れる'
 Assert-Mb (([regex]::Matches($filledWorkspaceHtml, 'button button--primary[^>]*data-record-operations')).Count -eq 1) '編集中も操作記録の主ボタンを重複させない'
 Assert-Mb ($filledWorkspaceHtml -match 'topbar__video-action[^>]*data-open-video-picker[^>]*>録画を取り込む') '編集中も既存録画をメニューを開かず取り込める'
+
+Write-Host ''
+Write-Host '--- Copilot後の仕上げ導線 ---' -ForegroundColor Cyan
+Assert-Mb ($filledWorkspaceHtml -match 'data-finish-guide') '編集画面に仕上げ状況を常時表示する'
+Assert-Mb ($filledWorkspaceHtml -match 'data-finish-check="text"') '説明なしの手順へ移動できる'
+Assert-Mb ($filledWorkspaceHtml -match 'data-finish-check="annotation"') '赤枠・番号なしの手順を確認できる'
+Assert-Mb ($filledWorkspaceHtml -match 'data-finish-check="attention"') 'Copilot後の要確認手順へ移動できる'
+Assert-Mb ($filledWorkspaceHtml -match 'data-add-step-after[^>]*>＋ 手順をこの後に追加') '現在の手順の直後へ追加できる入口を表示する'
+Assert-Mb (([regex]::Matches($filledWorkspaceHtml, 'data-open-export-dialog')).Count -eq 2) '上部と仕上げ欄から最終出力へ進める'
+$cardHtml = ConvertTo-MbStepCardHtml -Step (New-MbTestStep -AnnotationCount 0) -Number 2 -Total 3 -Token 'testtoken'
+Assert-Mb (([regex]::Matches($cardHtml, 'data-step-move=')).Count -eq 2) '手順カードから個別に上下移動できる'
+Assert-Mb ($cardHtml -match 'data-step-card-delete[^>]*>削除') '手順カードから削除できる'
+Assert-Mb ($cardHtml -match 'data-open-annotation[^>]*[\s\S]*赤枠・番号を追加') '赤枠・番号の入口を具体的な名前で表示する'
+Assert-Mb ($cardHtml -match 'annotation-badge[^>]*>注釈 <span class="annotation-count">0') '注釈がない手順も状態を表示する'
+
+$reviewStep = New-MbTestStep -AnnotationCount 0
+$reviewStep.review = [pscustomobject]@{ required = $true; action = 'review'; reason = '赤枠の候補を特定できませんでした。' }
+$reviewCardHtml = ConvertTo-MbStepCardHtml -Step $reviewStep -Number 1 -Total 1 -Token 'testtoken'
+Assert-Mb ($reviewCardHtml -match 'data-step-review-notice') '要確認を手順カード上で見落とさない'
+Assert-Mb ($reviewCardHtml -match 'data-step-review-resolve[^>]*>確認済みにする') '明示操作でだけ要確認を解決できる'
+
+$secondSheetStep = New-MbTestStep -AnnotationCount 1
+$secondSheetStep.description = ''
+$secondSheetStep.annotations[0].type = 'arrow'
+$secondSheetStep.review = [pscustomobject]@{ required = $true; action = 'review'; reason = '文章を確認してください。' }
+$multiSheetProject = New-MbTestProject -Steps @((New-MbTestStep -AnnotationCount 1))
+$secondSheet = New-MbTestSheet -Steps @($secondSheetStep)
+$secondSheet.id = 'sheet-2'
+$secondSheet.name = '未完成シート'
+$multiSheetProject.sheets = @($multiSheetProject.sheets[0], $secondSheet)
+$multiSheetHtml = ConvertTo-MbWorkspaceHtml -Project $multiSheetProject -Token 'testtoken'
+$finishMatch = [regex]::Match($multiSheetHtml, '<textarea hidden data-project-finish-data>(.*?)</textarea>')
+Assert-Mb $finishMatch.Success '全シートの仕上げ情報を画面へ埋め込む'
+$finishItems = ([Net.WebUtility]::HtmlDecode($finishMatch.Groups[1].Value) | ConvertFrom-Json)
+Assert-Mb (@($finishItems).Count -eq 2) '仕上げ情報が別シートの手順も含む'
+$secondFinish = @($finishItems | Where-Object { $_.sheetId -eq 'sheet-2' })[0]
+Assert-Mb ([bool]$secondFinish.missingText) '別シートの説明未入力を出力前確認へ渡す'
+Assert-Mb (-not [bool]$secondFinish.hasFocusAnnotation) '矢印だけを赤枠・番号ありとして数えない'
+Assert-Mb ([bool]$secondFinish.reviewRequired -and [string]$secondFinish.reviewAction -eq 'review') '別シートの要確認を再読込後も仕上げ確認へ渡す'
 
 Write-Host ''
 Write-Host 'Web rendering tests passed.' -ForegroundColor Green

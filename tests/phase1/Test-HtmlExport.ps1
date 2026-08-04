@@ -164,6 +164,56 @@ try {
         $referencedImage = [string]$Matches[1]
         Assert-Mb (Test-Path -LiteralPath (Join-Path (Join-Path $plainResult.OutputPath 'images') $referencedImage) -PathType Leaf) `
             '注釈も切り抜きも無い手順でも画像を出力する（リンク切れにしない）'
+
+        # --- 利用者が追加した赤枠を最終HTML画像へ焼き込む ---
+        $annotatedRoot = Join-Path $testRoot 'annotated-image'
+        [void](New-Item -ItemType Directory -Path (Join-Path $annotatedRoot 'images') -Force)
+        $annotatedImageId = 'image-' + ('b' * 32)
+        $annotatedImageName = $annotatedImageId + '.png'
+        $annotatedImagePath = Join-Path (Join-Path $annotatedRoot 'images') $annotatedImageName
+        $sourceBitmap = New-Object Drawing.Bitmap 120, 80
+        $sourceGraphics = [Drawing.Graphics]::FromImage($sourceBitmap)
+        try {
+            $sourceGraphics.Clear([Drawing.Color]::White)
+            $sourceBitmap.Save($annotatedImagePath, [Drawing.Imaging.ImageFormat]::Png)
+        } finally {
+            $sourceGraphics.Dispose()
+            $sourceBitmap.Dispose()
+        }
+        $annotatedProject = New-MbProject
+        $annotatedProject.title = '赤枠つきの出力'
+        $annotatedStep = Add-MbStep -Project $annotatedProject -SheetId $annotatedProject.sheets[0].id
+        $annotatedStep.title = '赤枠を確認する手順'
+        $annotatedStep.description = '赤枠内を選択します。'
+        $annotatedStep.imageId = $annotatedImageId
+        $annotatedProject.images = @([pscustomobject]@{
+            id = $annotatedImageId; fileName = $annotatedImageName; sha256 = (Get-FileHash -LiteralPath $annotatedImagePath -Algorithm SHA256).Hash
+            width = 120; height = 80; byteLength = (Get-Item -LiteralPath $annotatedImagePath).Length; mimeType = 'image/png'
+        })
+        [void](Set-MbStepAnnotations -Project $annotatedProject -StepId $annotatedStep.id `
+            -AnnotationsJson '[{"id":"annotation-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","type":"rect","x1":0.1,"y1":0.1,"x2":0.7,"y2":0.7,"label":0}]')
+        $annotatedProjectPath = Join-Path $annotatedRoot 'project.json'
+        $annotatedProject = Save-MbProject -Project $annotatedProject -Path $annotatedProjectPath
+        $annotatedResult = Invoke-MbHtmlExport -Project $annotatedProject -ProjectPath $annotatedProjectPath -OutputDirectory $outputRoot
+        $annotatedHtml = [IO.File]::ReadAllText($annotatedResult.IndexPath, [Text.Encoding]::UTF8)
+        Assert-Mb ($annotatedHtml -match '<img src="images/([^"]+)"') '赤枠つきHTMLが出力画像を参照する'
+        $annotatedOutputPath = Join-Path (Join-Path $annotatedResult.OutputPath 'images') ([string]$Matches[1])
+        Assert-Mb (Test-Path -LiteralPath $annotatedOutputPath -PathType Leaf) '赤枠つきの出力画像を作成する'
+        Assert-Mb ((Get-FileHash -LiteralPath $annotatedOutputPath -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $annotatedImagePath -Algorithm SHA256).Hash) `
+            'HTML出力画像へ赤枠を焼き込む'
+        $renderedBitmap = New-Object Drawing.Bitmap $annotatedOutputPath
+        try {
+            $redPixels = 0
+            for ($x = 0; $x -lt $renderedBitmap.Width; $x++) {
+                for ($y = 0; $y -lt $renderedBitmap.Height; $y++) {
+                    $pixel = $renderedBitmap.GetPixel($x, $y)
+                    if ($pixel.R -gt 170 -and $pixel.G -lt 120 -and $pixel.B -lt 120) { $redPixels++ }
+                }
+            }
+            Assert-Mb ($redPixels -gt 0) '最終HTML画像に赤枠の赤色画素がある'
+        } finally {
+            $renderedBitmap.Dispose()
+        }
     } else {
         Write-Host '[SKIP] 注釈なしの画像出力（GDI+が使えない環境のため）' -ForegroundColor Yellow
     }
