@@ -197,6 +197,34 @@ function New-MbRecorderAnnotationId {
     return 'annotation-' + [guid]::NewGuid().ToString('N')
 }
 
+# 元画像はウィンドウ全体のまま残し、通常表示だけを操作対象の周辺へ寄せる。
+# クリック位置だけのフォールバックは空クリックの可能性があるため、自動切り抜きしない。
+function Get-MbRecorderTargetCrop {
+    param(
+        [AllowNull()]$Rect,
+        [string]$TargetType = ''
+    )
+
+    if ($TargetType -eq 'ControlType.ClickPoint' -or -not (Test-MbNormalizedRect -Rect $Rect)) { return $null }
+    $targetWidth = [double]$Rect.x2 - [double]$Rect.x1
+    $targetHeight = [double]$Rect.y2 - [double]$Rect.y1
+    if ($targetWidth -le 0 -or $targetHeight -le 0) { return $null }
+
+    # 小さな文字や赤枠を約1.8倍で見せつつ、周辺の文脈も半画面以上残す。
+    $width = [Math]::Min(1.0, [Math]::Max(0.55, $targetWidth + 0.24))
+    $height = [Math]::Min(1.0, [Math]::Max(0.55, $targetHeight + 0.24))
+    if ($width -ge 0.999999 -and $height -ge 0.999999) { return $null }
+
+    $centerX = ([double]$Rect.x1 + [double]$Rect.x2) / 2.0
+    $centerY = ([double]$Rect.y1 + [double]$Rect.y2) / 2.0
+    $x = [Math]::Max(0.0, [Math]::Min(1.0 - $width, $centerX - ($width / 2.0)))
+    $y = [Math]::Max(0.0, [Math]::Min(1.0 - $height, $centerY - ($height / 2.0)))
+    return [pscustomobject]@{
+        x = [Math]::Round($x, 6); y = [Math]::Round($y, 6)
+        width = [Math]::Round($width, 6); height = [Math]::Round($height, 6)
+    }
+}
+
 function Get-MbRecordedNarration {
     if ($null -eq $script:MbRecordingJob) { return @() }
     $path = [string]$script:MbRecordingJob.NarrationPath
@@ -324,6 +352,7 @@ function Import-MbRecordedEvents {
 
         $rect = $null
         if ($record.PSObject.Properties.Name -contains 'rect') { $rect = $record.rect }
+        $annotation = @()
         if ($null -ne $rect -and (Test-MbNormalizedRect -Rect $rect)) {
             $annotation = @([pscustomobject]@{
                 id    = New-MbRecorderAnnotationId
@@ -334,17 +363,28 @@ function Import-MbRecordedEvents {
                 y2    = [Math]::Round([double]$rect.y2, 6)
                 label = 0
             })
+        }
+
+        $targetType = if ($record.PSObject.Properties.Name -contains 'targetType') { [string]$record.targetType } else { '' }
+        $crop = Get-MbRecorderTargetCrop -Rect $rect -TargetType $targetType
+        if ($null -ne $crop) {
+            [void](Set-MbStepImageEdits -Project $Project -StepId $stepId `
+                -AnnotationsJson (ConvertTo-Json -InputObject $annotation -Depth 5) `
+                -CropJson (ConvertTo-Json -InputObject $crop -Compress))
+        } elseif (@($annotation).Count -gt 0) {
             [void](Set-MbStepAnnotations -Project $Project -StepId $stepId -AnnotationsJson (ConvertTo-Json -InputObject $annotation -Depth 5))
         }
 
         $kind = if ([string]$record.kind -eq 'input') { 'recorded-input' } else { 'recorded-click' }
         $targetName = [string]$record.targetName
+        $suffix = ''
         # 入力の手順は「どの欄に入れたか」を示す。入力した文字は記録していない。
         if ($kind -eq 'recorded-input' -and -not [string]::IsNullOrWhiteSpace($targetName)) {
-            $targetName = $targetName + '（入力）'
+            $suffix = '（入力）'
         } elseif ([string]$record.kind -eq 'right-click' -and -not [string]::IsNullOrWhiteSpace($targetName)) {
-            $targetName = $targetName + '（右クリック）'
+            $suffix = '（右クリック）'
         }
+        $targetName = ConvertTo-MbRecorderTargetName -Value $targetName -Suffix $suffix
         $spoken = ''
         if ($narration.ContainsKey($index)) { $spoken = [string]$narration[$index] }
         [void](Set-MbStepCapture -Project $Project -StepId $stepId -Kind $kind `
@@ -402,6 +442,7 @@ Export-ModuleMember -Function @(
     'Get-MbRecordedEvents',
     'Get-MbRecordedEventImagePath',
     'Import-MbRecordedEvents',
+    'Get-MbRecorderTargetCrop',
     'Get-MbRecordedNarration',
     'Merge-MbNarrationIntoEvents',
     'Remove-MbRecordingJob',
