@@ -105,7 +105,7 @@ Add-Result (($serverText -match '\$projectReady = \$false') -and ($serverText -m
 Add-Result ($serverText -match '\$storageLayout\.RuntimePath') '二重起動情報をユーザーデータ配下へ置く'
 Add-Result ($serverText -match '\$storageLayout\.ExportJobsRoot') 'Office一時ジョブをユーザーデータ配下へ置く'
 Add-Result (($runCommandText -match '%~dp0src\\Start-ManualBuilderLauncher\.ps1') -and ($runCommandText -notmatch '(?im)^cd /d')) 'UNC共有フォルダーから更新ランチャーを起動できる'
-Add-Result ([string]$appVersionManifest.appVersion -eq '0.33.1') '配布用アプリバージョンを0.33.1へ更新する'
+Add-Result ([string]$appVersionManifest.appVersion -eq '0.33.2') '配布用アプリバージョンを0.33.2へ更新する'
 Add-Result ($workspaceModuleText -notmatch "ManualBuilder\.Project\.psm1'\) -Force") 'WorkspaceがProjectコマンドを強制再読込しない'
 Add-Result ($launcherModuleText -match "'ManualBuilder\\app'") 'アプリ実行コードをLocalApplicationDataへキャッシュする'
 Add-Result ($launcherModuleText -match "@\('src', 'web', 'run\.cmd', 'app-version\.json'\)") 'キャッシュ対象からプロジェクトデータを除外する'
@@ -392,6 +392,9 @@ Add-Result ($recorderServerText -match 'AllowDuplicateStep') '同じ画面でも
 Add-Result (($recorderModuleText -match 'ConvertTo-MbRecorderTargetName') -and ($recorderServerText -match 'ConvertTo-MbRecorderTargetName.+-Suffix \$suffix')) '操作対象を補足込みで200文字へ収める'
 Add-Result (($edgeRecorderModuleText -match 'remote-debugging-port') -and
     ($edgeRecorderModuleText -match 'Page\.addScriptToEvaluateOnNewDocument')) '記録用EdgeをCDPで監視する'
+Add-Result ($edgeRecorderModuleText -match "'--disable-extensions'") '記録用Edgeは外部拡張機能を読み込まない'
+Add-Result (($edgeRecorderModuleText -match 'if \(Test-MbRecorderDevTools -Port \$Port\) \{[\s\S]*Stop-MbRecorderEdge -Port \$Port') -and
+    ($edgeRecorderModuleText -notmatch '新しいタブを前面へ出して再利用する')) '前回の記録用Edgeを再利用せず起動オプションを確実に反映する'
 Add-Result (($edgeRecorderModuleText -match '\$delaysMs = @\(0, 25, 50, 100, 200, 400\)') -and
     ($edgeRecorderModuleText -match 'if \(Test-Path -LiteralPath \$StopPath -PathType Leaf\) \{ Stop-MbRecorderEdge')) '一時的な監視エラーではEdgeを閉じず、明示停止時だけ終了する'
 Add-Result (($edgeRecorderModuleText -match "addEventListener\('pointerdown'") -and

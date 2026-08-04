@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const appVersion = '0.33.1';
+  const appVersion = '0.33.2';
   // 番号注釈はSVG属性で指定するためCSS変数を参照できない。
   // 編集画面とExcel・Word出力（New-MbAnnotatedImage）で同じ見た目にするため、基準フォントを揃える。
   const ANNOTATION_NUMBER_FONT = '"BIZ UDPGothic", "BIZ UDPゴシック", "BIZ UDGothic", "BIZ UDゴシック", Meiryo, "Yu Gothic UI", "MS Pゴシック", sans-serif';
@@ -3134,7 +3134,7 @@
       + '<section data-recorder-view="setup">'
       + '<p class="copilot-note">記録するのは「画面」と「操作したコントロールの名前」だけで、<strong>押したキーそのものは読み取りません</strong>。入力手順の画像には画面上の文字が写ります。隠したい箇所は、手順へ取り込んだ後に「画像を編集」から黒塗りしてください。</p>'
       + '<div class="recorder-mode-options" role="radiogroup" aria-label="記録するアプリ">'
-      + '<label class="recorder-mode-option"><input type="radio" name="recorder-mode" value="edge" data-recorder-mode checked><span><strong>記録用Edgeを使う（推奨）</strong><small>クリック前にWebページの要素を取得するため、ボタンやリンクを高い精度で特定できます。</small></span></label>'
+      + '<label class="recorder-mode-option"><input type="radio" name="recorder-mode" value="edge" data-recorder-mode checked><span><strong>記録用Edgeを使う（推奨）</strong><small>拡張機能を読み込まず、クリック前のWeb要素を取得してボタンやリンクを高い精度で特定します。</small></span></label>'
       + '<label class="recorder-mode-option"><input type="radio" name="recorder-mode" value="desktop" data-recorder-mode><span><strong>その他のアプリを記録する</strong><small>従来どおりWindowsから対象を取得します。Webページでは対象不明になる場合があります。</small></span></label>'
       + '</div>'
       + '<label class="copilot-option"><input type="checkbox" data-recorder-narration><span>操作しながら話した内容も記録する</span></label>'

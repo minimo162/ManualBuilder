@@ -83,9 +83,16 @@ function Start-MbRecorderEdge {
     }
 
     if (Test-MbRecorderDevTools -Port $Port) {
-        # 前回の専用Edgeが残っていれば、新しいタブを前面へ出して再利用する。
-        Start-Process -FilePath $edge -ArgumentList @("--user-data-dir=$ProfileDirectory", 'about:blank') | Out-Null
-        return
+        # 旧バージョンで起動したプロセスを再利用すると、今回の起動オプションが反映されない。
+        # プロファイルは残したままプロセスだけを閉じ、必ず拡張機能なしで起動し直す。
+        Stop-MbRecorderEdge -Port $Port
+        $closeDeadline = (Get-Date).AddSeconds(10)
+        while ((Get-Date) -lt $closeDeadline -and (Test-MbRecorderDevTools -Port $Port)) {
+            Start-Sleep -Milliseconds 250
+        }
+        if (Test-MbRecorderDevTools -Port $Port) {
+            throw '前回の記録用Edgeを終了できませんでした。専用Edgeを閉じてから、もう一度実行してください。'
+        }
     }
 
     $arguments = @(
@@ -93,6 +100,9 @@ function Start-MbRecorderEdge {
         '--remote-debugging-address=127.0.0.1',
         '--remote-allow-origins=*',
         "--user-data-dir=$ProfileDirectory",
+        # 記録はCDPだけで行う。Power Automateなど外部プログラムが登録した拡張を
+        # 専用プロファイルへ読み込ませず、初回起動の権限警告やページ改変を防ぐ。
+        '--disable-extensions',
         '--no-first-run',
         '--disable-background-timer-throttling',
         '--disable-backgrounding-occluded-windows',
