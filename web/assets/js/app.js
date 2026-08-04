@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const appVersion = '0.32.12';
+  const appVersion = '0.33.0';
   // 番号注釈はSVG属性で指定するためCSS変数を参照できない。
   // 編集画面とExcel・Word出力（New-MbAnnotatedImage）で同じ見た目にするため、基準フォントを揃える。
   const ANNOTATION_NUMBER_FONT = '"BIZ UDPGothic", "BIZ UDPゴシック", "BIZ UDGothic", "BIZ UDゴシック", Meiryo, "Yu Gothic UI", "MS Pゴシック", sans-serif';
@@ -2938,7 +2938,7 @@
   // ---------------------------------------------------------------
   // 操作を記録して手順にする
   // ---------------------------------------------------------------
-  const recorder = { dialog: null, timer: null, events: [], busy: false, active: false };
+  const recorder = { dialog: null, timer: null, events: [], busy: false, active: false, mode: 'edge' };
 
   const stopRecorderPolling = () => {
     if (recorder.timer) {
@@ -2978,9 +2978,10 @@
       const fallback = item.targetType === 'ControlType.ClickPoint';
       const label = item.targetName || (fallback ? 'クリック位置（対象を特定できませんでした）' : '（名前を取得できませんでした）');
       const kind = item.kind === 'input' ? '入力' : (item.kind === 'right-click' ? '右クリック' : 'クリック');
+      const source = item.targetSource === 'DOM' ? 'Edgeで特定' : '';
       const detail = fallback
         ? `${kind}・対象不明（空クリックならチェックを外せます）`
-        : `${kind}・${item.windowTitle || ''}`;
+        : [kind, source, item.windowTitle || ''].filter(Boolean).join('・');
       const src = `/images/recording/${encodeURIComponent(item.image)}?token=${token}`;
       return `<label class="recorder-event" data-recorder-event data-index="${item.index}">
 <input type="checkbox" data-recorder-accept checked>
@@ -3037,8 +3038,10 @@
     setRecorderView('recording');
     try {
       const withNarration = recorder.dialog.querySelector('[data-recorder-narration]').checked;
+      recorder.mode = recorder.dialog.querySelector('[data-recorder-mode]:checked')?.value || 'edge';
       const body = new URLSearchParams();
       body.set('withNarration', withNarration ? 'true' : 'false');
+      body.set('mode', recorder.mode);
       const response = await fetch('/api/recorder/start', {
         method: 'POST',
         headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' }),
@@ -3052,6 +3055,12 @@
         await fetch('/api/recorder/discard', { method: 'POST', headers: sessionHeaders() });
         return;
       }
+      setRecorderMessage(
+        '0 件の操作を記録中',
+        recorder.mode === 'edge'
+          ? '開いた記録用Edgeで操作してください。ログイン状態は次回も引き継がれます。'
+          : '記録したいアプリへ切り替えて操作してください。'
+      );
       stopRecorderPolling();
       recorder.timer = window.setInterval(pollRecorderStatus, 700);
     } catch (error) {
@@ -3123,7 +3132,11 @@
     dialog.innerHTML = '<header class="copilot-dialog__header"><div><strong>操作を記録して手順にする</strong><span>クリックや入力の画面と操作対象を記録します</span></div><button type="button" class="copilot-dialog__close" data-recorder-close aria-label="閉じる">×</button></header>'
       + '<div class="copilot-dialog__content">'
       + '<section data-recorder-view="setup">'
-      + '<p class="copilot-note">記録するのは「画面」と「操作したコントロールの名前」だけで、<strong>押したキーそのものは読み取りません</strong>。入力手順の画像には画面上の文字が写ります。隠したい箇所は、手順へ取り込んだ後に「画像を編集」から黒塗りしてください。関係のないウィンドウは閉じてから始めてください。</p>'
+      + '<p class="copilot-note">記録するのは「画面」と「操作したコントロールの名前」だけで、<strong>押したキーそのものは読み取りません</strong>。入力手順の画像には画面上の文字が写ります。隠したい箇所は、手順へ取り込んだ後に「画像を編集」から黒塗りしてください。</p>'
+      + '<div class="recorder-mode-options" role="radiogroup" aria-label="記録するアプリ">'
+      + '<label class="recorder-mode-option"><input type="radio" name="recorder-mode" value="edge" data-recorder-mode checked><span><strong>記録用Edgeを使う（推奨）</strong><small>クリック前にWebページの要素を取得するため、ボタンやリンクを高い精度で特定できます。</small></span></label>'
+      + '<label class="recorder-mode-option"><input type="radio" name="recorder-mode" value="desktop" data-recorder-mode><span><strong>その他のアプリを記録する</strong><small>従来どおりWindowsから対象を取得します。Webページでは対象不明になる場合があります。</small></span></label>'
+      + '</div>'
       + '<label class="copilot-option"><input type="checkbox" data-recorder-narration><span>操作しながら話した内容も記録する</span></label>'
       + '<p class="copilot-note copilot-note--warn" data-recorder-narration-note hidden>マイクを使い、<strong>音声はMicrosoftのオンライン音声認識へ送られます</strong>。Windowsの音声入力（Win+H）と同じ仕組みです。話した内容は手順の手がかりとして使い、そのまま文章にはしません。</p>'
       + '<p class="copilot-capability" data-recorder-capability></p>'
@@ -3131,7 +3144,7 @@
       + '</section>'
       + '<section data-recorder-view="recording" hidden>'
       + '<div class="copilot-dialog__state" role="status" aria-live="polite"><strong data-recorder-message>記録しています</strong><span data-recorder-detail></span></div>'
-      + '<p class="copilot-note">記録したい操作を行ってから、［記録を終了］を押してください。この画面に戻る操作は記録されません。</p>'
+      + '<p class="copilot-note">記録したい操作を行ってから、［記録を終了］を押してください。記録用Edgeを選んだ場合は、開始時に開いたEdgeだけがDOMによる高精度な対象検出の対象です。この画面に戻る操作は記録されません。</p>'
       + '</section>'
       + '<section data-recorder-view="review" hidden>'
       + '<div class="copilot-dialog__state"><strong data-recorder-message></strong><span data-recorder-detail></span></div>'
@@ -3187,8 +3200,17 @@
       const response = await fetch('/api/recorder/capabilities', { headers: sessionHeaders() });
       const payload = response.ok ? await response.json() : null;
       available = Boolean(payload?.available);
+      const edgeAvailable = Boolean(payload?.edge?.available);
+      const edgeToggle = dialog.querySelector('[data-recorder-mode][value="edge"]');
+      const desktopToggle = dialog.querySelector('[data-recorder-mode][value="desktop"]');
+      edgeToggle.disabled = !edgeAvailable;
+      edgeToggle.closest('.recorder-mode-option')?.classList.toggle('is-disabled', !edgeAvailable);
+      if (edgeAvailable) edgeToggle.checked = true;
+      else desktopToggle.checked = true;
       const notes = [available
-        ? '押したボタンの名前と位置をWindowsから直接取得します。赤枠は自動で付きます。'
+        ? (edgeAvailable
+          ? '記録用EdgeではWebページの要素を直接取得し、取得できない場合だけWindowsの検出へ切り替えます。'
+          : `記録用Edgeは利用できません。その他のアプリの記録は利用できます。${payload?.edge?.reason || ''}`)
         : String(payload?.reason || 'この環境では操作を記録できません。')];
       // 音声が使えない理由は、対処が分かるようにそのまま出す。
       const narration = payload?.narration;

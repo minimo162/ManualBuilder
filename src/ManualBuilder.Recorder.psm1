@@ -1004,6 +1004,146 @@ function Write-MbRecordingStatus {
     }
 }
 
+# EdgeのDOMスナップショットを、画面キャプチャと同じ物理ピクセル座標へ変換する。
+# ブラウザー枠の幅やマルチモニターの原点を推測せず、DOMイベント時のclient座標と
+# 実際のマウス座標との差だけを使うため、表示倍率やモニター位置が変わってもずれにくい。
+function ConvertFrom-MbDomSnapshotTarget {
+    param(
+        [Parameter(Mandatory = $true)]$Snapshot,
+        [Parameter(Mandatory = $true)][double]$X,
+        [Parameter(Mandatory = $true)][double]$Y
+    )
+
+    try {
+        if ($null -eq $Snapshot.rect) { return $null }
+        $dpr = [double]$Snapshot.dpr
+        if ([double]::IsNaN($dpr) -or [double]::IsInfinity($dpr) -or $dpr -lt 0.5 -or $dpr -gt 4.0) { return $null }
+        $clientX = [double]$Snapshot.clientX
+        $clientY = [double]$Snapshot.clientY
+        $width = [double]$Snapshot.rect.width * $dpr
+        $height = [double]$Snapshot.rect.height * $dpr
+        $left = $X + (([double]$Snapshot.rect.left - $clientX) * $dpr)
+        $top = $Y + (([double]$Snapshot.rect.top - $clientY) * $dpr)
+        foreach ($number in @($clientX, $clientY, $width, $height, $left, $top)) {
+            if ([double]::IsNaN([double]$number) -or [double]::IsInfinity([double]$number)) { return $null }
+        }
+        if ($width -le 1.0 -or $height -le 1.0 -or $width -gt 12000 -or $height -gt 12000) { return $null }
+        if ($X -lt ($left - 16.0) -or $X -gt ($left + $width + 16.0) -or
+            $Y -lt ($top - 16.0) -or $Y -gt ($top + $height + 16.0)) { return $null }
+
+        $role = ([string]$Snapshot.role).ToLowerInvariant()
+        $tag = ([string]$Snapshot.tag).ToLowerInvariant()
+        $type = ([string]$Snapshot.type).ToLowerInvariant()
+        $controlType = switch ($role) {
+            'button'    { 'ControlType.Button'; break }
+            'link'      { 'ControlType.Hyperlink'; break }
+            'menuitem'  { 'ControlType.MenuItem'; break }
+            'tab'       { 'ControlType.TabItem'; break }
+            'checkbox'  { 'ControlType.CheckBox'; break }
+            'radio'     { 'ControlType.RadioButton'; break }
+            'option'    { 'ControlType.ListItem'; break }
+            'combobox'  { 'ControlType.ComboBox'; break }
+            'textbox'   { 'ControlType.Edit'; break }
+            default {
+                switch ($tag) {
+                    'button'   { 'ControlType.Button'; break }
+                    'a'        { 'ControlType.Hyperlink'; break }
+                    'select'   { 'ControlType.ComboBox'; break }
+                    'textarea' { 'ControlType.Edit'; break }
+                    'summary'  { 'ControlType.Button'; break }
+                    'input' {
+                        switch ($type) {
+                            'checkbox' { 'ControlType.CheckBox'; break }
+                            'radio'    { 'ControlType.RadioButton'; break }
+                            { $_ -in @('button', 'submit', 'reset', 'image') } { 'ControlType.Button'; break }
+                            default { 'ControlType.Edit' }
+                        }
+                        break
+                    }
+                    default { 'ControlType.Custom' }
+                }
+            }
+        }
+        if ($Snapshot.PSObject.Properties.Name -contains 'editable' -and [bool]$Snapshot.editable) {
+            $controlType = 'ControlType.Edit'
+        }
+        return [pscustomobject]@{
+            name = ConvertTo-MbRecorderTargetName -Value $Snapshot.name
+            controlType = $controlType
+            automationId = ''
+            className = $tag
+            left = $left; top = $top; width = $width; height = $height
+            isActionable = $true; isFallback = $false
+            provider = 'DOM'; confidence = 'high'
+        }
+    } catch { return $null }
+}
+
+function Get-MbDomTargetFromCache {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][int]$X,
+        [Parameter(Mandatory = $true)][int]$Y,
+        [AllowNull()]$Window
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+    try {
+        # 専用Edge以外のウィンドウを操作したとき、別ウィンドウのDOMを誤適用しない。
+        if ($null -eq $Window -or [string]$Window.class -notlike 'Chrome_WidgetWin*') { return $null }
+        $share = [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
+        $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)
+        try {
+            $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $true, 4096, $false)
+            try { $raw = $reader.ReadToEnd() } finally { $reader.Dispose() }
+        } finally { $stream.Dispose() }
+        $cache = $raw | ConvertFrom-Json
+        if ($null -eq $cache -or $null -eq $cache.page) { return $null }
+        $updated = [DateTime]::Parse([string]$cache.updatedAtUtc).ToUniversalTime()
+        if (([DateTime]::UtcNow - $updated).TotalMilliseconds -gt 2500) { return $null }
+        $cursorDistance = [Math]::Sqrt(
+            [Math]::Pow(([double]$cache.cursorX - $X), 2.0) +
+            [Math]::Pow(([double]$cache.cursorY - $Y), 2.0)
+        )
+        if ($cursorDistance -gt 36.0) { return $null }
+
+        $pageTitle = ([string]$cache.page.title).Trim()
+        $windowTitle = if ($null -ne $Window) { [string]$Window.title } else { '' }
+        $snapshotTitle = ''
+
+        $snapshot = $null
+        $epoch = [DateTime]::new(1970, 1, 1, 0, 0, 0, [DateTimeKind]::Utc)
+        $nowMs = [long](([DateTime]::UtcNow - $epoch).TotalMilliseconds)
+        if ($cache.page.PSObject.Properties.Name -contains 'pointer' -and $null -ne $cache.page.pointer) {
+            # pointerdownは画面遷移前の対象を保持する。ただし昔のクリックは再利用しない。
+            $pointerMs = [long]$cache.page.pointer.at
+            if ($pointerMs -gt 0 -and ($nowMs - $pointerMs) -ge -500 -and ($nowMs - $pointerMs) -le 2500) {
+                $snapshot = $cache.page.pointer
+                if ($snapshot.PSObject.Properties.Name -contains 'pageTitle' -and
+                    -not [string]::IsNullOrWhiteSpace([string]$snapshot.pageTitle)) {
+                    $snapshotTitle = ([string]$snapshot.pageTitle).Trim()
+                }
+            }
+        }
+        if ($null -eq $snapshot -and $cache.page.PSObject.Properties.Name -contains 'hover' -and $null -ne $cache.page.hover) {
+            $hoverMs = [long]$cache.page.hover.at
+            if ($hoverMs -gt 0 -and ($nowMs - $hoverMs) -ge -500 -and ($nowMs - $hoverMs) -le 1500) {
+                $snapshot = $cache.page.hover
+            }
+        }
+        if ($null -eq $snapshot) { return $null }
+        $titleMatches = [string]::IsNullOrWhiteSpace($pageTitle) -and [string]::IsNullOrWhiteSpace($snapshotTitle)
+        if (-not [string]::IsNullOrWhiteSpace($pageTitle) -and
+            $windowTitle.IndexOf($pageTitle, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $titleMatches = $true }
+        if (-not [string]::IsNullOrWhiteSpace($snapshotTitle) -and
+            $windowTitle.IndexOf($snapshotTitle, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $titleMatches = $true }
+        if (-not $titleMatches) {
+            return $null
+        }
+        return (ConvertFrom-MbDomSnapshotTarget -Snapshot $snapshot -X $X -Y $Y)
+    } catch { return $null }
+}
+
 # 1件ぶんの操作を記録する。押す直前の画面を先に確保してからUIAを引く。
 function Save-MbRecordingEvent {
     param(
@@ -1044,6 +1184,12 @@ function Save-MbRecordingEvent {
         targetType  = $targetType
         rect        = $rect
     }
+    if ($null -ne $Target -and $Target.PSObject.Properties.Name -contains 'provider') {
+        $record.targetSource = [string]$Target.provider
+    }
+    if ($null -ne $Target -and $Target.PSObject.Properties.Name -contains 'confidence') {
+        $record.confidence = [string]$Target.confidence
+    }
     Write-MbRecordingEvent -EventsPath $EventsPath -Record $record
     return $record
 }
@@ -1055,6 +1201,7 @@ function Invoke-MbRecordingLoop {
         [Parameter(Mandatory = $true)][string]$StatusPath,
         [Parameter(Mandatory = $true)][string]$StopPath,
         [Parameter(Mandatory = $true)][string]$JobId,
+        [AllowEmptyString()][string]$DomTargetPath = '',
         [string[]]$IgnoreTitlePatterns = @(),
         [int]$PollIntervalMs = 16,
         [int]$TypingIdleMs = 1200,
@@ -1082,6 +1229,8 @@ function Invoke-MbRecordingLoop {
     $typingCapture = $null
     $typingCaptureAtMs = 0
     $lastTypingMs = 0
+    $lastDomTarget = $null
+    $lastDomWindowHandle = 0L
 
     Write-MbRecordingStatus -StatusPath $StatusPath -JobId $JobId -State 'recording' -Count 0 -Message '操作を記録しています'
 
@@ -1122,6 +1271,11 @@ function Invoke-MbRecordingLoop {
                         $typingCaptureAtMs = [int]$watch.ElapsedMilliseconds
                         $typingWindow = $candidateWindow
                         $typingField = Get-MbUiaFocusedElement
+                        if ($null -ne $lastDomTarget -and
+                            [string]$lastDomTarget.controlType -eq 'ControlType.Edit' -and
+                            $null -ne $candidateWindow -and [long]$candidateWindow.handle -eq $lastDomWindowHandle) {
+                            $typingField = $lastDomTarget
+                        }
                     }
                 } catch {
                     if ($null -ne $typingCapture) { try { $typingCapture.bitmap.Dispose() } catch { } }
@@ -1190,7 +1344,26 @@ function Invoke-MbRecordingLoop {
                 [void][MbRecorderNative]::GetCursorPos([ref]$point)
                 $window = Get-MbForegroundWindowInfo
                 if (-not (Test-MbIgnoredWindow -Window $window -IgnoreTitlePatterns $IgnoreTitlePatterns)) {
-                    $target = Get-MbUiaTargetAtPoint -X ([int]$point.X) -Y ([int]$point.Y) -Window $window
+                    $target = $null
+                    if (-not [string]::IsNullOrWhiteSpace($DomTargetPath)) {
+                        # 画面はすでに押下直前で確保済み。Edgeからpointerdown通知が届くまで
+                        # 最大約120msだけ待ち、速いマウス移動直後のクリックもDOMで拾う。
+                        for ($domAttempt = 0; $domAttempt -lt 7 -and $null -eq $target; $domAttempt++) {
+                            if ($domAttempt -gt 0) { Start-Sleep -Milliseconds 20 }
+                            $target = Get-MbDomTargetFromCache -Path $DomTargetPath -X ([int]$point.X) -Y ([int]$point.Y) -Window $window
+                        }
+                    }
+                    if ($null -eq $target) {
+                        $target = Get-MbUiaTargetAtPoint -X ([int]$point.X) -Y ([int]$point.Y) -Window $window
+                    }
+                    if ($null -ne $target -and $target.PSObject.Properties.Name -contains 'provider' -and
+                        [string]$target.provider -eq 'DOM') {
+                        $lastDomTarget = $target
+                        $lastDomWindowHandle = [long]$window.handle
+                    } else {
+                        $lastDomTarget = $null
+                        $lastDomWindowHandle = 0L
+                    }
                     $index++
                     $clickKind = if ($rightClicked) { 'right-click' } else { 'click' }
                     $record = Save-MbRecordingEvent -Capture $capture -Index $index -ElapsedMs ([int]$watch.ElapsedMilliseconds) `
@@ -1250,6 +1423,8 @@ Export-ModuleMember -Function @(
     'Get-MbRecorderCapability',
     'Get-MbUiaTargetAtPoint',
     'Get-MbUiaFocusedElement',
+    'ConvertFrom-MbDomSnapshotTarget',
+    'Get-MbDomTargetFromCache',
     'Select-MbUiaTargetInfo',
     'Select-MbUiaNamedTargetInfo',
     'New-MbMsaaElementInfo',

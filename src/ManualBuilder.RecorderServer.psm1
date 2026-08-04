@@ -11,18 +11,23 @@ Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Project.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Capture.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Recorder.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Dictation.psm1')
+Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.EdgeRecorder.psm1')
 
 $script:MbRecordingJobsRoot = ''
 $script:MbRecordingScriptRoot = ''
+$script:MbRecordingEdgeProfileRoot = ''
+$script:MbRecordingEdgePort = 9465
 $script:MbRecordingJob = $null
 
 function Initialize-MbRecorderServer {
     param(
         [Parameter(Mandatory = $true)][string]$JobsRoot,
-        [Parameter(Mandatory = $true)][string]$ScriptRoot
+        [Parameter(Mandatory = $true)][string]$ScriptRoot,
+        [Parameter(Mandatory = $true)][string]$EdgeProfileRoot
     )
     $script:MbRecordingJobsRoot = $JobsRoot
     $script:MbRecordingScriptRoot = $ScriptRoot
+    $script:MbRecordingEdgeProfileRoot = $EdgeProfileRoot
 }
 
 function Get-MbRecordingIdleStatus {
@@ -67,17 +72,36 @@ function Read-MbRecordingStatus {
             $status.message = '記録が途中で終わりました。もう一度実行してください。'
         }
     }
+    if ([string]$status.state -ne 'recording' -and
+        $script:MbRecordingJob.PSObject.Properties.Name -contains 'Mode' -and
+        [string]$script:MbRecordingJob.Mode -eq 'edge') {
+        # 件数・時間上限で記録側だけが終了した場合も、DOM監視と専用Edgeを残さない。
+        try {
+            $stopPath = [string]$script:MbRecordingJob.StopPath
+            if (-not (Test-Path -LiteralPath $stopPath -PathType Leaf)) {
+                [IO.File]::WriteAllText($stopPath, 'stop', (New-Object Text.UTF8Encoding($false)))
+            }
+        } catch { }
+    }
     return $status
 }
 
 function Start-MbRecordingJob {
-    param([string[]]$IgnoreTitlePatterns = @('ManualBuilder'), [switch]$WithNarration)
+    param(
+        [string[]]$IgnoreTitlePatterns = @('ManualBuilder'),
+        [switch]$WithNarration,
+        [ValidateSet('edge', 'desktop')][string]$Mode = 'edge'
+    )
 
     $current = Read-MbRecordingStatus
     if ([string]$current.state -eq 'recording') { return $current }
 
     $capability = Get-MbRecorderCapability
     if (-not $capability.available) { throw ([string]$capability.reason) }
+    if ($Mode -eq 'edge') {
+        $edgeCapability = Get-MbEdgeRecorderCapability
+        if (-not $edgeCapability.available) { throw ([string]$edgeCapability.reason) }
+    }
 
     # 前回の記録が残っていれば片付けてから始める。
     Remove-MbRecordingJob
@@ -91,9 +115,11 @@ function Start-MbRecordingJob {
     $stopPath = Join-Path $jobDirectory 'stop.requested'
     $narrationPath = Join-Path $jobDirectory 'narration.jsonl'
     $narrationStatusPath = Join-Path $jobDirectory 'narration-status.json'
+    $domTargetPath = Join-Path $jobDirectory 'dom-target.json'
 
     $queued = [pscustomobject]@{
-        jobId = $jobId; state = 'recording'; count = 0; message = '記録の準備をしています'
+        jobId = $jobId; state = 'recording'; count = 0
+        message = if ($Mode -eq 'edge') { '記録用Edgeを開いています' } else { '記録の準備をしています' }
         lastTarget = ''; updatedAt = [DateTime]::UtcNow.ToString('o')
     }
     [IO.File]::WriteAllText($statusPath, ($queued | ConvertTo-Json -Depth 5), (New-Object Text.UTF8Encoding($false)))
@@ -104,6 +130,26 @@ function Start-MbRecordingJob {
     if (-not (Test-Path -LiteralPath $powerShellPath -PathType Leaf)) { throw 'Windows PowerShell 5.1が見つかりません。' }
     $workerPath = Join-Path $script:MbRecordingScriptRoot 'Invoke-ManualBuilderRecorder.ps1'
     $quote = { param([string]$Value) '"' + $Value.Replace('"', '\"') + '"' }
+    $edgeWorkerProcessId = 0
+    if ($Mode -eq 'edge') {
+        try {
+            Start-MbRecorderEdge -ProfileDirectory $script:MbRecordingEdgeProfileRoot -Port $script:MbRecordingEdgePort
+            $edgeWorkerPath = Join-Path $script:MbRecordingScriptRoot 'Invoke-ManualBuilderEdgeRecorder.ps1'
+            $edgeArguments = @(
+                '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-STA', '-File', (& $quote $edgeWorkerPath),
+                '-CachePath', (& $quote $domTargetPath),
+                '-StopPath', (& $quote $stopPath),
+                '-Port', ([string]$script:MbRecordingEdgePort)
+            )
+            $edgeWorker = Start-Process -FilePath $powerShellPath -ArgumentList $edgeArguments -WindowStyle Hidden -PassThru
+            $edgeWorkerProcessId = [int]$edgeWorker.Id
+            $edgeWorker.Dispose()
+        } catch {
+            try { Stop-MbRecorderEdge -Port $script:MbRecordingEdgePort } catch { }
+            try { Remove-Item -LiteralPath $jobDirectory -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+            throw
+        }
+    }
     $arguments = @(
         '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-STA', '-File', (& $quote $workerPath),
         '-EventsDirectory', (& $quote $eventsDirectory),
@@ -112,14 +158,26 @@ function Start-MbRecordingJob {
         '-StopPath', (& $quote $stopPath),
         '-JobId', (& $quote $jobId)
     )
+    if ($Mode -eq 'edge') {
+        $arguments += @('-DomTargetPath', (& $quote $domTargetPath))
+    }
     if (@($IgnoreTitlePatterns).Count -gt 0) {
         $arguments += '-IgnoreTitlePatterns'
         $arguments += (@($IgnoreTitlePatterns) | ForEach-Object { & $quote $_ }) -join ','
     }
 
-    $worker = Start-Process -FilePath $powerShellPath -ArgumentList $arguments -WindowStyle Hidden -PassThru
-    $processId = [int]$worker.Id
-    $worker.Dispose()
+    try {
+        $worker = Start-Process -FilePath $powerShellPath -ArgumentList $arguments -WindowStyle Hidden -PassThru
+        $processId = [int]$worker.Id
+        $worker.Dispose()
+    } catch {
+        if ($edgeWorkerProcessId -gt 0) {
+            try { (Get-Process -Id $edgeWorkerProcessId -ErrorAction SilentlyContinue).Kill() } catch { }
+        }
+        if ($Mode -eq 'edge') { try { Stop-MbRecorderEdge -Port $script:MbRecordingEdgePort } catch { } }
+        try { Remove-Item -LiteralPath $jobDirectory -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+        throw
+    }
 
     # 音声の聞き取りは記録ループと同居できない。並走する別プロセスにする。
     # 起動に失敗しても操作の記録は続けられるので、ここでは止めない。
@@ -148,6 +206,8 @@ function Start-MbRecordingJob {
         StatusPath = $statusPath; StopPath = $stopPath; StartedAt = Get-Date
         NarrationPath = $narrationPath; NarrationStatusPath = $narrationStatusPath
         DictationProcessId = $dictationProcessId
+        Mode = $Mode; DomTargetPath = $domTargetPath
+        EdgeWorkerProcessId = $edgeWorkerProcessId; EdgePort = $script:MbRecordingEdgePort
     }
     return (Read-MbRecordingStatus)
 }
@@ -402,15 +462,25 @@ function Remove-MbRecordingJob {
     $processId = [int]$job.ProcessId
     $dictationProcessId = 0
     if ($job.PSObject.Properties.Name -contains 'DictationProcessId') { $dictationProcessId = [int]$job.DictationProcessId }
+    $edgeWorkerProcessId = 0
+    if ($job.PSObject.Properties.Name -contains 'EdgeWorkerProcessId') { $edgeWorkerProcessId = [int]$job.EdgeWorkerProcessId }
+    $mode = if ($job.PSObject.Properties.Name -contains 'Mode') { [string]$job.Mode } else { 'desktop' }
+    $stopPath = if ($job.PSObject.Properties.Name -contains 'StopPath') { [string]$job.StopPath } else { '' }
+    if (-not [string]::IsNullOrWhiteSpace($stopPath)) {
+        try { [IO.File]::WriteAllText($stopPath, 'stop', (New-Object Text.UTF8Encoding($false))) } catch { }
+        # 正常終了ならDOM監視側がBrowser.closeまで行う。短時間だけその機会を与える。
+        if ($mode -eq 'edge' -and $edgeWorkerProcessId -gt 0) { Start-Sleep -Milliseconds 500 }
+    }
     $script:MbRecordingJob = $null
     # まだ記録プロセスが動いていたら止める。放置すると画面を撮り続ける。
-    foreach ($id in @($processId, $dictationProcessId)) {
+    foreach ($id in @($processId, $dictationProcessId, $edgeWorkerProcessId)) {
         if ($id -le 0) { continue }
         try {
             $process = Get-Process -Id $id -ErrorAction SilentlyContinue
             if ($null -ne $process) { $process.Kill() }
         } catch { }
     }
+    if ($mode -eq 'edge') { try { Stop-MbRecorderEdge -Port $script:MbRecordingEdgePort } catch { } }
     if ([string]::IsNullOrWhiteSpace($directory)) { return }
     try { Remove-Item -LiteralPath $directory -Recurse -Force -ErrorAction SilentlyContinue } catch { }
 }
@@ -419,6 +489,7 @@ function Remove-MbRecordingJob {
 # 本体からは この関数を通して記録できるかどうかを受け取る。
 function Get-MbRecordingCapability {
     $recorder = Get-MbRecorderCapability
+    $edge = Get-MbEdgeRecorderCapability
     # 音声は任意。使えなくても操作の記録はできるので、別々に返す。
     $dictation = $null
     try { $dictation = Get-MbDictationCapability } catch {
@@ -428,6 +499,8 @@ function Get-MbRecordingCapability {
         available = $recorder.available
         reason    = $recorder.reason
         narration = $dictation
+        edge      = $edge
+        recommendedMode = if ($edge.available) { 'edge' } else { 'desktop' }
     }
 }
 

@@ -10,7 +10,8 @@ param(
     [Parameter(Mandatory = $true)][string]$StatusPath,
     [Parameter(Mandatory = $true)][string]$StopPath,
     [Parameter(Mandatory = $true)][string]$JobId,
-    [AllowEmptyString()][string]$IgnoreTitlePatterns = ''
+    [AllowEmptyString()][string]$IgnoreTitlePatterns = '',
+    [AllowEmptyString()][string]$DomTargetPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -28,7 +29,8 @@ try {
     }
 
     [void](Invoke-MbRecordingLoop -EventsDirectory $EventsDirectory -EventsPath $EventsPath `
-        -StatusPath $StatusPath -StopPath $StopPath -JobId $JobId -IgnoreTitlePatterns $patterns)
+        -StatusPath $StatusPath -StopPath $StopPath -JobId $JobId -IgnoreTitlePatterns $patterns `
+        -DomTargetPath $DomTargetPath)
     exit 0
 } catch {
     try {
