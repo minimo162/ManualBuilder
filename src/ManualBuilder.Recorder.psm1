@@ -182,7 +182,8 @@ function Get-MbAutomationElementInfo {
             'SelectionItemPatternIdentifiers.Pattern',
             'TogglePatternIdentifiers.Pattern',
             'ExpandCollapsePatternIdentifiers.Pattern',
-            'RangeValuePatternIdentifiers.Pattern'
+            'RangeValuePatternIdentifiers.Pattern',
+            'ValuePatternIdentifiers.Pattern'
         )
         try {
             foreach ($pattern in @($Element.GetSupportedPatterns())) {
@@ -192,6 +193,20 @@ function Get-MbAutomationElementInfo {
                 }
             }
         } catch { }
+        # Chromiumの一部要素はInvokePatternを出さず、LegacyIAccessibleの既定動作だけを
+        # 公開する。既定動作が空でない要素だけを操作可能とみなし、単なる文章は除く。
+        if (-not $isActionable) {
+            try {
+                $legacyObject = $null
+                if ($Element.TryGetCurrentPattern(
+                    [System.Windows.Automation.LegacyIAccessiblePattern]::Pattern,
+                    [ref]$legacyObject
+                )) {
+                    $legacy = [System.Windows.Automation.LegacyIAccessiblePattern]$legacyObject
+                    $isActionable = -not [string]::IsNullOrWhiteSpace([string]$legacy.Current.DefaultAction)
+                }
+            } catch { }
+        }
     }
 
     return [pscustomobject]@{
@@ -252,7 +267,7 @@ function Select-MbUiaTargetInfo {
     $best = $null
     $bestArea = [double]::PositiveInfinity
     foreach ($candidate in @($Candidates)) {
-        if (-not (Test-MbPointWithinElementInfo -Info $candidate -X $X -Y $Y -Tolerance 7.0)) { continue }
+        if (-not (Test-MbPointWithinElementInfo -Info $candidate -X $X -Y $Y -Tolerance 12.0)) { continue }
         if (-not (Test-MbRecorderInteractiveElementInfo -Info $candidate)) { continue }
 
         $area = [double]$candidate.width * [double]$candidate.height
@@ -263,6 +278,33 @@ function Select-MbUiaTargetInfo {
             $best = $candidate
             $bestArea = $area
         }
+    }
+    return $best
+}
+
+# 操作パターンを公開しないWebアプリでも、クリック点の下に名前付きText/Group等があれば
+# その最小要素を対象として使う。ウィンドウの大半を占めるコンテナは採用しない。
+function Select-MbUiaNamedTargetInfo {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Candidates,
+        [Parameter(Mandatory = $true)][double]$X,
+        [Parameter(Mandatory = $true)][double]$Y,
+        [AllowNull()]$Window
+    )
+
+    $best = $null
+    $bestArea = [double]::PositiveInfinity
+    $windowArea = if ($null -ne $Window) { [double]$Window.width * [double]$Window.height } else { 0.0 }
+    foreach ($candidate in @($Candidates)) {
+        if (-not (Test-MbPointWithinElementInfo -Info $candidate -X $X -Y $Y -Tolerance 12.0)) { continue }
+        if ([string]::IsNullOrWhiteSpace([string]$candidate.name)) { continue }
+        if ([string]$candidate.controlType -in @('ControlType.Window', 'ControlType.Document')) { continue }
+        $area = [double]$candidate.width * [double]$candidate.height
+        if ($windowArea -gt 0 -and $area -gt ($windowArea * 0.4)) { continue }
+        if ($area -lt $bestArea) { $best = $candidate; $bestArea = $area }
+    }
+    if ($null -ne $best) {
+        $best | Add-Member -NotePropertyName 'isInferred' -NotePropertyValue $true -Force
     }
     return $best
 }
@@ -286,7 +328,7 @@ function Add-MbUiaPointCandidates {
         for ($depth = 0; $depth -lt 12 -and $null -ne $node; $depth++) {
             $info = $null
             try { $info = Get-MbAutomationElementInfo -Element $node } catch { $info = $null }
-            if (Test-MbPointWithinElementInfo -Info $info -X $X -Y $Y -Tolerance 7.0) {
+            if (Test-MbPointWithinElementInfo -Info $info -X $X -Y $Y -Tolerance 12.0) {
                 [void]$Candidates.Add($info)
             }
             if ($null -ne $info -and [string]$info.controlType -eq 'ControlType.Window') { break }
@@ -319,7 +361,12 @@ function Add-MbUiaInteractiveDescendantCandidates {
             [System.Windows.Automation.ControlType]::Hyperlink,
             [System.Windows.Automation.ControlType]::SplitButton,
             [System.Windows.Automation.ControlType]::Edit,
-            [System.Windows.Automation.ControlType]::DataItem
+            [System.Windows.Automation.ControlType]::DataItem,
+            [System.Windows.Automation.ControlType]::Text,
+            [System.Windows.Automation.ControlType]::Pane,
+            [System.Windows.Automation.ControlType]::Custom,
+            [System.Windows.Automation.ControlType]::Image,
+            [System.Windows.Automation.ControlType]::Group
         )
         $conditions = New-Object 'System.Collections.Generic.List[System.Windows.Automation.Condition]'
         foreach ($type in $types) {
@@ -336,9 +383,20 @@ function Add-MbUiaInteractiveDescendantCandidates {
         $condition = [System.Windows.Automation.AndCondition]::new($typeCondition, $visibleCondition)
         $elements = $Root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
         foreach ($element in @($elements)) {
+            # Group/Textまで検索対象を広げても、クリック点と無関係な全要素へ操作パターンを
+            # 問い合わせない。まず軽い矩形だけで絞り、重い照会は点を含む数件に限定する。
+            $boundsInfo = $null
+            try {
+                $bounds = $element.Current.BoundingRectangle
+                $boundsInfo = [pscustomobject]@{
+                    left = [double]$bounds.Left; top = [double]$bounds.Top
+                    width = [double]$bounds.Width; height = [double]$bounds.Height
+                }
+            } catch { $boundsInfo = $null }
+            if (-not (Test-MbPointWithinElementInfo -Info $boundsInfo -X $X -Y $Y -Tolerance 12.0)) { continue }
             $info = $null
             try { $info = Get-MbAutomationElementInfo -Element $element } catch { $info = $null }
-            if (Test-MbPointWithinElementInfo -Info $info -X $X -Y $Y -Tolerance 7.0) {
+            if (Test-MbPointWithinElementInfo -Info $info -X $X -Y $Y -Tolerance 12.0) {
                 [void]$Candidates.Add($info)
             }
         }
@@ -394,7 +452,9 @@ function Get-MbUiaTargetAtPoint {
         $root = $null
         $offsets = @(
             @(0, 0), @(-3, 0), @(3, 0), @(0, -3), @(0, 3),
-            @(-6, -6), @(6, -6), @(-6, 6), @(6, 6)
+            @(-6, -6), @(6, -6), @(-6, 6), @(6, 6),
+            @(-12, 0), @(12, 0), @(0, -12), @(0, 12),
+            @(-16, -16), @(16, -16), @(-16, 16), @(16, 16)
         )
         foreach ($offset in $offsets) {
             $samplePoint = New-Object System.Windows.Point -ArgumentList @(
@@ -428,6 +488,9 @@ function Get-MbUiaTargetAtPoint {
             $selected = Select-MbUiaTargetInfo -Candidates @($candidates) -X $X -Y $Y
             if ($null -ne $selected) { return $selected }
         }
+
+        $namedTarget = Select-MbUiaNamedTargetInfo -Candidates @($candidates) -X $X -Y $Y -Window $Window
+        if ($null -ne $namedTarget) { return $namedTarget }
 
         return (New-MbClickPointTargetInfo -X $X -Y $Y -Window $Window)
     } catch {
@@ -587,7 +650,20 @@ function Save-MbBitmapRegion {
         $longest = [Math]::Max($width, $height)
         if ($MaxEdge -gt 0 -and $longest -gt $MaxEdge) {
             $scale = $MaxEdge / [double]$longest
-            $scaled = New-Object Drawing.Bitmap -ArgumentList @($cropped, [int][Math]::Round($width * $scale), [int][Math]::Round($height * $scale))
+            $scaledWidth = [int][Math]::Round($width * $scale)
+            $scaledHeight = [int][Math]::Round($height * $scale)
+            $scaled = New-Object Drawing.Bitmap -ArgumentList @($scaledWidth, $scaledHeight, [Drawing.Imaging.PixelFormat]::Format24bppRgb)
+            $resizeGraphics = $null
+            try {
+                $resizeGraphics = [Drawing.Graphics]::FromImage($scaled)
+                $resizeGraphics.CompositingQuality = [Drawing.Drawing2D.CompositingQuality]::HighQuality
+                $resizeGraphics.InterpolationMode = [Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+                $resizeGraphics.PixelOffsetMode = [Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+                $resizeGraphics.SmoothingMode = [Drawing.Drawing2D.SmoothingMode]::HighQuality
+                $resizeGraphics.DrawImage($cropped, 0, 0, $scaledWidth, $scaledHeight)
+            } finally {
+                if ($null -ne $resizeGraphics) { $resizeGraphics.Dispose() }
+            }
             $output = $scaled
         }
 
@@ -767,13 +843,14 @@ function Save-MbRecordingEvent {
         [Parameter(Mandatory = $true)][string]$EventsPath,
         [AllowNull()]$Target,
         [AllowNull()]$Window,
-        [int]$MaxEdge = 1600
+        [int]$MaxEdge = 2560,
+        [long]$Quality = 94
     )
 
     $region = Get-MbCaptureRegion -Window $Window -Target $Target
     $fileName = ('event-{0:d3}.jpg' -f $Index)
     $saved = Save-MbBitmapRegion -Capture $Capture -Region $region -Path (Join-Path $EventsDirectory $fileName) `
-        -MaxEdge $MaxEdge
+        -MaxEdge $MaxEdge -Quality $Quality
     # 実際に切り出せた範囲で正規化する。画面の端では要求した範囲より狭くなる。
     $rect = ConvertTo-MbRegionRect -Region $saved -Target $Target
 
@@ -1002,6 +1079,7 @@ Export-ModuleMember -Function @(
     'Get-MbUiaTargetAtPoint',
     'Get-MbUiaFocusedElement',
     'Select-MbUiaTargetInfo',
+    'Select-MbUiaNamedTargetInfo',
     'New-MbClickPointTargetInfo',
     'Get-MbForegroundWindowInfo',
     'Get-MbVirtualScreenBounds',
