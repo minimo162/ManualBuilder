@@ -616,6 +616,53 @@ function Move-MbStepToSheet {
     return $step
 }
 
+function Move-MbStepsToSheet {
+    param(
+        [Parameter(Mandatory = $true)][object]$Project,
+        [Parameter(Mandatory = $true)][string[]]$StepIds,
+        [Parameter(Mandatory = $true)][string]$TargetSheetId
+    )
+
+    $requestedIds = @($StepIds | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($requestedIds.Count -lt 1) { throw '移動する手順を選んでください。' }
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]'
+    $moving = New-Object System.Collections.ArrayList
+    $sources = @{}
+    foreach ($stepId in $requestedIds) {
+        if (-not $seen.Add([string]$stepId)) { throw '手順IDが重複しています。' }
+        $source = $null
+        $step = $null
+        foreach ($sheet in @($Project.sheets)) {
+            $step = @($sheet.steps | Where-Object { $_.id -eq $stepId }) | Select-Object -First 1
+            if ($step) { $source = $sheet; break }
+        }
+        if (-not $step) { throw '対象手順が見つかりません。' }
+        [void]$moving.Add($step)
+        $sources[[string]$stepId] = $source
+    }
+
+    $targetSheet = @($Project.sheets | Where-Object { $_.id -eq $TargetSheetId }) | Select-Object -First 1
+    if (-not $targetSheet) { throw '移動先シートが見つかりません。' }
+    $newCount = 0
+    foreach ($movingStep in @($moving)) {
+        $sourceForStep = $sources[[string]$movingStep.id]
+        if ([string]$sourceForStep.id -ne [string]$targetSheet.id) { $newCount++ }
+    }
+    if (@($targetSheet.steps).Count + $newCount -gt 500) { throw '移動先シートの手順は500件までです。' }
+
+    $now = Get-MbUtcTimestamp
+    foreach ($sheet in @($Project.sheets)) {
+        $before = @($sheet.steps).Count
+        $sheet.steps = @($sheet.steps | Where-Object { -not $seen.Contains([string]$_.id) })
+        if (@($sheet.steps).Count -ne $before) { $sheet.updatedAt = $now }
+    }
+    $targetSheet.steps = @($targetSheet.steps) + @($moving)
+    $targetSheet.updatedAt = $now
+    foreach ($step in @($moving)) { $step.updatedAt = $now }
+    $Project.selectedSheetId = $targetSheet.id
+    return @($moving)
+}
+
 function Set-MbStepAnnotations {
     param(
         [Parameter(Mandatory = $true)][object]$Project,
@@ -740,6 +787,28 @@ function Remove-MbStep {
     throw '対象手順が見つかりません。'
 }
 
+function Remove-MbSteps {
+    param(
+        [Parameter(Mandatory = $true)][object]$Project,
+        [Parameter(Mandatory = $true)][string[]]$StepIds
+    )
+
+    $requestedIds = @($StepIds | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($requestedIds.Count -lt 1) { throw '削除する手順を選んでください。' }
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]'
+    foreach ($stepId in $requestedIds) {
+        if (-not $seen.Add([string]$stepId)) { throw '手順IDが重複しています。' }
+        if (-not (Get-MbStepById -Project $Project -StepId $stepId)) { throw '対象手順が見つかりません。' }
+    }
+
+    $now = Get-MbUtcTimestamp
+    foreach ($sheet in @($Project.sheets)) {
+        $before = @($sheet.steps).Count
+        $sheet.steps = @($sheet.steps | Where-Object { -not $seen.Contains([string]$_.id) })
+        if (@($sheet.steps).Count -ne $before) { $sheet.updatedAt = $now }
+    }
+}
+
 Export-ModuleMember -Function @(
     'New-MbProject',
     'New-MbSheet',
@@ -763,7 +832,9 @@ Export-ModuleMember -Function @(
     'Update-MbStep',
     'Set-MbStepOrder',
     'Move-MbStepToSheet',
+    'Move-MbStepsToSheet',
     'Set-MbStepAnnotations',
     'Set-MbStepImageEdits',
-    'Remove-MbStep'
+    'Remove-MbStep',
+    'Remove-MbSteps'
 )

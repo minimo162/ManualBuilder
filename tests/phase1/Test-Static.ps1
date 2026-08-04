@@ -103,7 +103,7 @@ Add-Result (($serverText -match '\$projectReady = \$false') -and ($serverText -m
 Add-Result ($serverText -match '\$storageLayout\.RuntimePath') '二重起動情報をユーザーデータ配下へ置く'
 Add-Result ($serverText -match '\$storageLayout\.ExportJobsRoot') 'Office一時ジョブをユーザーデータ配下へ置く'
 Add-Result (($runCommandText -match '%~dp0src\\Start-ManualBuilderLauncher\.ps1') -and ($runCommandText -notmatch '(?im)^cd /d')) 'UNC共有フォルダーから更新ランチャーを起動できる'
-Add-Result ([string]$appVersionManifest.appVersion -eq '0.32.10') '配布用アプリバージョンを0.32.10へ更新する'
+Add-Result ([string]$appVersionManifest.appVersion -eq '0.32.11') '配布用アプリバージョンを0.32.11へ更新する'
 Add-Result ($workspaceModuleText -notmatch "ManualBuilder\.Project\.psm1'\) -Force") 'WorkspaceがProjectコマンドを強制再読込しない'
 Add-Result ($launcherModuleText -match "'ManualBuilder\\app'") 'アプリ実行コードをLocalApplicationDataへキャッシュする'
 Add-Result ($launcherModuleText -match "@\('src', 'web', 'run\.cmd', 'app-version\.json'\)") 'キャッシュ対象からプロジェクトデータを除外する'
@@ -200,6 +200,7 @@ Add-Result (($webModuleText -match 'button--primary" data-export-excel') -and ($
 Add-Result ($serverText -match '/api/steps/reorder') '手順並べ替えAPIを実装する'
 Add-Result ($serverText -match '/api/sheets/reorder') 'シート並べ替えAPIを実装する'
 Add-Result ($serverText -match '/api/steps/move') '手順のシート移動APIを実装する'
+Add-Result (($serverText -match '/api/steps/move-many') -and ($serverText -match '/api/steps/delete-many')) '複数手順の移動・削除APIを実装する'
 Add-Result ($serverText -match '/api/steps/annotations') '注釈保存APIを実装する'
 Add-Result ($serverText -match '/api/projects/create') '複数マニュアルの新規作成APIを実装する'
 Add-Result ($serverText -match '/api/projects/open') 'マニュアル選択APIを実装する'
@@ -398,10 +399,18 @@ Add-Result (($recorderModuleText -notmatch 'RedactTarget') -and
 Add-Result ($recorderModuleText -match 'Test-MbAsyncKeyStatePressed') '短いクリックやキー入力も押下履歴から検出する'
 Add-Result (($recorderModuleText -match 'FindAll') -and
     ($recorderModuleText -match 'IsOffscreenProperty')) '長いページでも表示中の操作コントロールを条件検索する'
+Add-Result (($recorderModuleText -match 'LegacyIAccessiblePattern') -and
+    ($recorderModuleText -match 'ControlType\]::Group') -and
+    ($recorderModuleText -match 'Select-MbUiaNamedTargetInfo')) 'Web独自要素と名前付き要素まで操作対象候補を広げる'
+Add-Result (($recorderModuleText -match '\[int\]\$MaxEdge = 2560') -and
+    ($recorderModuleText -match '\[long\]\$Quality = 94') -and
+    ($recorderModuleText -match 'HighQualityBicubic')) '対象周辺表示に十分な解像度と高品質縮小で記録する'
 Add-Result (($recorderModuleText -match 'Select-MbUiaTargetInfo') -and
     ($recorderModuleText -match 'isActionable')) '操作可能な最小要素だけを赤枠候補にする'
 Add-Result (($recorderModuleText -match 'RawViewWalker') -and
     ($recorderModuleText -match 'New-MbClickPointTargetInfo')) '近傍点とクリック位置フォールバックでUIA非対応画面も示す'
+Add-Result (($projectModuleText -match 'Move-MbStepsToSheet') -and ($projectModuleText -match 'Remove-MbSteps') -and
+    ($webModuleText -match 'data-step-select') -and ($jsText -match 'runBulkStepAction')) '手順を複数選択してまとめて移動・削除する'
 Add-Result ($recorderModuleText -match '\$rectWidth -gt 0\.82') 'ページ全体に近い矩形を最終段でも除外する'
 Add-Result (($recorderModuleText -match '\[IO\.File\]::Replace\(\$temporary, \$StatusPath') -and
     ($recorderModuleText -match '\$delaysMs')) '操作記録の進捗JSONを完成後に差し替え、短いロックは再試行する'

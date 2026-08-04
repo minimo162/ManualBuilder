@@ -711,7 +711,7 @@ button:disabled {
   width: 100%;
   min-height: 38px;
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) auto;
+  grid-template-columns: 22px 18px minmax(0, 1fr) auto;
   align-items: center;
   gap: 7px;
   margin-bottom: 2px;
@@ -721,6 +721,19 @@ button:disabled {
   background: transparent;
   color: var(--text-2);
   text-align: left;
+}
+
+.step-nav__select {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.step-nav__item--selected {
+  color: var(--text);
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .step-nav__main {
@@ -846,6 +859,58 @@ button:disabled {
 .step-nav__item--empty .step-nav__status {
   border-color: var(--danger);
   background: transparent;
+}
+
+.step-nav__bulk {
+  flex: 0 0 auto;
+  margin-top: 8px;
+  padding: 9px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--surface);
+}
+
+.step-nav__bulk-heading,
+.step-nav__bulk-buttons {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.step-nav__bulk-heading {
+  margin-bottom: 7px;
+  font-size: 12px;
+}
+
+.step-nav__bulk-heading button {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 11px;
+}
+
+.step-nav__bulk select {
+  width: 100%;
+  min-height: 32px;
+  margin-bottom: 7px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+.step-nav__bulk-buttons .button {
+  min-width: 0;
+  min-height: 32px;
+  flex: 1;
+  padding: 5px 7px;
+  font-size: 11px;
+}
+
+.step-nav__bulk-delete {
+  color: var(--danger);
 }
 
 .sidebar__footer {
