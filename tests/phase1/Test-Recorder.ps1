@@ -269,6 +269,27 @@ $edgeFallback = New-MbClickPointTargetInfo -X 101 -Y 101 -Window $window
 Add-Result ([double]$edgeFallback.left -ge 100.0 -and [double]$edgeFallback.top -ge 100.0) 'クリック位置の枠をウィンドウ外へ出さない'
 
 # ---------------------------------------------------------------------
+# 記録用EdgeのDOM座標
+# ---------------------------------------------------------------------
+$domSnapshot = [pscustomobject]@{
+    name = '申請する'; role = 'button'; tag = 'button'; type = ''
+    clientX = 100.0; clientY = 50.0; dpr = 2.0
+    rect = [pscustomobject]@{ left = 80.0; top = 40.0; width = 60.0; height = 24.0 }
+}
+$domTarget = ConvertFrom-MbDomSnapshotTarget -Snapshot $domSnapshot -X 1000 -Y 500
+Add-Result ($null -ne $domTarget -and [string]$domTarget.provider -eq 'DOM') '記録用EdgeのDOM要素を操作対象へ変換する'
+Add-Result ([string]$domTarget.controlType -eq 'ControlType.Button' -and [string]$domTarget.name -eq '申請する') 'DOMの役割と名前を保持する'
+Add-Result ([Math]::Abs([double]$domTarget.left - 960.0) -lt 0.001 -and
+    [Math]::Abs([double]$domTarget.top - 480.0) -lt 0.001 -and
+    [Math]::Abs([double]$domTarget.width - 120.0) -lt 0.001) '表示倍率を含むDOM矩形を物理ピクセルへ変換する'
+$farDomSnapshot = [pscustomobject]@{
+    name = '別の要素'; role = 'link'; tag = 'a'; type = ''
+    clientX = 5.0; clientY = 5.0; dpr = 1.0
+    rect = [pscustomobject]@{ left = 500.0; top = 500.0; width = 20.0; height = 20.0 }
+}
+Add-Result ($null -eq (ConvertFrom-MbDomSnapshotTarget -Snapshot $farDomSnapshot -X 1000 -Y 500)) 'クリック点と離れたDOM矩形を誤適用しない'
+
+# ---------------------------------------------------------------------
 # 入力の検出に使うキー
 # ---------------------------------------------------------------------
 $typingKeys = @(Get-MbWatchedTypingKeys)

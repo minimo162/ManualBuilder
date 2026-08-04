@@ -3082,6 +3082,44 @@ kbd {
 }
 
 /* 記録した操作の確認一覧。サムネイルで押し間違いを見分けられるようにする。 */
+.recorder-mode-options {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0;
+}
+
+.recorder-mode-option {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: 10px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.recorder-mode-option:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-soft, rgba(20, 92, 170, 0.08));
+}
+
+.recorder-mode-option span {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.recorder-mode-option small {
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.recorder-mode-option.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .recorder-list {
   margin-top: 14px;
   display: flex;

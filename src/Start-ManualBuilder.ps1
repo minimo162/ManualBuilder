@@ -74,7 +74,9 @@ Initialize-MbCopilotServer -JobsRoot $script:CopilotJobsRoot -ScriptRoot $PSScri
     -ProfileRoot $script:CopilotProfileRoot -ConfigPath $script:CopilotConfigPath
 # 操作記録。記録した画面はジョブ配下に置き、取り込んだ時点でプロジェクトへ移る。
 $script:RecordingJobsRoot = Join-Path $DataRoot 'recording-jobs'
-Initialize-MbRecorderServer -JobsRoot $script:RecordingJobsRoot -ScriptRoot $PSScriptRoot
+$script:RecordingEdgeProfileRoot = Join-Path $DataRoot 'recorder-edge-profile'
+Initialize-MbRecorderServer -JobsRoot $script:RecordingJobsRoot -ScriptRoot $PSScriptRoot `
+    -EdgeProfileRoot $script:RecordingEdgeProfileRoot
 $script:ImageReplacementHistory = @{}
 $script:HtmlExportResult = $null
 $script:ProjectHomeVisible = -not $usesExplicitProjectPath
@@ -1193,7 +1195,9 @@ function Invoke-MbRoute {
             $form = Read-MbForm -Request $request
             # 音声はマイクを入れ、Microsoftのオンライン音声認識へ送る。既定では行わない。
             $withNarration = ([string](Get-MbFormValue -Form $form -Name 'withNarration')) -match '^(?i:true|1|on|yes)$'
-            $status = Start-MbRecordingJob -WithNarration:$withNarration
+            $mode = ([string](Get-MbFormValue -Form $form -Name 'mode')).Trim().ToLowerInvariant()
+            if ($mode -notin @('edge', 'desktop')) { $mode = 'edge' }
+            $status = Start-MbRecordingJob -WithNarration:$withNarration -Mode $mode
             Write-MbLog '操作の記録を開始しました。' 'OK'
             Write-MbResponse $Context ($status | ConvertTo-Json -Depth 6 -Compress) 200 'application/json; charset=utf-8'
         } catch {

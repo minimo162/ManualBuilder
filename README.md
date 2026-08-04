@@ -10,6 +10,7 @@
 - Excel COMによる主出力: 単発、10回連続、キャンセル、異常分岐を実機確認済み
 - 既存の未保存Excelブックへ影響しないことを実機確認済み
 - Word COMによる副出力の安全性と基本レイアウトを確認済み
+- Phase 1基盤 v0.33.0: 「操作を記録して手順にする」に記録用Edgeを追加した。専用プロファイルで開いたEdgeから、クリック前のDOM要素名・種類・矩形をChrome DevTools Protocolで保持し、画面遷移や消えるメニューでも実際に押したボタン／リンクへ赤枠を付ける。DOM監視は画面記録とは別プロセスで行い、60Hzのスクリーンショット取得を止めない。DOMを取得できないページは従来のUI Automation／MSAAへ自動で切り替わる。Edge以外のアプリを記録する従来モードも選択できる
 - Phase 1基盤 v0.32.12: クリック後のフォーカス要素、前面ウィンドウ直下のUI Automation全枝、旧式・独自アプリが公開するMSAAの順に操作対象を再検索する。FromPoint由来の枝に出ないポップアップや、UIAを公開しないコントロールも、クリック点を含む最小矩形に限って赤枠候補へ追加する
 - Phase 1基盤 v0.32.11: 操作記録画像を長辺2560px・JPEG品質94・高品質縮小へ変更し、対象周辺表示でも文字と赤枠を鮮明にする。UI Automationの子孫検索をText・Group・Custom等へ広げ、操作パターンが無い場合もクリック点の最小の名前付き要素を対象として補う。手順一覧のチェックボックスから複数手順をまとめて別シートへ移動・削除できる
 - Phase 1基盤 v0.32.10: 操作記録でUI Automationが200文字を超える名前を返しても、入力・右クリックの補足を含めて安全に省略し、取り込みを止めない。スクリーンショットの元画像はウィンドウ全体を保持したまま、対象を特定できた手順だけ周辺を大きく初期表示する。全体が必要なら画像編集の「切り抜きを戻す」で復元できる。対象不明のクリックは記録漏れを避けて残し、確認一覧で明示する
@@ -83,7 +84,7 @@ Windowsでリポジトリ直下の `run.cmd` をダブルクリックします�
 - その他メニューの「Wordで作成」から、同じ順序と編集済み画像を持つ縦型docxを作成
 - Word起動中はCOMを生成せず安全停止し、Wordを閉じて再実行またはExcel作成を案内
 - 録画（mp4・webm）を開いて場面を選び、その画面を手順として取り込み。動画はサーバーへ送らずブラウザーで再生する
-- その他メニューの「操作を記録して手順にする」から、実際の操作を記録して手順を作る。左クリック・右クリック・入力先の名前と位置はWindowsから直接取得するため推定を含まない
+- その他メニューの「操作を記録して手順にする」から、実際の操作を記録して手順を作る。既定の記録用Edgeではクリック前のWeb要素を直接取得し、Edge以外のアプリではWindowsのUI Automation／MSAAから対象を取得する
 - 記録した操作は一覧で確認でき、押し間違いを外してから取り込める
 - 押したキーそのものは読み取らない。入力手順の画像には画面上の文字を残し、隠したい箇所だけ取り込み後の「画像を編集」から手動で黒塗りする。不要なウィンドウは閉じてから記録する
 - 記録中に話した内容も文字にして手順へ結び付けられる（既定はオフ。音声はMicrosoftのオンライン音声認識へ送られる）
@@ -116,7 +117,7 @@ v0.14.1以前のアプリ配下に `data\projects\default` がある場合、v0.
 
 初回は `tests\phase1\run-tests.cmd` を実行し、PowerShell 5.1構文、プロジェクト保存、localhostサーバーを確認してください。詳しくは [docs/PHASE1-FOUNDATION.md](docs/PHASE1-FOUNDATION.md) を参照してください。
 
-Phase 1 v0.32.12の再確認手順は [docs/RETEST-PHASE1-v0.32.12.md](docs/RETEST-PHASE1-v0.32.12.md) にまとめています。
+Phase 1 v0.33.0の再確認手順は [docs/RETEST-PHASE1-v0.33.0.md](docs/RETEST-PHASE1-v0.33.0.md) にまとめています。
 
 Phase 1 v0.32.8の再確認手順は [docs/RETEST-PHASE1-v0.32.8.md](docs/RETEST-PHASE1-v0.32.8.md)、v0.32.7は [docs/RETEST-PHASE1-v0.32.7.md](docs/RETEST-PHASE1-v0.32.7.md)、v0.32.6は [docs/RETEST-PHASE1-v0.32.6.md](docs/RETEST-PHASE1-v0.32.6.md)、v0.32.5は [docs/RETEST-PHASE1-v0.32.5.md](docs/RETEST-PHASE1-v0.32.5.md)、v0.32.4は [docs/RETEST-PHASE1-v0.32.4.md](docs/RETEST-PHASE1-v0.32.4.md)、v0.32.3は [docs/RETEST-PHASE1-v0.32.3.md](docs/RETEST-PHASE1-v0.32.3.md)、v0.32.2は [docs/RETEST-PHASE1-v0.32.2.md](docs/RETEST-PHASE1-v0.32.2.md)、v0.32.1は [docs/RETEST-PHASE1-v0.32.1.md](docs/RETEST-PHASE1-v0.32.1.md)、v0.32.0は [docs/RETEST-PHASE1-v0.32.0.md](docs/RETEST-PHASE1-v0.32.0.md)、v0.30.0は [docs/RETEST-PHASE1-v0.30.0.md](docs/RETEST-PHASE1-v0.30.0.md)、v0.29.0は [docs/RETEST-PHASE1-v0.29.0.md](docs/RETEST-PHASE1-v0.29.0.md)、v0.28.0は [docs/RETEST-PHASE1-v0.28.0.md](docs/RETEST-PHASE1-v0.28.0.md)、v0.27.0は [docs/RETEST-PHASE1-v0.27.0.md](docs/RETEST-PHASE1-v0.27.0.md)、v0.26.0は [docs/RETEST-PHASE1-v0.26.0.md](docs/RETEST-PHASE1-v0.26.0.md)、v0.25.0は [docs/RETEST-PHASE1-v0.25.0.md](docs/RETEST-PHASE1-v0.25.0.md)、v0.24.0は [docs/RETEST-PHASE1-v0.24.0.md](docs/RETEST-PHASE1-v0.24.0.md)、v0.23.0は [docs/RETEST-PHASE1-v0.23.0.md](docs/RETEST-PHASE1-v0.23.0.md)、v0.22.1は [docs/RETEST-PHASE1-v0.22.1.md](docs/RETEST-PHASE1-v0.22.1.md)、v0.22.0は [docs/RETEST-PHASE1-v0.22.0.md](docs/RETEST-PHASE1-v0.22.0.md) にまとめています。
 

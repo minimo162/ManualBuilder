@@ -50,6 +50,8 @@ $required = @(
     'src\ManualBuilder.Recorder.psm1',
     'src\ManualBuilder.RecorderServer.psm1',
     'src\Invoke-ManualBuilderRecorder.ps1',
+    'src\ManualBuilder.EdgeRecorder.psm1',
+    'src\Invoke-ManualBuilderEdgeRecorder.ps1',
     'src\ManualBuilder.Dictation.psm1',
     'src\Invoke-ManualBuilderDictation.ps1',
     'web\index.html',
@@ -103,7 +105,7 @@ Add-Result (($serverText -match '\$projectReady = \$false') -and ($serverText -m
 Add-Result ($serverText -match '\$storageLayout\.RuntimePath') '二重起動情報をユーザーデータ配下へ置く'
 Add-Result ($serverText -match '\$storageLayout\.ExportJobsRoot') 'Office一時ジョブをユーザーデータ配下へ置く'
 Add-Result (($runCommandText -match '%~dp0src\\Start-ManualBuilderLauncher\.ps1') -and ($runCommandText -notmatch '(?im)^cd /d')) 'UNC共有フォルダーから更新ランチャーを起動できる'
-Add-Result ([string]$appVersionManifest.appVersion -eq '0.32.12') '配布用アプリバージョンを0.32.12へ更新する'
+Add-Result ([string]$appVersionManifest.appVersion -eq '0.33.0') '配布用アプリバージョンを0.33.0へ更新する'
 Add-Result ($workspaceModuleText -notmatch "ManualBuilder\.Project\.psm1'\) -Force") 'WorkspaceがProjectコマンドを強制再読込しない'
 Add-Result ($launcherModuleText -match "'ManualBuilder\\app'") 'アプリ実行コードをLocalApplicationDataへキャッシュする'
 Add-Result ($launcherModuleText -match "@\('src', 'web', 'run\.cmd', 'app-version\.json'\)") 'キャッシュ対象からプロジェクトデータを除外する'
@@ -375,6 +377,7 @@ Add-Result ($projectModuleText -match 'Add-MbPropertyIfMissing \$step ''capture'
 
 $recorderModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.Recorder.psm1'), [Text.Encoding]::UTF8)
 $recorderServerText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.RecorderServer.psm1'), [Text.Encoding]::UTF8)
+$edgeRecorderModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.EdgeRecorder.psm1'), [Text.Encoding]::UTF8)
 Add-Result (($copilotJobText -notmatch '(?m)^Import-Module .+ -Force$') -and
     ($copilotServerText -notmatch '(?m)^Import-Module .+ -Force$') -and
     ($recorderServerText -notmatch '(?m)^Import-Module .+ -Force$')) '入れ子のモジュールが共有コマンドを強制再読込しない'
@@ -387,6 +390,17 @@ Add-Result ($recorderModuleText -match 'DWMWA_EXTENDED_FRAME_BOUNDS') '見た目
 Add-Result ($recorderServerText -match "Source 'recorder'") '記録した画面を専用の出所として取り込む'
 Add-Result ($recorderServerText -match 'AllowDuplicateStep') '同じ画面でも別の操作はそれぞれ手順にする'
 Add-Result (($recorderModuleText -match 'ConvertTo-MbRecorderTargetName') -and ($recorderServerText -match 'ConvertTo-MbRecorderTargetName.+-Suffix \$suffix')) '操作対象を補足込みで200文字へ収める'
+Add-Result (($edgeRecorderModuleText -match 'remote-debugging-port') -and
+    ($edgeRecorderModuleText -match 'Page\.addScriptToEvaluateOnNewDocument')) '記録用EdgeをCDPで監視する'
+Add-Result (($edgeRecorderModuleText -match "addEventListener\('pointerdown'") -and
+    ($edgeRecorderModuleText -match '__manualBuilderRecorderRead')) '画面遷移前のDOM操作対象を保持する'
+Add-Result (($recorderServerText -match 'Invoke-ManualBuilderEdgeRecorder\.ps1') -and
+    ($recorderServerText -match 'DomTargetPath')) 'DOM監視を画面記録とは別プロセスで動かす'
+Add-Result (($recorderModuleText -match 'Get-MbDomTargetFromCache') -and
+    ($recorderModuleText -match 'Get-MbUiaTargetAtPoint')) 'DOMを優先し、取得できない操作はWindows検出へ戻す'
+Add-Result (($jsText -match 'data-recorder-mode') -and
+    ($jsText -match '記録用Edgeを使う（推奨）') -and
+    ($jsText -match 'その他のアプリを記録する')) '記録用Edgeとデスクトップ記録を選べる'
 Add-Result (($recorderServerText -match 'Get-MbRecorderTargetCrop') -and ($recorderServerText -match 'ControlType\.ClickPoint')) '対象周辺を非破壊で初期表示し対象不明クリックは全体を残す'
 Add-Result ($serverText -match '/api/recorder/start') '操作記録の開始口がある'
 Add-Result ($serverText -match '/api/recorder/import') '記録した操作の取り込み口がある'
