@@ -103,7 +103,7 @@ Add-Result (($serverText -match '\$projectReady = \$false') -and ($serverText -m
 Add-Result ($serverText -match '\$storageLayout\.RuntimePath') '二重起動情報をユーザーデータ配下へ置く'
 Add-Result ($serverText -match '\$storageLayout\.ExportJobsRoot') 'Office一時ジョブをユーザーデータ配下へ置く'
 Add-Result (($runCommandText -match '%~dp0src\\Start-ManualBuilderLauncher\.ps1') -and ($runCommandText -notmatch '(?im)^cd /d')) 'UNC共有フォルダーから更新ランチャーを起動できる'
-Add-Result ([string]$appVersionManifest.appVersion -eq '0.32.6') '配布用アプリバージョンを0.32.6へ更新する'
+Add-Result ([string]$appVersionManifest.appVersion -eq '0.32.7') '配布用アプリバージョンを0.32.7へ更新する'
 Add-Result ($workspaceModuleText -notmatch "ManualBuilder\.Project\.psm1'\) -Force") 'WorkspaceがProjectコマンドを強制再読込しない'
 Add-Result ($launcherModuleText -match "'ManualBuilder\\app'") 'アプリ実行コードをLocalApplicationDataへキャッシュする'
 Add-Result ($launcherModuleText -match "@\('src', 'web', 'run\.cmd', 'app-version\.json'\)") 'キャッシュ対象からプロジェクトデータを除外する'
@@ -393,6 +393,9 @@ Add-Result ($jsText -match 'recorder-dialog') '記録の確認画面を実装す
 Add-Result ($jsText -match 'const shouldDiscard = recorder\.active') '記録中に確認画面を閉じても記録プロセスを残さない'
 Add-Result ($recorderModuleText -match 'RedactTarget') '入力欄を記録画像でも黒塗りする'
 Add-Result ($recorderModuleText -match 'Test-MbAsyncKeyStatePressed') '短いクリックやキー入力も押下履歴から検出する'
+Add-Result (($recorderModuleText -match '\[IO\.File\]::Replace\(\$temporary, \$StatusPath') -and
+    ($recorderModuleText -match '\$delaysMs')) '操作記録の進捗JSONを完成後に差し替え、短いロックは再試行する'
+Add-Result ($recorderServerText -match '\[IO\.FileShare\]::ReadWrite -bor \[IO\.FileShare\]::Delete') '進捗を読む側はワーカーの原子的な差し替えを妨げない'
 Add-Result ($cssText -match '\.copilot-dialog\[open\]') '閉じた記録・Copilotダイアログを画面に残さない'
 $dictationModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.Dictation.psm1'), [Text.Encoding]::UTF8)
 Add-Result ($dictationModuleText -match 'SpeechRecognitionScenario\]::Dictation') 'Win+Hと同じ口述筆記の仕組みを使う'

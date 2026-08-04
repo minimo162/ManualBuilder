@@ -18,6 +18,63 @@ function Add-Result {
 Import-Module (Join-Path $srcRoot 'ManualBuilder.Recorder.psm1') -Force
 
 # ---------------------------------------------------------------------
+# status.json の読み書き競合
+# ---------------------------------------------------------------------
+# 進捗を読む側が一瞬ファイルを開いていても、記録ワーカーは短時間待って
+# 完成済みJSONへ差し替えられることを確認する。旧実装の File.Copy はここで失敗した。
+$statusTestRoot = Join-Path $env:TEMP ('ManualBuilder-RecorderStatus-' + [guid]::NewGuid().ToString('N'))
+[void](New-Item -ItemType Directory -Path $statusTestRoot -Force)
+$statusTestPath = Join-Path $statusTestRoot 'status.json'
+$readyPath = Join-Path $statusTestRoot 'writer.ready'
+$goPath = Join-Path $statusTestRoot 'writer.go'
+$statusWriterProcess = $null
+$statusLock = $null
+try {
+    Write-MbRecordingStatus -StatusPath $statusTestPath -JobId 'test' -State 'recording' -Count 1 -Message 'initial'
+
+    $recorderModulePath = (Join-Path $srcRoot 'ManualBuilder.Recorder.psm1').Replace("'", "''")
+    $escapedStatusPath = $statusTestPath.Replace("'", "''")
+    $escapedReadyPath = $readyPath.Replace("'", "''")
+    $escapedGoPath = $goPath.Replace("'", "''")
+    $childCommand = "Import-Module '$recorderModulePath' -Force; [IO.File]::WriteAllText('$escapedReadyPath', 'ready'); while (-not (Test-Path -LiteralPath '$escapedGoPath')) { Start-Sleep -Milliseconds 10 }; Write-MbRecordingStatus -StatusPath '$escapedStatusPath' -JobId 'test' -State 'completed' -Count 2 -Message 'done'"
+    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childCommand))
+    $powerShellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $startParameters = @{
+        FilePath = $powerShellPath
+        ArgumentList = @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodedCommand)
+        WindowStyle = 'Hidden'
+        PassThru = $true
+    }
+    $statusWriterProcess = Start-Process @startParameters
+
+    for ($i = 0; $i -lt 100 -and -not (Test-Path -LiteralPath $readyPath); $i++) {
+        Start-Sleep -Milliseconds 50
+    }
+    if (-not (Test-Path -LiteralPath $readyPath)) { throw '進捗更新の競合試験を開始できませんでした。' }
+
+    # FileShare.Readは旧File.Copyと原子的な置換の両方を一時的に拒否する。
+    # 新実装は再試行するので、ロックを離したあとに成功する。
+    $statusLock = [IO.File]::Open($statusTestPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    [IO.File]::WriteAllText($goPath, 'go')
+    Start-Sleep -Milliseconds 250
+    $statusLock.Dispose()
+    $statusLock = $null
+
+    [void]$statusWriterProcess.WaitForExit(5000)
+    Add-Result ($statusWriterProcess.HasExited -and $statusWriterProcess.ExitCode -eq 0) '進捗ファイルが一時的に使用中でも更新を再試行する'
+    $writtenStatus = [IO.File]::ReadAllText($statusTestPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    Add-Result ([string]$writtenStatus.state -eq 'completed' -and [int]$writtenStatus.count -eq 2) '競合後も完全なstatus.jsonへ差し替える'
+
+} finally {
+    if ($null -ne $statusLock) { $statusLock.Dispose() }
+    if ($null -ne $statusWriterProcess) {
+        if (-not $statusWriterProcess.HasExited) { try { $statusWriterProcess.Kill() } catch { } }
+        $statusWriterProcess.Dispose()
+    }
+    Remove-Item -LiteralPath $statusTestRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# ---------------------------------------------------------------------
 # 取り込む範囲の決め方
 # ---------------------------------------------------------------------
 $window = [pscustomobject]@{ title = '経費申請'; class = 'Window'; left = 100; top = 100; width = 800; height = 600 }

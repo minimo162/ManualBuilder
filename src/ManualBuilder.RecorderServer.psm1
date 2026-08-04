@@ -37,10 +37,23 @@ function Read-MbRecordingStatus {
     if (-not (Test-Path -LiteralPath $statusPath -PathType Leaf)) { return (Get-MbRecordingIdleStatus) }
     $status = $null
     try {
-        $raw = [IO.File]::ReadAllText($statusPath, [Text.Encoding]::UTF8)
+        # 記録ワーカーが完成済みのstatus.jsonを差し替えられるよう、
+        # 読み取り中も書き込みと削除（原子的な置換）を共有する。
+        $share = [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
+        $stream = [IO.File]::Open($statusPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)
+        try {
+            $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $true, 1024, $false)
+            try {
+                $raw = $reader.ReadToEnd()
+            } finally {
+                $reader.Dispose()
+            }
+        } finally {
+            $stream.Dispose()
+        }
         $status = $raw | ConvertFrom-Json
     } catch {
-        # 書き換えの最中に読むと壊れて見えることがある。次の巡回で読み直す。
+        # 差し替えと同時になった場合は、次の巡回で読み直す。
         return (Get-MbRecordingIdleStatus)
     }
     if ($null -eq $status) { return (Get-MbRecordingIdleStatus) }
