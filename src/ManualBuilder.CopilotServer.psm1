@@ -54,6 +54,7 @@ function Import-MbVideoScene {
         [Parameter(Mandatory = $true)][byte[]]$Bytes,
         [int]$TimeMs = 0,
         [AllowEmptyString()][string]$RectJson = '',
+        [AllowEmptyString()][string]$CandidatesJson = '',
         [switch]$SkipOcr
     )
 
@@ -89,6 +90,31 @@ function Import-MbVideoScene {
         if (-not (Test-MbNormalizedRect -Rect $rect)) { $rect = $null }
     }
 
+    $candidates = New-Object System.Collections.ArrayList
+    if (-not [string]::IsNullOrWhiteSpace($CandidatesJson)) {
+        $parsedCandidates = $null
+        try { $parsedCandidates = $CandidatesJson | ConvertFrom-Json } catch { $parsedCandidates = $null }
+        foreach ($candidate in @(@($parsedCandidates) | Select-Object -First 4)) {
+            if ($null -eq $candidate -or $candidate.PSObject.Properties.Name -notcontains 'rect' -or
+                -not (Test-MbNormalizedRect -Rect $candidate.rect)) { continue }
+            $candidateId = if ($candidate.PSObject.Properties.Name -contains 'id') { [string]$candidate.id } else { '' }
+            if ($candidateId -notmatch '^video-diff-[1-4]$') { $candidateId = 'video-diff-' + ($candidates.Count + 1) }
+            [void]$candidates.Add([pscustomobject]@{
+                id = $candidateId
+                source = 'video-diff'
+                confidence = $(if ($candidate.PSObject.Properties.Name -contains 'confidence' -and [string]$candidate.confidence -in @('high', 'medium', 'low')) { [string]$candidate.confidence } else { 'low' })
+                label = ''
+                targetType = ''
+                rect = $candidate.rect
+            })
+        }
+    }
+    if ($candidates.Count -eq 0 -and $null -ne $rect) {
+        [void]$candidates.Add([pscustomobject]@{
+            id = 'video-diff-1'; source = 'video-diff'; confidence = 'low'; label = ''; targetType = ''; rect = $rect
+        })
+    }
+
     $clickLabel = ''
     $screenText = ''
     $ocrAvailable = $false
@@ -97,12 +123,19 @@ function Import-MbVideoScene {
         $snapshot = Get-MbOcrSnapshot -Path $imagePath
         $ocrAvailable = [bool]$snapshot.available
         if ($ocrAvailable) { $screenText = [string]$snapshot.text }
-        if ($null -ne $rect -and $ocrAvailable) {
-            # 変化領域を、そこにある文字の矩形と突き合わせて締める。
-            $resolved = Resolve-MbOperationRect -Rect $rect -Snapshot $snapshot
-            $rect = $resolved.rect
-            $clickLabel = [string]$resolved.label
+        if ($ocrAvailable -and $candidates.Count -gt 0) {
+            # 各候補をOCR文字へ寄せる。最大領域だけを確定せず、Copilotが比較できる形で残す。
+            foreach ($candidate in @($candidates)) {
+                $resolved = Resolve-MbOperationRect -Rect $candidate.rect -Snapshot $snapshot
+                $candidate.rect = $resolved.rect
+                $candidate.label = [string]$resolved.label
+            }
         }
+    }
+
+    if ($candidates.Count -gt 0) {
+        $rect = $candidates[0].rect
+        $clickLabel = [string]$candidates[0].label
     }
 
     if ($null -ne $rect) {
@@ -118,8 +151,13 @@ function Import-MbVideoScene {
         [void](Set-MbStepAnnotations -Project $Project -StepId $stepId -AnnotationsJson (ConvertTo-Json -InputObject $annotation -Depth 5))
     }
 
+    # 候補数は確からしさではない。複数あるほど曖昧な場合もあるため、
+    # 現在採用している候補自身の評価をそのまま引き継ぐ。
     [void](Set-MbStepCapture -Project $Project -StepId $stepId -Kind 'video-scene' -VideoTimeMs $TimeMs `
-        -ClickLabel $clickLabel -ScreenText $screenText)
+        -ClickLabel $clickLabel -ScreenText $screenText -TargetSource 'video-diff' `
+        -TargetConfidence $(if ($candidates.Count -gt 0) { [string]$candidates[0].confidence } else { '' }) `
+        -TargetCandidateId $(if ($candidates.Count -gt 0) { [string]$candidates[0].id } else { '' }) `
+        -TargetCandidatesJson $(if ($candidates.Count -gt 0) { ConvertTo-Json -InputObject @($candidates) -Depth 8 -Compress } else { '' }))
 
     return [pscustomobject]@{
         status       = 'added'
@@ -364,6 +402,91 @@ function Remove-MbCopilotDraftJob {
     try { Remove-Item -LiteralPath $directory -Recurse -Force -ErrorAction SilentlyContinue } catch { }
 }
 
+function Get-MbCopilotCandidateCrop {
+    param([Parameter(Mandatory = $true)]$Rect)
+    if (-not (Test-MbNormalizedRect -Rect $Rect)) { return [pscustomobject]@{ x = 0.0; y = 0.0; width = 1.0; height = 1.0 } }
+    $targetWidth = [double]$Rect.x2 - [double]$Rect.x1
+    $targetHeight = [double]$Rect.y2 - [double]$Rect.y1
+    $width = [Math]::Min(1.0, [Math]::Max(0.55, $targetWidth + 0.24))
+    $height = [Math]::Min(1.0, [Math]::Max(0.55, $targetHeight + 0.24))
+    $centerX = ([double]$Rect.x1 + [double]$Rect.x2) / 2.0
+    $centerY = ([double]$Rect.y1 + [double]$Rect.y2) / 2.0
+    return [pscustomobject]@{
+        x = [Math]::Round([Math]::Max(0.0, [Math]::Min(1.0 - $width, $centerX - ($width / 2.0))), 6)
+        y = [Math]::Round([Math]::Max(0.0, [Math]::Min(1.0 - $height, $centerY - ($height / 2.0))), 6)
+        width = [Math]::Round($width, 6); height = [Math]::Round($height, 6)
+    }
+}
+
+function Test-MbCopilotSameRect {
+    param([AllowNull()]$First, [AllowNull()]$Second)
+    if (-not (Test-MbNormalizedRect -Rect $First) -or -not (Test-MbNormalizedRect -Rect $Second)) { return $false }
+    return ([Math]::Abs([double]$First.x1 - [double]$Second.x1) -lt 0.00001 -and
+        [Math]::Abs([double]$First.y1 - [double]$Second.y1) -lt 0.00001 -and
+        [Math]::Abs([double]$First.x2 - [double]$Second.x2) -lt 0.00001 -and
+        [Math]::Abs([double]$First.y2 - [double]$Second.y2) -lt 0.00001)
+}
+
+function Set-MbCopilotVisualSelection {
+    param(
+        [Parameter(Mandatory = $true)][object]$Project,
+        [Parameter(Mandatory = $true)][string]$StepId,
+        [AllowEmptyString()][string]$TargetCandidateId = '',
+        [ValidateSet('keep', 'focus', 'full')][string]$Zoom = 'keep'
+    )
+    # 候補IDがない拡大指示は、現在の自動赤枠だけを外す危険があるため一切適用しない。
+    if ([string]::IsNullOrWhiteSpace($TargetCandidateId)) { return $false }
+    $step = Get-MbStepById -Project $Project -StepId $StepId
+    if ($null -eq $step -or $null -eq $step.capture) { return $false }
+    $candidates = @($step.capture.targetCandidates)
+    # 視覚候補がない手順では none や zoom も受け付けない。手動のcropや対象名を守る。
+    if ($candidates.Count -eq 0) { return $false }
+    $selected = $null
+    if ($TargetCandidateId -ne 'none' -and -not [string]::IsNullOrWhiteSpace($TargetCandidateId)) {
+        $selected = @($candidates | Where-Object { [string]$_.id -eq $TargetCandidateId }) | Select-Object -First 1
+        if ($null -eq $selected) { return $false }
+    }
+
+    # 以前の自動候補と一致する矩形だけを外す。利用者が追加した別の赤枠は保持する。
+    $oldCandidate = @($candidates | Where-Object { [string]$_.id -eq [string]$step.capture.targetCandidateId }) | Select-Object -First 1
+    $annotations = New-Object System.Collections.ArrayList
+    $oldRemoved = $false
+    foreach ($annotation in @($step.annotations)) {
+        if (-not $oldRemoved -and [string]$annotation.type -eq 'rect' -and $null -ne $oldCandidate -and
+            (Test-MbCopilotSameRect -First $annotation -Second $oldCandidate.rect)) {
+            $oldRemoved = $true
+            continue
+        }
+        [void]$annotations.Add($annotation)
+    }
+    if ($null -ne $selected) {
+        [void]$annotations.Add([pscustomobject]@{
+            id = New-MbAnnotationId; type = 'rect'
+            x1 = $selected.rect.x1; y1 = $selected.rect.y1; x2 = $selected.rect.x2; y2 = $selected.rect.y2; label = 0
+        })
+    }
+
+    $crop = $step.crop
+    if ($Zoom -eq 'full') { $crop = [pscustomobject]@{ x = 0.0; y = 0.0; width = 1.0; height = 1.0 } }
+    elseif ($Zoom -eq 'focus' -and $null -ne $selected) { $crop = Get-MbCopilotCandidateCrop -Rect $selected.rect }
+    [void](Set-MbStepImageEdits -Project $Project -StepId $StepId `
+        -AnnotationsJson (ConvertTo-Json -InputObject @($annotations) -Depth 6) `
+        -CropJson (ConvertTo-Json -InputObject $crop -Compress))
+
+    if (-not [string]::IsNullOrWhiteSpace($TargetCandidateId)) {
+        $step.capture.targetCandidateId = $TargetCandidateId
+        if ($null -eq $selected) {
+            $step.capture.clickLabel = ''
+        } else {
+            $step.capture.clickLabel = [string]$selected.label
+            $step.capture.targetSource = [string]$selected.source
+            $step.capture.targetConfidence = [string]$selected.confidence
+            $step.capture.targetType = [string]$selected.targetType
+        }
+    }
+    return $true
+}
+
 # 採用された下書きだけをプロジェクトへ書き込む。
 function Set-MbCopilotDraftSelection {
     param(
@@ -386,9 +509,14 @@ function Set-MbCopilotDraftSelection {
         $title = if ($item.PSObject.Properties.Name -contains 'title') { [string]$item.title } else { '' }
         $description = if ($item.PSObject.Properties.Name -contains 'description') { [string]$item.description } else { '' }
         $note = if ($item.PSObject.Properties.Name -contains 'note') { [string]$item.note } else { '' }
+        $targetCandidateId = if ($item.PSObject.Properties.Name -contains 'targetCandidateId') { [string]$item.targetCandidateId } else { '' }
+        $zoom = if ($item.PSObject.Properties.Name -contains 'zoom' -and [string]$item.zoom -in @('keep', 'focus', 'full')) { [string]$item.zoom } else { 'keep' }
         $changed = $false
         try {
             $changed = Set-MbStepDraft -Project $Project -StepId ([string]$item.id) -Title $title -Description $description -Note $note
+            $visualChanged = Set-MbCopilotVisualSelection -Project $Project -StepId ([string]$item.id) `
+                -TargetCandidateId $targetCandidateId -Zoom $zoom
+            $changed = $changed -or $visualChanged
         } catch {
             # 採用の途中で手順が消えていた場合。その1件だけ飛ばして続ける。
             continue

@@ -36,6 +36,8 @@
     settleMs: 250,
     // 変化ブロックとみなす閾値（0〜1）。
     blockChangeThreshold: 0.055,
+    subtleBlockChangeThreshold: 0.030,
+    minCandidateBlocks: 2,
     // 変化した塊が全体のこの割合を超えたら画面全体の切り替わりとみなし、位置を出さない。
     maxLocalizedRatio: 0.35,
     // 安全弁。長い録画で手順が無制限に増えないようにする。
@@ -88,11 +90,11 @@
 
   // 変化ブロックを4近傍で連結し、最大の塊だけを返す。
   // マウスカーソルの残像のような小さな変化を巻き込まないため。
-  const largestCluster = (indices, cols, rows) => {
+  const connectedClusters = (indices, cols, rows) => {
     if (indices.length === 0) return [];
     const member = new Set(indices);
     const seen = new Set();
-    let best = [];
+    const clusters = [];
     for (const start of indices) {
       if (seen.has(start)) continue;
       const stack = [start];
@@ -115,9 +117,14 @@
           }
         }
       }
-      if (cluster.length > best.length) best = cluster;
+      clusters.push(cluster);
     }
-    return best;
+    return clusters.sort((a, b) => b.length - a.length);
+  };
+
+  const largestCluster = (indices, cols, rows) => {
+    const clusters = connectedClusters(indices, cols, rows);
+    return clusters.length > 0 ? clusters[0] : [];
   };
 
   // ブロックの塊を0〜1の正規化矩形にする。注釈スキーマ（x1,y1,x2,y2）に合わせる。
@@ -159,6 +166,38 @@
     // 画面全体が入れ替わったときは押された場所を推定できない。憶測の枠は出さない。
     if (cluster.length / (cols * rows) > settings.maxLocalizedRatio) return null;
     return clusterToRect(cluster, cols, rows);
+  };
+
+  // 最大領域だけで即決せず、意味の異なる変化領域を上位候補として残す。
+  // Copilotには座標を自由生成させず、この候補IDから選ばせる。
+  const locateChangeCandidates = (before, after, options) => {
+    const settings = { ...DEFAULTS, ...(options || {}) };
+    const total = settings.cols * settings.rows;
+    const build = (changed, subtle = false) => {
+      // 全体では大きく変わっているのに、配色や余白で複数クラスタへ分断された遷移を
+      // 局所操作と誤認しない。最大クラスタだけでなく、変化ブロックの総量も見る。
+      if (changed.length / total > settings.maxLocalizedRatio) return [];
+      const clusters = connectedClusters(changed, settings.cols, settings.rows)
+        .filter((cluster) => cluster.length >= settings.minCandidateBlocks && cluster.length / total <= settings.maxLocalizedRatio);
+      if (clusters.length === 0) return [];
+      const rects = clusters.slice(0, subtle ? 3 : 4).map((cluster) => clusterToRect(cluster, settings.cols, settings.rows));
+      // 淡いフォーカス枠は左右・上下の線が別クラスタになる。全クラスタを囲む候補も作り、
+      // Copilotが「入力欄全体」を選べるようにする。
+      if (subtle && clusters.length >= 2) {
+        const combined = clusterToRect(clusters.slice(0, 4).flat(), settings.cols, settings.rows);
+        const area = (combined.x2 - combined.x1) * (combined.y2 - combined.y1);
+        if (area <= settings.maxLocalizedRatio) rects.unshift(combined);
+      }
+      return rects.slice(0, 4).map((rect, index) => ({
+        id: `video-diff-${index + 1}`,
+        source: 'video-diff',
+        confidence: subtle ? 'low' : (index === 0 ? 'medium' : 'low'),
+        rect
+      }));
+    };
+    const strong = build(changedBlocks(before, after, settings.blockChangeThreshold));
+    if (strong.length > 0) return strong;
+    return build(changedBlocks(before, after, settings.subtleBlockChangeThreshold), true);
   };
 
   // 粗い走査の時刻列。間隔の端数がある動画でも、必ず実際の終端を含める。
@@ -293,19 +332,17 @@
   // 遷移の入口を細かく刻み、最初に変化した場所を返す。
   // 押されたボタンは画面が切り替わる前に必ず見た目が変わるため、そこが操作位置になる。
   const locateOperation = async (player, readSignature, baseline, fromMs, toMs, settings) => {
-    if (!(toMs > fromMs)) return null;
+    if (!(toMs > fromMs)) return [];
     const step = settings.fineIntervalMs;
     for (let t = fromMs + step; t < toMs; t += step) {
       await seekTo(player, t / 1000);
       const signature = readSignature(player);
-      const distance = signatureDistance(baseline, signature);
-      if (distance <= settings.staticThreshold) continue;
-      const rect = locateChangeRect(baseline, signature, settings);
-      if (rect) return rect;
-      // 最初の変化が画面全体だった場合、これ以降はもっと大きく変わる。諦める。
-      return null;
+      const candidates = locateChangeCandidates(baseline, signature, settings);
+      if (candidates.length > 0) return candidates;
+      // 圧縮ノイズやカーソルだけが先に変わることがある。局所候補が得られない
+      // 最初の差で打ち切らず、次の静止場面まで探索を続ける。
     }
-    return null;
+    return [];
   };
 
   // 録画から手順の候補を切り出す本体。
@@ -351,15 +388,15 @@
       if (shouldCancel()) return { cancelled: true, scenes: [] };
       const scene = selected[i];
       const next = selected[i + 1] || null;
-      let rect = null;
+      let candidates = [];
       if (next) {
-        const lastStillIndex = scene.run.endIndex;
-        const baselineSample = samples[lastStillIndex];
         const transitionEndMs = next.run.startMs;
-        await seekTo(player, baselineSample.timeMs / 1000);
-        const baseline = readSignature(player);
-        rect = await locateOperation(
-          player, readSignature, baseline, baselineSample.timeMs, transitionEndMs, settings
+        // 場面末尾は押下状態（色が変わったボタン等）をすでに含むことがある。
+        // 代表コマを基準に、次場面の直前1秒を調べて押下前後の局所差を拾う。
+        const operationStartMs = Math.max(scene.timeMs, transitionEndMs - 1000);
+        const baseline = scene.signature;
+        candidates = await locateOperation(
+          player, readSignature, baseline, operationStartMs, transitionEndMs, settings
         );
       }
       onProgress({
@@ -367,7 +404,13 @@
         percent: 60 + Math.round(((i + 1) / selected.length) * 20),
         message: '操作された場所を調べています'
       });
-      scenes.push({ index: i, timeMs: scene.timeMs, operationRect: rect, stillMs: scene.run.durationMs });
+      scenes.push({
+        index: i,
+        timeMs: scene.timeMs,
+        operationRect: candidates[0]?.rect || null,
+        operationCandidates: candidates,
+        stillMs: scene.run.durationMs
+      });
     }
 
     // 代表コマを実寸で取り出す。
@@ -391,8 +434,10 @@
     signatureDistance,
     changedBlocks,
     largestCluster,
+    connectedClusters,
     clusterToRect,
     locateChangeRect,
+    locateChangeCandidates,
     planSampleTimes,
     detectStillRuns,
     selectScenes,

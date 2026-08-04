@@ -1501,6 +1501,9 @@
       'X-Scene-Time-Ms': String(Math.round(scene.timeMs || 0))
     };
     if (scene.operationRect) headers['X-Scene-Rect'] = JSON.stringify(scene.operationRect);
+    if (scene.operationCandidates?.length) {
+      headers['X-Scene-Candidates'] = JSON.stringify(scene.operationCandidates.slice(0, 4));
+    }
     const response = await fetch('/api/videos/scenes/import', {
       method: 'POST',
       headers: sessionHeaders(headers),
@@ -3334,13 +3337,17 @@
     list.innerHTML = drafts.map((draft, index) => {
       const review = copilotDraft.mode === 'review';
       const uncertain = draft.confident === false;
+      const visualUncertain = Boolean(draft.targetCandidateId) && draft.visualConfident === false;
       const dropped = draft.keep === false;
       const flags = [];
       if (draft.kind) flags.push(`<span class="copilot-flag copilot-flag--kind">${escapeHtml(draft.kind)}</span>`);
       if (dropped && !review) flags.push('<span class="copilot-flag copilot-flag--drop">不要かもしれません</span>');
       if (uncertain && !review) flags.push('<span class="copilot-flag copilot-flag--unsure">自信なし</span>');
+      if (visualUncertain && !review) flags.push('<span class="copilot-flag copilot-flag--unsure">枠を要確認</span>');
+      if (draft.targetCandidateId && !review) flags.push(`<span class="copilot-flag">候補: ${escapeHtml(draft.targetCandidateId)}</span>`);
       if (draft.clickLabel && !review) flags.push(`<span class="copilot-flag">操作対象: ${escapeHtml(draft.clickLabel)}</span>`);
-      const reason = draft.reason ? `<p class="copilot-draft__reason">${escapeHtml(draft.reason)}</p>` : '';
+      const reasons = [draft.visualReason, draft.reason].filter(Boolean).map((value) => escapeHtml(value)).join(' / ');
+      const reason = reasons ? `<p class="copilot-draft__reason">${reasons}</p>` : '';
       const currentText = `${escapeHtml(draft.currentTitle)}／${escapeHtml(draft.currentDescription)}`;
       const current = (draft.currentTitle || draft.currentDescription)
         ? (review
@@ -3348,8 +3355,8 @@
           : `<details class="copilot-draft__current"><summary>今の内容</summary><p>${currentText}</p></details>`)
         : '';
       // 自信がない下書きと不要判定は、既定では採用しない。取りこぼしより誤採用を避ける。
-      const checked = (review || (!uncertain && !dropped)) ? ' checked' : '';
-      return `<article class="copilot-draft" data-copilot-draft-item data-step-id="${escapeHtml(draft.id)}">
+      const checked = (review || (!uncertain && !visualUncertain && !dropped)) ? ' checked' : '';
+      return `<article class="copilot-draft" data-copilot-draft-item data-step-id="${escapeHtml(draft.id)}" data-target-candidate-id="${escapeHtml(draft.targetCandidateId || '')}" data-zoom="${escapeHtml(draft.zoom || 'keep')}">
 <label class="copilot-draft__accept"><input type="checkbox" data-copilot-accept${checked}><span>採用する</span></label>
 <div class="copilot-draft__body">
 <div class="copilot-draft__flags">${flags.join('')}</div>
@@ -3372,7 +3379,9 @@ ${review ? current + reason : reason + current}
         id: item.dataset.stepId,
         title: item.querySelector('[data-copilot-title]').value,
         description: item.querySelector('[data-copilot-description]').value,
-        note: item.querySelector('[data-copilot-note]').value
+        note: item.querySelector('[data-copilot-note]').value,
+        targetCandidateId: item.dataset.targetCandidateId || '',
+        zoom: item.dataset.zoom || 'keep'
       }));
     if (accept.length === 0) {
       showToast('採用する手順を1件以上選んでください。');

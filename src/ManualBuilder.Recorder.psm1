@@ -1235,7 +1235,9 @@ function ConvertFrom-MbDomSnapshotTarget {
             inputType = $type
             left = $left; top = $top; width = $width; height = $height
             isActionable = $true; isFallback = $false
-            provider = 'DOM'; confidence = 'high'
+            # DOMも座標変換・イベント経路・入れ子要素の選択を誤ることがある。
+            # 異種ソースとの一致を確認するまでは確定扱いにしない。
+            provider = 'DOM'; confidence = 'medium'
         }
     } catch { return $null }
 }
@@ -1317,6 +1319,82 @@ function Get-MbDomTargetFromCache {
     } catch { return $null }
 }
 
+# DOM、UI Automation、クリック位置を同じ形式へ揃える。採用済みの対象も
+# 「観測候補の1つ」に過ぎないため、Copilotが別候補か none を選べるように残す。
+function Get-MbRecorderTargetEvidence {
+    param([AllowNull()]$Target)
+
+    if ($null -eq $Target) { return $null }
+    $source = if ($Target.PSObject.Properties.Name -contains 'provider' -and
+        -not [string]::IsNullOrWhiteSpace([string]$Target.provider)) {
+        [string]$Target.provider
+    } elseif ($Target.PSObject.Properties.Name -contains 'isFallback' -and [bool]$Target.isFallback) {
+        'click-point'
+    } else { 'UIA' }
+    $confidence = if ($Target.PSObject.Properties.Name -contains 'confidence' -and
+        [string]$Target.confidence -in @('high', 'medium', 'low')) {
+        [string]$Target.confidence
+    } elseif (($Target.PSObject.Properties.Name -contains 'isFallback' -and [bool]$Target.isFallback) -or
+        ($Target.PSObject.Properties.Name -contains 'isInferred' -and [bool]$Target.isInferred)) {
+        'low'
+    } else { 'medium' }
+    return [pscustomobject]@{ source = $source; confidence = $confidence }
+}
+
+function ConvertTo-MbRecordingTargetCandidates {
+    param(
+        [Parameter(Mandatory = $true)]$Region,
+        [AllowNull()]$SelectedTarget,
+        [AllowEmptyCollection()][object[]]$Targets = @(),
+        [int]$Maximum = 4
+    )
+
+    $ordered = New-Object System.Collections.ArrayList
+    if ($null -ne $SelectedTarget) { [void]$ordered.Add($SelectedTarget) }
+    foreach ($target in @($Targets)) {
+        if ($null -ne $target) { [void]$ordered.Add($target) }
+    }
+
+    $result = New-Object System.Collections.ArrayList
+    foreach ($target in @($ordered)) {
+        if ($result.Count -ge [Math]::Max(1, $Maximum)) { break }
+        $rect = ConvertTo-MbRegionRect -Region $Region -Target $target
+        if ($null -eq $rect) { continue }
+        $evidence = Get-MbRecorderTargetEvidence -Target $target
+        if ($null -eq $evidence) { continue }
+        $label = ConvertTo-MbRecorderTargetName -Value $(if ($target.PSObject.Properties.Name -contains 'name') { $target.name } else { '' })
+        $targetType = if ($target.PSObject.Properties.Name -contains 'controlType') { [string]$target.controlType } else { '' }
+
+        # 同じ取得元が同じ名前・矩形を返しただけなら候補を水増ししない。
+        $duplicate = $false
+        foreach ($existing in @($result)) {
+            if ([string]$existing.source -ne [string]$evidence.source -or
+                [string]$existing.label -ne $label -or [string]$existing.targetType -ne $targetType) { continue }
+            if ([Math]::Abs([double]$existing.rect.x1 - [double]$rect.x1) -lt 0.003 -and
+                [Math]::Abs([double]$existing.rect.y1 - [double]$rect.y1) -lt 0.003 -and
+                [Math]::Abs([double]$existing.rect.x2 - [double]$rect.x2) -lt 0.003 -and
+                [Math]::Abs([double]$existing.rect.y2 - [double]$rect.y2) -lt 0.003) {
+                $duplicate = $true
+                break
+            }
+        }
+        if ($duplicate) { continue }
+
+        $safeSource = ([string]$evidence.source).ToLowerInvariant() -replace '[^a-z0-9]+', '-'
+        $safeSource = $safeSource.Trim('-')
+        if ([string]::IsNullOrWhiteSpace($safeSource)) { $safeSource = 'observed' }
+        [void]$result.Add([pscustomobject]@{
+            id = ($safeSource + '-' + ($result.Count + 1))
+            source = [string]$evidence.source
+            confidence = [string]$evidence.confidence
+            label = $label
+            targetType = $targetType
+            rect = $rect
+        })
+    }
+    return @($result)
+}
+
 # 1件ぶんの操作を記録する。押す直前の画面を先に確保してからUIAを引く。
 function Save-MbRecordingEvent {
     param(
@@ -1327,6 +1405,7 @@ function Save-MbRecordingEvent {
         [Parameter(Mandatory = $true)][string]$EventsDirectory,
         [Parameter(Mandatory = $true)][string]$EventsPath,
         [AllowNull()]$Target,
+        [AllowEmptyCollection()][object[]]$TargetCandidates = @(),
         [AllowNull()]$Window,
         [int]$MaxEdge = 2560,
         [long]$Quality = 94
@@ -1357,11 +1436,15 @@ function Save-MbRecordingEvent {
         targetType  = $targetType
         rect        = $rect
     }
-    if ($null -ne $Target -and $Target.PSObject.Properties.Name -contains 'provider') {
-        $record.targetSource = [string]$Target.provider
+    if ($null -ne $Target) {
+        $evidence = Get-MbRecorderTargetEvidence -Target $Target
+        $record.targetSource = [string]$evidence.source
+        $record.confidence = [string]$evidence.confidence
     }
-    if ($null -ne $Target -and $Target.PSObject.Properties.Name -contains 'confidence') {
-        $record.confidence = [string]$Target.confidence
+    $candidates = @(ConvertTo-MbRecordingTargetCandidates -Region $saved -SelectedTarget $Target -Targets $TargetCandidates -Maximum 4)
+    if ($candidates.Count -gt 0) {
+        $record.targetCandidates = $candidates
+        $record.targetCandidateId = [string]$candidates[0].id
     }
     Write-MbRecordingEvent -EventsPath $EventsPath -Record $record
     return $record
@@ -1573,13 +1656,17 @@ function Invoke-MbRecordingLoop {
                             $target = Get-MbDomTargetFromCache -Path $DomTargetPath -X ([int]$point.X) -Y ([int]$point.Y) -Window $window
                         }
                     }
+                    $domTarget = $target
+                    # DOMが取れていてもUIAを代替候補として残す。以前はDOMが誤っていると
+                    # UIAを一度も比較せず、その矩形だけがCopilotへ渡っていた。
+                    $cachedTarget = Get-MbUiaTargetFromCache -Path $UiaTargetPath `
+                        -X ([int]$point.X) -Y ([int]$point.Y) -Window $window
                     $domFileInput = $null -ne $target -and
                         $target.PSObject.Properties.Name -contains 'provider' -and [string]$target.provider -eq 'DOM' -and
                         $target.PSObject.Properties.Name -contains 'inputType' -and [string]$target.inputType -eq 'file'
                     if ($null -eq $target -or $domFileInput) {
                         # エクスプローラーや標準ダイアログではクリック後すぐに元要素が消える。
                         # 別プロセスがクリック前に保持した対象を、同じクリック点の新しい記録に限って使う。
-                        $cachedTarget = Get-MbUiaTargetFromCache -Path $UiaTargetPath -X ([int]$point.X) -Y ([int]$point.Y) -Window $window
                         $useCachedTarget = $null -eq $target -and $null -ne $cachedTarget
                         if ($domFileInput -and $null -ne $cachedTarget) {
                             # type=fileはDOM上ではボタンと未選択表示が1矩形になる。Windowsが
@@ -1596,9 +1683,17 @@ function Invoke-MbRecordingLoop {
                             $window = $target.captureWindow
                         }
                     }
-                    if ($null -eq $target) {
-                        $target = Get-MbUiaTargetAtPoint -X ([int]$point.X) -Y ([int]$point.Y) -Window $window
+                    $postTarget = $null
+                    if ($null -eq $cachedTarget) {
+                        # クリック前キャッシュが無い場合だけ同期照会する。DOMがあっても
+                        # 代替UIA候補を1件確保し、誤DOMをCopilotが退けられるようにする。
+                        $postTarget = Get-MbUiaTargetAtPoint -X ([int]$point.X) -Y ([int]$point.Y) -Window $window
                     }
+                    if ($null -eq $target) {
+                        $target = if ($null -ne $cachedTarget) { $cachedTarget } else { $postTarget }
+                    }
+                    $pointTarget = New-MbClickPointTargetInfo -X ([int]$point.X) -Y ([int]$point.Y) -Window $window
+                    $recordingTargetCandidates = @($domTarget, $cachedTarget, $postTarget, $pointTarget) | Where-Object { $null -ne $_ }
                     if ($null -ne $target -and $target.PSObject.Properties.Name -contains 'provider' -and
                         [string]$target.provider -eq 'DOM') {
                         $lastDomTarget = $target
@@ -1610,7 +1705,8 @@ function Invoke-MbRecordingLoop {
                     $index++
                     $clickKind = if ($rightClicked) { 'right-click' } else { 'click' }
                     $record = Save-MbRecordingEvent -Capture $capture -Index $index -ElapsedMs ([int]$watch.ElapsedMilliseconds) `
-                        -Kind $clickKind -EventsDirectory $EventsDirectory -EventsPath $EventsPath -Target $target -Window $window
+                        -Kind $clickKind -EventsDirectory $EventsDirectory -EventsPath $EventsPath -Target $target `
+                        -TargetCandidates $recordingTargetCandidates -Window $window
                     $lastTarget = [string]$record.targetName
                 }
             } catch {
@@ -1714,6 +1810,8 @@ Export-ModuleMember -Function @(
     'Get-MbUiaFocusedElement',
     'ConvertFrom-MbDomSnapshotTarget',
     'Get-MbDomTargetFromCache',
+    'Get-MbRecorderTargetEvidence',
+    'ConvertTo-MbRecordingTargetCandidates',
     'Select-MbUiaTargetInfo',
     'Select-MbUiaNamedTargetInfo',
     'New-MbMsaaElementInfo',

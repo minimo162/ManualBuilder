@@ -23,6 +23,25 @@
 - 場面時刻は動画圧縮と300ms走査の差を考慮し、`representativeTimeRangeMs`内なら正解です。
 - 最終結果画面も、確認手順として残すことを正解にしています。
 
+## 場面・操作候補の再評価
+
+製品と同じ閾値で、場面時刻と操作候補を再評価できます。
+
+```powershell
+python tools/evals/evaluate_video_candidates.py --output out/video-candidates.json
+```
+
+`top1RectHits` / `top4RectHits` は正解枠を候補へ含められた割合、
+`candidateSetPrecision` は候補を出した場面のうち正解枠を含んだ割合、
+`noRectFalsePositiveRate` は本来枠を出さない場面で候補を出した割合です。
+この3本は開発中に調整へ使用した合成データであり、holdoutではありません。
+満点でも実録画や別アプリでの精度を保証しません。
+
+製品のJavaScriptをブラウザーで直接確認するときは、リポジトリをローカルHTTPで配信し、
+`tools/evals/video-pipeline-harness.html`を開いて録画を選択します。
+出力フレームからCopilot用の評価プロジェクトを作る場合は、
+`tools/evals/New-MbCopilotEvalProject.ps1`を使います。
+
 ## 再生成
 
 Python、Pillow、`imageio-ffmpeg`を用意し、リポジトリ直下で次を実行します。

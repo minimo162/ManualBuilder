@@ -135,6 +135,33 @@ Add-Result ($null -eq (ConvertTo-MbRegionRect -Region $capturedRegion -Target $s
 
 Add-Result ($null -eq (ConvertTo-MbRegionRect -Region $capturedRegion -Target $null)) '操作対象が無ければ矩形は作らない'
 
+# DOMを暫定採用しても、UIAとクリック位置を別候補として残す。
+$domCandidate = [pscustomobject]@{
+    name = '送信'; controlType = 'ControlType.Button'; provider = 'DOM'; confidence = 'medium'
+    left = 500.0; top = 400.0; width = 80.0; height = 30.0
+}
+$uiaCandidate = [pscustomobject]@{
+    name = '申請を送信'; controlType = 'ControlType.Button'; provider = 'UIA-CACHE'
+    left = 490.0; top = 392.0; width = 105.0; height = 45.0
+}
+$inferredCandidate = [pscustomobject]@{
+    name = '送信の文字'; controlType = 'ControlType.Text'; isInferred = $true
+    left = 510.0; top = 405.0; width = 55.0; height = 18.0
+}
+$clickCandidate = New-MbClickPointTargetInfo -X 540 -Y 415 -Window $window
+$alternatives = @(ConvertTo-MbRecordingTargetCandidates -Region $capturedRegion -SelectedTarget $domCandidate `
+    -Targets @($uiaCandidate, $inferredCandidate, $clickCandidate) -Maximum 4)
+Add-Result ($alternatives.Count -eq 4) 'DOM・UIA・推定UIA・クリック位置を最大4候補として残す'
+Add-Result ([string]$alternatives[0].source -eq 'DOM' -and [string]$alternatives[0].confidence -eq 'medium') 'DOMを確定扱いせず暫定候補にする'
+Add-Result (@($alternatives | Where-Object { [string]$_.source -eq 'UIA-CACHE' }).Count -eq 1) '誤DOMを補えるクリック前UIA候補を残す'
+Add-Result (@($alternatives | Where-Object { [string]$_.source -eq 'UIA' -and [string]$_.confidence -eq 'low' }).Count -eq 1) '推定UIA候補を低信頼として残す'
+Add-Result (@($alternatives | Where-Object { [string]$_.source -eq 'click-point' -and [string]$_.confidence -eq 'low' }).Count -eq 1) '対象不明時のクリック位置を低信頼候補として残す'
+Add-Result (@($alternatives | Select-Object -ExpandProperty id -Unique).Count -eq 4) '候補へ重複しないIDを付ける'
+
+$limitedAlternatives = @(ConvertTo-MbRecordingTargetCandidates -Region $capturedRegion -SelectedTarget $domCandidate `
+    -Targets @($uiaCandidate, $inferredCandidate, $clickCandidate, $button) -Maximum 3)
+Add-Result ($limitedAlternatives.Count -eq 3) '候補数の上限を守る'
+
 $longTargetName = ('操作対象' * 60)
 $limitedTargetName = ConvertTo-MbRecorderTargetName -Value $longTargetName
 Add-Result ($limitedTargetName.Length -eq 200 -and $limitedTargetName.EndsWith('…')) '長い操作対象名を200文字へ省略する'
@@ -410,6 +437,14 @@ Add-Result ($null -ne $focusCrop -and [double]$focusCrop.width -eq 0.55 -and [do
 Add-Result ([double]$focusCrop.x -ge 0 -and ([double]$focusCrop.x + [double]$focusCrop.width) -le 1) '対象周辺の切り抜きを画像内へ収める'
 $fallbackCrop = Get-MbRecorderTargetCrop -Rect $focusRect -TargetType 'ControlType.ClickPoint'
 Add-Result ($null -eq $fallbackCrop) '対象不明のクリックは自動で切り抜かない'
+
+$candidateProject = New-MbProject
+$candidateStep = Add-MbStep -Project $candidateProject -SheetId $candidateProject.sheets[0].id
+[void](Set-MbStepCapture -Project $candidateProject -StepId $candidateStep.id -TargetCandidateId 'missing' `
+    -TargetCandidatesJson '[{"id":"dom-1","source":"DOM","confidence":"medium","label":"送信","targetType":"ControlType.Button","rect":{"x1":0.4,"y1":0.4,"x2":0.6,"y2":0.5}},{"id":"dom-1","source":"UIA","confidence":"low","label":"重複","targetType":"ControlType.Text","rect":{"x1":0.4,"y1":0.4,"x2":0.6,"y2":0.5}}]')
+$candidateStep = Get-MbStepById -Project $candidateProject -StepId $candidateStep.id
+Add-Result (@($candidateStep.capture.targetCandidates).Count -eq 1) '重複する候補IDを保存しない'
+Add-Result ([string]$candidateStep.capture.targetCandidateId -eq 'dom-1') '現在候補が一覧外なら保存済みの先頭候補へ戻す'
 
 $bulkProject = New-MbProject
 $sourceSheet = $bulkProject.sheets[0]

@@ -125,6 +125,31 @@ console.log('locateChangeRect');
 }
 
 // ---------------------------------------------------------------
+console.log('locateChangeCandidates');
+{
+  const before = makeSignature(0.5);
+  const after = makeSignature(0.5);
+  setBlock(after, 4, 4, 0.95);
+  setBlock(after, 5, 4, 0.95);
+  setBlock(after, 20, 10, 0.95);
+  setBlock(after, 21, 10, 0.95);
+  const candidates = scenes.locateChangeCandidates(before, after, {});
+  check('離れた変化領域を複数候補として残す', candidates.length === 2, String(candidates.length));
+  check('候補へ安定したIDを付ける', candidates[0].id === 'video-diff-1' && candidates[1].id === 'video-diff-2');
+  check('候補座標を正規化範囲に収める', candidates.every((candidate) =>
+    candidate.rect.x1 >= 0 && candidate.rect.y1 >= 0 && candidate.rect.x2 <= 1 && candidate.rect.y2 <= 1));
+
+  // 全画面遷移が余白や帯で分断されると、最大クラスタは小さく見えることがある。
+  // 変化ブロックの総量で止め、複数の局所操作候補として返さないこと。
+  const fragmentedWhole = makeSignature(0.5);
+  for (let row = 0; row < ROWS; row += 2) {
+    for (let col = 0; col < COLS; col += 1) setBlock(fragmentedWhole, col, row, 0.95);
+  }
+  check('分断された全画面変化から局所候補を作らない',
+    scenes.locateChangeCandidates(before, fragmentedWhole, {}).length === 0);
+}
+
+// ---------------------------------------------------------------
 console.log('detectStillRuns / selectScenes');
 {
   // 画面A(0〜1500ms) → 遷移 → 画面B(2100〜4200ms) → 遷移 → 画面C(4800〜6600ms)

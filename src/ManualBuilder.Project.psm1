@@ -40,6 +40,11 @@ function New-MbStepCapture {
         windowTitle = ''   # 操作していたウィンドウの題名
         screenText  = ''   # 画面に出ていた文字
         narration   = ''   # 操作しながら話した内容（操作記録モードでのみ入る）
+        targetType       = ''   # DOM/UIA等が返したコントロール種別
+        targetSource     = ''   # DOM / UIA / UIA-CACHE / MSAA / click-point / video-diff
+        targetConfidence = ''   # high / medium / low。空は古いデータ
+        targetCandidateId = ''  # 現在採用している候補
+        targetCandidates = @()  # Copilotが選び直せる、正規化矩形つきの候補
     }
 }
 
@@ -158,6 +163,12 @@ function Repair-MbProject {
                 Add-MbPropertyIfMissing $step.capture 'windowTitle' ''
                 Add-MbPropertyIfMissing $step.capture 'screenText' ''
                 Add-MbPropertyIfMissing $step.capture 'narration' ''
+                Add-MbPropertyIfMissing $step.capture 'targetType' ''
+                Add-MbPropertyIfMissing $step.capture 'targetSource' ''
+                Add-MbPropertyIfMissing $step.capture 'targetConfidence' ''
+                Add-MbPropertyIfMissing $step.capture 'targetCandidateId' ''
+                Add-MbPropertyIfMissing $step.capture 'targetCandidates' @()
+                $step.capture.targetCandidates = @($step.capture.targetCandidates)
             }
         }
     }
@@ -506,7 +517,12 @@ function Set-MbStepCapture {
         [AllowEmptyString()][string]$ClickLabel = '',
         [AllowEmptyString()][string]$WindowTitle = '',
         [AllowEmptyString()][string]$ScreenText = '',
-        [AllowEmptyString()][string]$Narration = ''
+        [AllowEmptyString()][string]$Narration = '',
+        [AllowEmptyString()][string]$TargetType = '',
+        [AllowEmptyString()][string]$TargetSource = '',
+        [ValidateSet('', 'high', 'medium', 'low')][string]$TargetConfidence = '',
+        [AllowEmptyString()][string]$TargetCandidateId = '',
+        [AllowEmptyString()][string]$TargetCandidatesJson = ''
     )
 
     $target = Get-MbStepById -Project $Project -StepId $StepId
@@ -520,6 +536,39 @@ function Set-MbStepCapture {
     $target.capture.windowTitle = Get-MbText -Value $WindowTitle -MaxLength 300 -FieldName 'ウィンドウの題名'
     $target.capture.screenText = Get-MbText -Value $ScreenText -MaxLength 4000 -FieldName '画面の文字'
     $target.capture.narration = Get-MbText -Value $Narration -MaxLength 2000 -FieldName '話した内容'
+    $target.capture.targetType = Get-MbText -Value $TargetType -MaxLength 100 -FieldName '操作対象の種類'
+    $target.capture.targetSource = Get-MbText -Value $TargetSource -MaxLength 40 -FieldName '操作対象の取得元'
+    $target.capture.targetConfidence = $TargetConfidence
+    $target.capture.targetCandidateId = Get-MbText -Value $TargetCandidateId -MaxLength 80 -FieldName '操作対象候補'
+    if (-not [string]::IsNullOrWhiteSpace($TargetCandidatesJson)) {
+        $parsedCandidates = $null
+        try { $parsedCandidates = $TargetCandidatesJson | ConvertFrom-Json } catch { throw '操作対象候補を読み取れません。' }
+        $safeCandidates = New-Object System.Collections.ArrayList
+        $candidateIds = New-Object 'System.Collections.Generic.HashSet[string]'
+        foreach ($candidate in @(@($parsedCandidates) | Select-Object -First 8)) {
+            if ($null -eq $candidate -or $candidate.PSObject.Properties.Name -notcontains 'id' -or
+                $candidate.PSObject.Properties.Name -notcontains 'rect') { continue }
+            if (-not (Test-MbNormalizedRect -Rect $candidate.rect)) { continue }
+            $candidateId = Get-MbText -Value $candidate.id -MaxLength 80 -FieldName '操作対象候補ID'
+            if ([string]::IsNullOrWhiteSpace($candidateId) -or -not $candidateIds.Add($candidateId)) { continue }
+            [void]$safeCandidates.Add([pscustomobject]@{
+                id = $candidateId
+                source = Get-MbText -Value $(if ($candidate.PSObject.Properties.Name -contains 'source') { $candidate.source } else { '' }) -MaxLength 40 -FieldName '候補の取得元'
+                confidence = Get-MbText -Value $(if ($candidate.PSObject.Properties.Name -contains 'confidence') { $candidate.confidence } else { '' }) -MaxLength 20 -FieldName '候補の信頼度'
+                label = Get-MbText -Value $(if ($candidate.PSObject.Properties.Name -contains 'label') { $candidate.label } else { '' }) -MaxLength 200 -FieldName '候補名'
+                targetType = Get-MbText -Value $(if ($candidate.PSObject.Properties.Name -contains 'targetType') { $candidate.targetType } else { '' }) -MaxLength 100 -FieldName '候補の種類'
+                rect = [pscustomobject]@{
+                    x1 = [Math]::Round([double]$candidate.rect.x1, 6); y1 = [Math]::Round([double]$candidate.rect.y1, 6)
+                    x2 = [Math]::Round([double]$candidate.rect.x2, 6); y2 = [Math]::Round([double]$candidate.rect.y2, 6)
+                }
+            })
+        }
+        $target.capture.targetCandidates = @($safeCandidates)
+        $savedCandidateIds = @($target.capture.targetCandidates | ForEach-Object { [string]$_.id })
+        if ($savedCandidateIds -notcontains [string]$target.capture.targetCandidateId) {
+            $target.capture.targetCandidateId = if ($savedCandidateIds.Count -gt 0) { [string]$savedCandidateIds[0] } else { '' }
+        }
+    }
     $target.updatedAt = Get-MbUtcTimestamp
     return $target
 }
