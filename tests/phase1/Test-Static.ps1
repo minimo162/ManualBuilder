@@ -106,7 +106,7 @@ Add-Result (($serverText -match '\$projectReady = \$false') -and ($serverText -m
 Add-Result ($serverText -match '\$storageLayout\.RuntimePath') '二重起動情報をユーザーデータ配下へ置く'
 Add-Result ($serverText -match '\$storageLayout\.ExportJobsRoot') 'Office一時ジョブをユーザーデータ配下へ置く'
 Add-Result (($runCommandText -match '%~dp0src\\Start-ManualBuilderLauncher\.ps1') -and ($runCommandText -notmatch '(?im)^cd /d')) 'UNC共有フォルダーから更新ランチャーを起動できる'
-Add-Result ([string]$appVersionManifest.appVersion -eq '0.34.2') '配布用アプリバージョンを0.34.2へ更新する'
+Add-Result ([string]$appVersionManifest.appVersion -eq '0.35.0') '配布用アプリバージョンを0.35.0へ更新する'
 Add-Result ($workspaceModuleText -notmatch "ManualBuilder\.Project\.psm1'\) -Force") 'WorkspaceがProjectコマンドを強制再読込しない'
 Add-Result ($launcherModuleText -match "'ManualBuilder\\app'") 'アプリ実行コードをLocalApplicationDataへキャッシュする'
 Add-Result ($launcherModuleText -match "@\('src', 'web', 'run\.cmd', 'app-version\.json'\)") 'キャッシュ対象からプロジェクトデータを除外する'
@@ -391,37 +391,32 @@ Add-Result ($recorderModuleText -match 'DWMWA_EXTENDED_FRAME_BOUNDS') '見た目
 Add-Result ($recorderServerText -match "Source 'recorder'") '記録した画面を専用の出所として取り込む'
 Add-Result ($recorderServerText -match 'AllowDuplicateStep') '同じ画面でも別の操作はそれぞれ手順にする'
 Add-Result (($recorderModuleText -match 'ConvertTo-MbRecorderTargetName') -and ($recorderServerText -match 'ConvertTo-MbRecorderTargetName.+-Suffix \$suffix')) '操作対象を補足込みで200文字へ収める'
-Add-Result (($edgeRecorderModuleText -match 'remote-debugging-port') -and
-    ($edgeRecorderModuleText -match 'Page\.addScriptToEvaluateOnNewDocument')) '記録用EdgeをCDPで監視する'
-Add-Result ($edgeRecorderModuleText -match "'--disable-extensions'") '記録用Edgeは外部拡張機能を読み込まない'
-Add-Result (($edgeRecorderModuleText -match 'if \(Test-MbRecorderDevTools -Port \$Port\) \{[\s\S]*Stop-MbRecorderEdge -Port \$Port') -and
-    ($edgeRecorderModuleText -notmatch '新しいタブを前面へ出して再利用する')) '前回の記録用Edgeを再利用せず起動オプションを確実に反映する'
-Add-Result (($edgeRecorderModuleText -match '\$delaysMs = @\(0, 25, 50, 100, 200, 400\)') -and
-    ($edgeRecorderModuleText -match 'if \(Test-Path -LiteralPath \$StopPath -PathType Leaf\) \{ Stop-MbRecorderEdge')) '一時的な監視エラーではEdgeを閉じず、明示停止時だけ終了する'
-Add-Result (($edgeRecorderModuleText -match "addEventListener\('pointerdown'") -and
-    ($edgeRecorderModuleText -match '__manualBuilderRecorderRead')) '画面遷移前のDOM操作対象を保持する'
-Add-Result (($edgeRecorderModuleText -match "'screenX'") -and
-    ($recorderModuleText -match '\$anchorX = \$snapshotScreenX')) 'Edgeの赤枠はpointerdown時の物理座標へ固定する'
-Add-Result (($recorderServerText -match 'Invoke-ManualBuilderEdgeRecorder\.ps1') -and
-    ($recorderServerText -match 'DomTargetPath')) 'DOM監視を画面記録とは別プロセスで動かす'
+Add-Result (($recorderServerText -notmatch 'ManualBuilder\.EdgeRecorder') -and
+    ($recorderServerText -notmatch 'Invoke-ManualBuilderEdgeRecorder')) '記録用Edgeを必須経路から廃止する'
+Add-Result (($jsText -notmatch 'data-recorder-mode') -and
+    ($jsText -notmatch '記録用Edgeを使う')) '記録用Edgeの選択UIを廃止する'
+Add-Result (($recorderModuleText -match 'event-\{0:d3\}-after\.jpg') -and
+    ($recorderModuleText -match 'preClickCaptureMaxAgeMs') -and
+    ($recorderModuleText -notmatch '-not \[string\]::IsNullOrWhiteSpace\(\$DomTargetPath\) -and\s*\(\(\[int\]\$watch\.ElapsedMilliseconds - \$preClickCaptureAttemptAtMs')) 'すべてのアプリでクリック前後の画像を保持する'
+Add-Result (($projectModuleText -match 'afterImageId') -and
+    ($projectModuleText -match 'targetCandidates') -and
+    ($projectModuleText -match 'analysisState')) '再解析できる操作証跡をプロジェクトへ保存する'
+Add-Result (($copilotJobText -match 'New-MbCopilotOperationPrompt') -and
+    ($copilotJobText -match '1件の操作') -and
+    ($copilotJobText -match '候補枠.+正解として扱わない')) 'Copilotが操作対象・意味・手順文を1操作ずつ解析する'
+Add-Result (($copilotJobText -match 'New-MbCopilotOperationEvidence') -and
+    ($copilotJobText -match 'operation-before\.jpg') -and
+    ($copilotJobText -match 'operation-after\.jpg')) 'Copilotへ操作前・周辺・操作後の証跡を渡す'
+Add-Result ($copilotJobText -match 'Test-MbCopilotOperationPreflight') '実画像の前に合成画像で証跡生成を自己診断する'
 Add-Result (($recorderServerText -match 'Invoke-ManualBuilderUiaRecorder\.ps1') -and
     ($recorderServerText -match 'UiaTargetPath') -and
     ($recorderModuleText -match 'Get-MbUiaTargetFromCache')) 'Windows操作対象もクリック前に別プロセスで保持する'
-Add-Result (($recorderModuleText -match '\$domFileInput') -and
-    ($recorderModuleText -match '\$useCachedTarget = \[string\]\$cachedTarget\.controlType')) 'Edgeのファイル選択欄はWindowsの内側のボタン矩形を優先する'
-Add-Result (($recorderModuleText -match 'Get-MbDomTargetFromCache') -and
-    ($recorderModuleText -match 'Get-MbUiaTargetAtPoint')) 'DOMを優先し、取得できない操作はWindows検出へ戻す'
-Add-Result (($recorderModuleText -match '\$preClickCaptureIntervalMs = 80') -and
-    ($recorderModuleText -match '\$capture = \$preClickCapture') -and
-    ($recorderModuleText -match '\$window = \$preClickWindow')) 'Edgeの遷移前画像・タイトル・DOM対象を同じ時点へ揃える'
-Add-Result (($recorderModuleText -match 'if \(-not \[string\]::IsNullOrWhiteSpace\(\$snapshotTitle\)\)') -and
-    ($recorderModuleText -match '\$windowTitle\.IndexOf\(\$snapshotTitle')) '遷移後ページのタイトルだけで古いDOM対象を許可しない'
-Add-Result (($jsText -match 'data-recorder-mode') -and
-    ($jsText -match '記録用Edgeを使う（推奨）') -and
-    ($jsText -match 'その他のアプリを記録する')) '記録用Edgeとデスクトップ記録を選べる'
-Add-Result (($jsText -match '専用プロファイルを次回も使い') -and
-    ($jsText -match 'お気に入りや保存パスワード')) '記録用Edgeのプロファイル保持と同期できる項目を案内する'
-Add-Result (($recorderServerText -match 'Get-MbRecorderTargetCrop') -and ($recorderServerText -match 'ControlType\.ClickPoint')) '対象周辺を非破壊で初期表示し対象不明クリックは全体を残す'
+Add-Result (($recorderServerText -match "AnalysisState 'pending'") -and
+    ($recorderServerText -notmatch 'Set-MbStepImageEdits.+\$annotation')) '取り込み時は候補枠を確定赤枠にしない'
+Add-Result (($copilotServerText -match "AnalysisState 'confirmed'") -and
+    ($copilotServerText -match 'Where-Object \{ \[string\]\$_\.type -eq ''blackout'' \}')) '確認後に赤枠を確定し手動黒塗りを保持する'
+Add-Result (($webModuleText -match 'data-copilot-operation') -and
+    ($jsText -match "openCopilotDialog\('operation'\)")) '記録操作のCopilot解析を再開できる'
 Add-Result ($serverText -match '/api/recorder/start') '操作記録の開始口がある'
 Add-Result ($serverText -match '/api/recorder/import') '記録した操作の取り込み口がある'
 Add-Result ($serverText -match '\^/images/recording/') '記録した画面をクエリのトークンで表示できる'

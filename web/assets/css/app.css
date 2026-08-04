@@ -1079,6 +1079,17 @@ kbd {
   font-weight: 700;
 }
 
+.step-card__pending {
+  margin-left: 4px;
+  padding: 2px 7px;
+  border: 1px solid #d7a85c;
+  border-radius: 999px;
+  color: #76511b;
+  background: #fff8e8;
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .step-card__actions {
   display: flex;
   align-items: center;

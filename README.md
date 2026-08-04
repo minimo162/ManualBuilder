@@ -10,6 +10,7 @@
 - Excel COMによる主出力: 単発、10回連続、キャンセル、異常分岐を実機確認済み
 - 既存の未保存Excelブックへ影響しないことを実機確認済み
 - Word COMによる副出力の安全性と基本レイアウトを確認済み
+- Phase 1基盤 v0.35.0: 操作記録をCopilot前提の方式へ変更した。記録用Edgeは起動せず、普段のEdge、エクスプローラー、業務アプリを同じ経路で記録する。各操作はクリック前後の原画像、クリック座標、UIA/MSAAの候補を証跡として保持し、候補を自動で赤枠へ確定しない。Microsoft 365 Copilotへ1操作ずつ前後・周辺画像を渡して、操作対象、操作の意味、手順文をまとめて解析する。送信前の黒塗りは手動のままとし、AIの不要判定や要確認判定も確認画面で復元・採用できる。合成画像による事前確認とイベント単位の結果保存も追加した
 - Phase 1基盤 v0.34.2: 手順のまとめて移動・削除で1件ずつチェックする必要がないよう、選択中シートの「すべて選択」を追加した。一部だけ選んだ状態は中間表示にし、全選択／全解除を1クリックで切り替えられる。削除後のプロジェクト保存で固定名のバックアップが同期ソフト等に一時ロックされ、`File.Replace` が「置換されるファイルを削除できません」で失敗する問題も修正した。主ファイルの置換には毎回固有の退避先と短時間の再試行を使い、正式バックアップを更新できない場合も固有名の退避を復旧候補として残す
 - Phase 1基盤 v0.34.1: 記録用Edgeでリンクやボタンを押した直後にページ遷移すると、遷移前のDOM矩形を遷移後の画像へ重ねて無関係な場所に赤枠が付く問題を修正した。Edge記録中だけ直前の安定した画面とウィンドウタイトルを短い間隔で保持し、pointerdown時のページタイトルと同じ画像へDOM対象を適用する。記録用Edgeの専用プロファイルは次回も保持し、初回にEdge同期を設定すれば、組織で許可されているお気に入りや保存パスワードを利用できることも開始画面へ明記した
 - Phase 1基盤 v0.34.0: エクスプローラーや標準のファイル選択画面などで、クリック後に画面・フォーカスが変わってからUI Automationへ問い合わせていたため対象を見失う問題を修正した。Windows操作対象も別プロセスでカーソル下をクリック前に保持し、記録時は同じクリック位置の新しいキャッシュを優先する。クリックで別ウィンドウが即座に開いた場合も、元のウィンドウ範囲と対象を一緒に保持する。記録用Edgeはpointerdown時点の物理カーソル座標をDOM矩形へ固定し、クリック後のマウス移動による赤枠のずれを抑える。キャッシュを使えない操作は従来のUI Automation／MSAA／クリック位置へ自動で戻る
@@ -89,7 +90,7 @@ Windowsでリポジトリ直下の `run.cmd` をダブルクリックします�
 - その他メニューの「Wordで作成」から、同じ順序と編集済み画像を持つ縦型docxを作成
 - Word起動中はCOMを生成せず安全停止し、Wordを閉じて再実行またはExcel作成を案内
 - 録画（mp4・webm）を開いて場面を選び、その画面を手順として取り込み。動画はサーバーへ送らずブラウザーで再生する
-- その他メニューの「操作を記録して手順にする」から、実際の操作を記録して手順を作る。既定の記録用Edgeではクリック前のWeb要素を直接取得し、Edge以外のアプリではWindowsのUI Automation／MSAAから対象を取得する
+- その他メニューの「操作を記録して手順にする」から、普段使っているEdgeやデスクトップアプリの操作を記録する。取り込み後は、必要な黒塗りを手動で追加してから「Copilotで記録した操作を解析」を実行し、対象・赤枠・手順文を確認して確定する
 - 記録した操作は一覧で確認でき、押し間違いを外してから取り込める
 - 押したキーそのものは読み取らない。入力手順の画像には画面上の文字を残し、隠したい箇所だけ取り込み後の「画像を編集」から手動で黒塗りする。不要なウィンドウは閉じてから記録する
 - 記録中に話した内容も文字にして手順へ結び付けられる（既定はオフ。音声はMicrosoftのオンライン音声認識へ送られる）
@@ -122,7 +123,7 @@ v0.14.1以前のアプリ配下に `data\projects\default` がある場合、v0.
 
 初回は `tests\phase1\run-tests.cmd` を実行し、PowerShell 5.1構文、プロジェクト保存、localhostサーバーを確認してください。詳しくは [docs/PHASE1-FOUNDATION.md](docs/PHASE1-FOUNDATION.md) を参照してください。
 
-Phase 1 v0.34.2の再確認手順は [docs/RETEST-PHASE1-v0.34.2.md](docs/RETEST-PHASE1-v0.34.2.md) にまとめています。
+Phase 1 v0.35.0の再確認手順は [docs/RETEST-PHASE1-v0.35.0.md](docs/RETEST-PHASE1-v0.35.0.md) にまとめています。
 
 Phase 1 v0.32.8の再確認手順は [docs/RETEST-PHASE1-v0.32.8.md](docs/RETEST-PHASE1-v0.32.8.md)、v0.32.7は [docs/RETEST-PHASE1-v0.32.7.md](docs/RETEST-PHASE1-v0.32.7.md)、v0.32.6は [docs/RETEST-PHASE1-v0.32.6.md](docs/RETEST-PHASE1-v0.32.6.md)、v0.32.5は [docs/RETEST-PHASE1-v0.32.5.md](docs/RETEST-PHASE1-v0.32.5.md)、v0.32.4は [docs/RETEST-PHASE1-v0.32.4.md](docs/RETEST-PHASE1-v0.32.4.md)、v0.32.3は [docs/RETEST-PHASE1-v0.32.3.md](docs/RETEST-PHASE1-v0.32.3.md)、v0.32.2は [docs/RETEST-PHASE1-v0.32.2.md](docs/RETEST-PHASE1-v0.32.2.md)、v0.32.1は [docs/RETEST-PHASE1-v0.32.1.md](docs/RETEST-PHASE1-v0.32.1.md)、v0.32.0は [docs/RETEST-PHASE1-v0.32.0.md](docs/RETEST-PHASE1-v0.32.0.md)、v0.30.0は [docs/RETEST-PHASE1-v0.30.0.md](docs/RETEST-PHASE1-v0.30.0.md)、v0.29.0は [docs/RETEST-PHASE1-v0.29.0.md](docs/RETEST-PHASE1-v0.29.0.md)、v0.28.0は [docs/RETEST-PHASE1-v0.28.0.md](docs/RETEST-PHASE1-v0.28.0.md)、v0.27.0は [docs/RETEST-PHASE1-v0.27.0.md](docs/RETEST-PHASE1-v0.27.0.md)、v0.26.0は [docs/RETEST-PHASE1-v0.26.0.md](docs/RETEST-PHASE1-v0.26.0.md)、v0.25.0は [docs/RETEST-PHASE1-v0.25.0.md](docs/RETEST-PHASE1-v0.25.0.md)、v0.24.0は [docs/RETEST-PHASE1-v0.24.0.md](docs/RETEST-PHASE1-v0.24.0.md)、v0.23.0は [docs/RETEST-PHASE1-v0.23.0.md](docs/RETEST-PHASE1-v0.23.0.md)、v0.22.1は [docs/RETEST-PHASE1-v0.22.1.md](docs/RETEST-PHASE1-v0.22.1.md)、v0.22.0は [docs/RETEST-PHASE1-v0.22.0.md](docs/RETEST-PHASE1-v0.22.0.md) にまとめています。
 

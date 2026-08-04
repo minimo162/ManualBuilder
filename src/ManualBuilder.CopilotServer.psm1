@@ -148,7 +148,7 @@ function Start-MbCopilotDraftJob {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectPath,
         [switch]$IncludeWritten,
-        [ValidateSet('draft', 'review')][string]$Mode = 'draft'
+        [ValidateSet('draft', 'review', 'operation')][string]$Mode = 'draft'
     )
 
     $current = Read-MbCopilotDraftStatus
@@ -158,6 +158,8 @@ function Start-MbCopilotDraftJob {
     $steps = Get-MbCopilotStepListFromProject -Project $project
     if ($Mode -eq 'review') {
         if ($steps.withText -lt 1) { throw '文章が書かれた手順がありません。先に手順の文章を作ってください。' }
+    } elseif ($Mode -eq 'operation') {
+        if ($steps.pendingOperations -lt 1) { throw 'Copilotの解析待ちになっている記録操作がありません。' }
     } else {
         if ($steps.withImage -lt 1) { throw '画像のある手順が1件もありません。録画かスクリーンショットから手順を作ってください。' }
         if (-not $IncludeWritten -and $steps.needsDraft -lt 1) {
@@ -181,7 +183,7 @@ function Start-MbCopilotDraftJob {
 
     $queued = [pscustomobject]@{
         jobId = $jobId; state = 'queued'; phase = 'queued'; message = 'Copilotの準備をしています'; percent = 0
-        currentPacket = 0; totalPackets = 0; totalSteps = $(if ($Mode -eq 'review') { $steps.withText } else { $steps.needsDraft }); draftCount = 0
+        currentPacket = 0; totalPackets = 0; totalSteps = $(if ($Mode -eq 'review') { $steps.withText } elseif ($Mode -eq 'operation') { $steps.pendingOperations } else { $steps.needsDraft }); draftCount = 0
         resultPath = $resultPath; startedAt = [DateTime]::UtcNow.ToString('o')
         updatedAt = [DateTime]::UtcNow.ToString('o'); completedAt = ''; errorCode = ''
     }
@@ -194,6 +196,7 @@ function Start-MbCopilotDraftJob {
     $arguments = @(
         '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-STA', '-File', (& $quote $workerPath),
         '-ProjectPath', (& $quote $snapshotPath),
+        '-SourceProjectPath', (& $quote $ProjectPath),
         '-WorkDirectory', (& $quote $jobDirectory),
         '-StatusPath', (& $quote $statusPath),
         '-ResultPath', (& $quote $resultPath),
@@ -225,6 +228,7 @@ function Get-MbCopilotStepListFromProject {
     $withImage = 0
     $needsDraft = 0
     $withText = 0
+    $pendingOperations = 0
     foreach ($sheet in @($Project.sheets)) {
         foreach ($step in @($sheet.steps)) {
             # 校正は文字だけの手順も対象にするため、画像の有無とは別に数える。
@@ -235,12 +239,14 @@ function Get-MbCopilotStepListFromProject {
             }
             if ([string]::IsNullOrWhiteSpace([string]$step.imageId)) { continue }
             $withImage++
+            if ($step.capture -and $step.capture.PSObject.Properties.Name -contains 'analysisState' -and
+                [string]$step.capture.analysisState -in @('pending', 'needs-review')) { $pendingOperations++ }
             if ([string]::IsNullOrWhiteSpace([string]$step.title) -or [string]::IsNullOrWhiteSpace([string]$step.description)) {
                 $needsDraft++
             }
         }
     }
-    return [pscustomobject]@{ withImage = $withImage; needsDraft = $needsDraft; withText = $withText }
+    return [pscustomobject]@{ withImage = $withImage; needsDraft = $needsDraft; withText = $withText; pendingOperations = $pendingOperations }
 }
 
 function Request-MbCopilotDraftCancel {
@@ -290,6 +296,12 @@ function Set-MbCopilotDraftSelection {
     if ($selection.PSObject.Properties.Name -contains 'accept') { $items = @($selection.accept) }
     if ($items.Count -gt 1000) { throw '一度に採用できる手順は1000件までです。' }
 
+    # 操作解析の矩形・対象名はクライアントから受け取らず、ジョブの検証済み結果を参照する。
+    $draftById = @{}
+    $jobResult = Get-MbCopilotDraftResult
+    foreach ($draft in @($jobResult.drafts)) { $draftById[[string]$draft.id] = $draft }
+    $operationMode = $jobResult.PSObject.Properties.Name -contains 'mode' -and [string]$jobResult.mode -eq 'operation'
+
     $applied = 0
     foreach ($item in $items) {
         if ($null -eq $item) { continue }
@@ -304,7 +316,49 @@ function Set-MbCopilotDraftSelection {
             # 採用の途中で手順が消えていた場合。その1件だけ飛ばして続ける。
             continue
         }
+        if ($operationMode -and $draftById.ContainsKey([string]$item.id)) {
+            $draft = $draftById[[string]$item.id]
+            $step = Get-MbStepById -Project $Project -StepId ([string]$item.id)
+            if ($null -ne $step) {
+                $rect = if ($draft.PSObject.Properties.Name -contains 'targetRect') { $draft.targetRect } else { $null }
+                if ($null -ne $rect -and (Test-MbNormalizedRect -Rect $rect)) {
+                    $annotations = @($step.annotations | Where-Object { [string]$_.type -eq 'blackout' })
+                    $annotations += [pscustomobject]@{
+                        id = New-MbAnnotationId; type = 'rect'; label = 0
+                        x1 = [Math]::Round([double]$rect.x1, 6); y1 = [Math]::Round([double]$rect.y1, 6)
+                        x2 = [Math]::Round([double]$rect.x2, 6); y2 = [Math]::Round([double]$rect.y2, 6)
+                    }
+                    [void](Set-MbStepAnnotations -Project $Project -StepId ([string]$item.id) `
+                        -AnnotationsJson (ConvertTo-Json -InputObject $annotations -Depth 6))
+                }
+                $label = if ($draft.PSObject.Properties.Name -contains 'targetLabel') { [string]$draft.targetLabel } else { [string]$step.capture.clickLabel }
+                $targetType = if ($draft.PSObject.Properties.Name -contains 'targetType') { [string]$draft.targetType } else { '' }
+                [void](Set-MbStepCapture -Project $Project -StepId ([string]$item.id) `
+                    -Kind ([string]$step.capture.kind) -VideoTimeMs ([int]$step.capture.videoTimeMs) `
+                    -ClickLabel $label -WindowTitle ([string]$step.capture.windowTitle) `
+                    -ScreenText ([string]$step.capture.screenText) -Narration ([string]$step.capture.narration) `
+                    -TargetType $targetType -ClickX ([double]$step.capture.clickX) -ClickY ([double]$step.capture.clickY) `
+                    -AfterImageId ([string]$step.capture.afterImageId) -TargetCandidates @($step.capture.targetCandidates) `
+                    -AnalysisState 'confirmed' -AnalysisReason ([string]$draft.reason) -NeedsReview:$false)
+                $changed = $true
+            }
+        }
         if ($changed) { $applied++ }
+    }
+    if ($operationMode -and $selection.PSObject.Properties.Name -contains 'reject') {
+        $rejectIds = New-Object System.Collections.ArrayList
+        foreach ($rejectIdValue in @($selection.reject)) {
+            $rejectId = [string]$rejectIdValue
+            if (-not $draftById.ContainsKey($rejectId)) { continue }
+            $rejectStep = Get-MbStepById -Project $Project -StepId $rejectId
+            if ($null -eq $rejectStep -or $null -eq $rejectStep.capture -or
+                [string]$rejectStep.capture.analysisState -notin @('pending', 'needs-review')) { continue }
+            [void]$rejectIds.Add($rejectId)
+        }
+        if ($rejectIds.Count -gt 0) {
+            Remove-MbSteps -Project $Project -StepIds @($rejectIds)
+            $applied += $rejectIds.Count
+        }
     }
     return $applied
 }
