@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const appVersion = '0.35.0';
+  const appVersion = '0.36.0';
   // 番号注釈はSVG属性で指定するためCSS変数を参照できない。
   // 編集画面とExcel・Word出力（New-MbAnnotatedImage）で同じ見た目にするため、基準フォントを揃える。
   const ANNOTATION_NUMBER_FONT = '"BIZ UDPGothic", "BIZ UDPゴシック", "BIZ UDGothic", "BIZ UDゴシック", Meiryo, "Yu Gothic UI", "MS Pゴシック", sans-serif';
@@ -1347,6 +1347,34 @@
     status.textContent = `追加: ${videoCapture.added}件` + (message ? ` ・ ${message}` : '');
   };
 
+  const setVideoCloseLabel = (label) => {
+    const button = videoCapture.dialog?.querySelector('[data-video-cancel-label]');
+    if (button) button.textContent = label;
+    const closeButton = videoCapture.dialog?.querySelector('.video-dialog__close');
+    if (closeButton) {
+      const closeLabel = label === '中止して閉じる' ? '中止して閉じる。追加済みの手順は残ります' : label;
+      closeButton.setAttribute('aria-label', closeLabel);
+      closeButton.title = closeLabel;
+    }
+  };
+
+  const setVideoPhase = (phase) => {
+    if (!videoCapture.dialog) return;
+    videoCapture.dialog.dataset.videoPhase = phase;
+    videoCapture.dialog.querySelectorAll('.video-dialog__step').forEach((step) => step.removeAttribute('aria-current'));
+    videoCapture.dialog.querySelector(`.video-dialog__step--${phase}`)?.setAttribute('aria-current', 'step');
+  };
+
+  const advanceVideoToDraft = (focusNext = false) => {
+    if (!videoCapture.dialog) return;
+    const draftButton = videoCapture.dialog.querySelector('[data-video-open-draft]');
+    draftButton.hidden = false;
+    videoCapture.dialog.querySelector('[data-video-auto]').hidden = true;
+    setVideoPhase('draft');
+    setVideoCloseLabel('閉じる');
+    if (focusNext) window.requestAnimationFrame(() => draftButton.focus());
+  };
+
   const formatVideoTime = (seconds) => {
     const total = Math.max(0, Number(seconds) || 0);
     const minutes = Math.floor(total / 60);
@@ -1440,7 +1468,7 @@
       const cards = [...document.querySelectorAll('.step-card')];
       if (cards.length > before) {
         videoCapture.added += 1;
-        videoCapture.dialog.querySelector('[data-video-open-draft]').hidden = false;
+        advanceVideoToDraft(true);
         if (attachVideo) {
           const added = cards.find((card) => !beforeIds.has(card.dataset.stepId));
           setVideoStatus(`${position} の場面を追加しました。動画を送っています…`);
@@ -1507,6 +1535,9 @@
     videoCapture.busy = true;
     buttons.forEach((item) => { item.disabled = true; });
     videoCapture.cancelAuto = false;
+    setVideoCloseLabel('中止して閉じる');
+    let added = 0;
+    let skipped = 0;
     try {
       const keepOriginal = videoCapture.dialog.querySelector('[data-video-original]').checked;
       setVideoStatus('場面の切れ目を探しています…');
@@ -1526,28 +1557,38 @@
         return;
       }
 
-      let added = 0;
-      let skipped = 0;
       for (let i = 0; i < outcome.scenes.length; i += 1) {
         if (videoCapture.cancelAuto) break;
         const scene = outcome.scenes[i];
         setVideoStatus(`手順にしています（${i + 1}/${outcome.scenes.length}）`);
         const before = document.querySelectorAll('.step-card').length;
         await importScene(scene.blob, scene);
-        if (document.querySelectorAll('.step-card').length > before) added += 1; else skipped += 1;
+        if (document.querySelectorAll('.step-card').length > before) {
+          added += 1;
+          videoCapture.added += 1;
+        } else {
+          skipped += 1;
+        }
       }
-      videoCapture.added += added;
-      if (added > 0) videoCapture.dialog.querySelector('[data-video-open-draft]').hidden = false;
+      if (added > 0) advanceVideoToDraft(true);
       const parts = [`${added} 件の手順を作りました`];
       if (skipped > 0) parts.push(`${skipped} 件は同じ画面のため除きました`);
+      if (added > 0) parts.push('次にCopilotで文章を作れます');
       setVideoStatus(parts.join('・'));
       showToast(`${parts.join('、')}。赤枠と文章は編集画面で直せます。`, 'info');
     } catch (error) {
-      setVideoStatus(error.message || '自動で分けられませんでした');
-      showToast(error.message || '録画を自動で分けられませんでした。');
+      if (added > 0) {
+        advanceVideoToDraft(true);
+        setVideoStatus(`${added} 件は追加済みです・次にCopilotで文章を作れます`);
+        showToast(`${error.message || '途中で処理を続けられなくなりました。'} ${added}件は追加済みです。`, 'info');
+      } else {
+        setVideoStatus(error.message || '自動で分けられませんでした');
+        showToast(error.message || '録画を自動で分けられませんでした。');
+      }
     } finally {
       videoCapture.busy = false;
       buttons.forEach((item) => { item.disabled = false; });
+      if (videoCapture.added === 0) setVideoCloseLabel('キャンセル');
     }
   };
 
@@ -1592,8 +1633,8 @@
     const dialog = document.createElement('dialog');
     dialog.id = 'video-frame-dialog';
     dialog.className = 'video-dialog';
-    dialog.setAttribute('aria-label', '動画から手順を作る');
-    dialog.innerHTML = '<header class="video-dialog__header"><div><strong>動画から手順を作る</strong><span>自動で場面に分けるか、場面を選んで追加します</span></div><button type="button" class="video-dialog__close" data-video-close aria-label="閉じる">×</button></header><div class="video-dialog__content"><video class="video-dialog__player" data-video-player playsinline preload="metadata"></video><p class="video-dialog__error" data-video-error hidden></p><div class="video-dialog__controls"><button type="button" class="button button--ghost" data-video-play>再生</button><button type="button" class="button button--ghost" data-video-step="-1" aria-label="0.1秒戻す">◀ 0.1秒</button><input type="range" class="video-dialog__seek" data-video-seek min="0" max="0" step="0.01" value="0" aria-label="再生位置"><button type="button" class="button button--ghost" data-video-step="1" aria-label="0.1秒進める">0.1秒 ▶</button><span class="video-dialog__time" data-video-time>0:00.0 / 0:00.0</span></div></div><footer class="video-dialog__footer"><label class="video-dialog__quality"><input type="checkbox" data-video-original>元の解像度で取り込む</label><span class="video-dialog__spacer"></span><span class="video-dialog__count" data-video-status role="status" aria-live="polite">追加: 0件</span><button type="button" class="button button--primary" data-video-open-draft hidden>Copilotで文章を作る</button><button type="button" class="button button--ghost" data-video-capture-with-movie title="この場面を手順にしたうえで、動画をその手順へ添付します">動画つきで手順にする</button><button type="button" class="button button--ghost" data-video-capture>この場面を手順にする</button><button type="button" class="button button--primary" data-video-auto title="画面が切り替わる場面を自動で探し、押された場所に赤枠を付けて手順にします">自動で手順に分ける</button><button type="button" class="button button--ghost" data-video-close>閉じる</button></footer>';
+    dialog.setAttribute('aria-label', '録画から手順書を作る');
+    dialog.innerHTML = '<header class="video-dialog__header"><div><strong>録画から手順書を作る</strong><span>場面と操作箇所を抽出したあと、Copilotで文章を作ります</span></div><button type="button" class="video-dialog__close" data-video-close aria-label="閉じる">×</button></header><div class="video-dialog__content"><ol class="video-dialog__steps" aria-label="作成の流れ"><li class="video-dialog__step video-dialog__step--extract"><span>1</span>場面を自動分割</li><li class="video-dialog__step video-dialog__step--draft"><span>2</span>Copilotで文章化</li></ol><video class="video-dialog__player" data-video-player playsinline preload="metadata"></video><p class="video-dialog__error" data-video-error hidden></p><div class="video-dialog__controls"><button type="button" class="button button--ghost" data-video-play>再生</button><button type="button" class="button button--ghost" data-video-step="-1" aria-label="0.1秒戻す">◀ 0.1秒</button><input type="range" class="video-dialog__seek" data-video-seek min="0" max="0" step="0.01" value="0" aria-label="再生位置"><button type="button" class="button button--ghost" data-video-step="1" aria-label="0.1秒進める">0.1秒 ▶</button><span class="video-dialog__time" data-video-time>0:00.0 / 0:00.0</span></div></div><footer class="video-dialog__footer"><details class="video-dialog__advanced"><summary>手動で場面を選ぶ・詳細設定</summary><div class="video-dialog__advanced-panel"><label class="video-dialog__quality"><input type="checkbox" data-video-original>元の解像度で取り込む</label><button type="button" class="button button--ghost" data-video-capture>表示中の場面だけ追加</button><button type="button" class="button button--ghost" data-video-capture-with-movie title="この場面を手順にしたうえで、動画をその手順へ添付します">表示中の場面を動画つきで追加</button></div></details><span class="video-dialog__spacer"></span><span class="video-dialog__count" data-video-status role="status" aria-live="polite">追加: 0件</span><button type="button" class="button button--primary video-dialog__next" data-video-open-draft hidden>次へ：Copilotで文章を作る</button><button type="button" class="button button--primary video-dialog__next" data-video-auto title="画面が切り替わる場面を自動で探し、押された場所に赤枠を付けて手順にします">場面を自動分割する</button><button type="button" class="button button--ghost" data-video-close data-video-cancel-label>キャンセル</button></footer>';
 
     const player = dialog.querySelector('[data-video-player]');
     videoCapture.dialog = dialog;
@@ -1605,6 +1646,12 @@
         videoCapture.cancelAuto = true;
         dialog.close();
       });
+    });
+    dialog.addEventListener('cancel', (event) => {
+      // Escも閉じるボタンと同じ経路にし、閉じた後に手順が増え続けないようにする。
+      event.preventDefault();
+      videoCapture.cancelAuto = true;
+      dialog.close();
     });
     dialog.querySelector('[data-video-play]').addEventListener('click', () => {
       if (player.paused) { player.play().catch(() => { }); } else { player.pause(); }
@@ -1655,7 +1702,11 @@
     releaseVideoSource();
     videoCapture.added = 0;
     setVideoStatus();
+    setVideoPhase('extract');
     dialog.querySelector('[data-video-open-draft]').hidden = true;
+    dialog.querySelector('[data-video-auto]').hidden = false;
+    dialog.querySelector('.video-dialog__advanced').open = false;
+    setVideoCloseLabel('キャンセル');
     dialog.querySelectorAll('[data-video-capture], [data-video-capture-with-movie], [data-video-auto]').forEach((item) => { item.disabled = false; });
     const error = dialog.querySelector('[data-video-error]');
     error.hidden = true;
@@ -2246,6 +2297,8 @@
     }
     const exportButton = event.target.closest('[data-export-excel]');
     if (exportButton) {
+      const menu = exportButton.closest('details');
+      if (menu) menu.open = false;
       startExcelExport();
       return;
     }
