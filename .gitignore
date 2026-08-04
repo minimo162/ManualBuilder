@@ -8,6 +8,7 @@
 **/out/
 **/.tmp/
 **/tmp/
+/.tmp-*/
 
 # Generated reports and Office/PDF outputs
 result-*.txt

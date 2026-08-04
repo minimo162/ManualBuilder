@@ -1173,10 +1173,11 @@ function Invoke-MbRoute {
         $timeMs = 0
         try { $timeMs = [int][string]$request.Headers['X-Scene-Time-Ms'] } catch { $timeMs = 0 }
         $rectJson = [string]$request.Headers['X-Scene-Rect']
+        $candidatesJson = [string]$request.Headers['X-Scene-Candidates']
         try {
             $project = Get-MbProject -Path $ProjectPath
             $imported = Import-MbVideoScene -Project $project -ProjectPath $ProjectPath -SheetId $sheetId `
-                -Bytes $bytes -TimeMs $timeMs -RectJson $rectJson
+                -Bytes $bytes -TimeMs $timeMs -RectJson $rectJson -CandidatesJson $candidatesJson
             if ($imported.status -eq 'added') {
                 $project = Save-MbProject -Project $project -Path $ProjectPath
                 $script:CaptureVersion++

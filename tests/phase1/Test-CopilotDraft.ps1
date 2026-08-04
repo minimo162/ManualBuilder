@@ -173,6 +173,10 @@ foreach ($step in $packet) { $names[[string]$step.id] = ('step-{0:d3}.jpg' -f [i
 $packet[0].clickLabel = '申請'
 $packet[0].videoTimeMs = 72000
 $packet[0].narration = 'ここで申請ボタンを押します'
+$packet[0].targetCandidates = @([pscustomobject]@{
+    id = 'video-diff-1'; source = 'video-diff'; confidence = 'low'; label = '申請'; targetType = ''
+    rect = [pscustomobject]@{ x1 = 0.1; y1 = 0.2; x2 = 0.3; y2 = 0.4 }
+})
 
 $prompt = New-MbCopilotStepPrompt -Project $project -PacketSteps $packet -AttachmentNames $names `
     -StyleSamples $samples -TotalSteps 5 -Marker 'MB_END'
@@ -181,13 +185,53 @@ Add-Result ($prompt.Contains('経費精算システム操作手順')) '依頼文
 Add-Result ($prompt.Contains('申請を出す')) '依頼文にシート名が入る'
 Add-Result ($prompt.Contains([string]$packet[0].id)) '依頼文に手順のidが入る'
 Add-Result ($prompt.Contains('step-002.jpg')) '依頼文に添付画像の名前が入る'
-Add-Result ($prompt.Contains('赤枠の位置にあった操作対象: 申請')) '読み取った操作対象が依頼文に入る'
+Add-Result ($prompt.Contains('アプリが暫定選択した操作対象: 申請')) '暫定の操作対象が依頼文に入る'
+Add-Result ($prompt.Contains('id=video-diff-1')) '選択できる候補IDが依頼文に入る'
+Add-Result ($prompt.Contains('確定した事実ではありません')) 'DOM・UIA・動画差分を確定扱いしない'
+Add-Result (-not $prompt.Contains('推測ではありません')) '誤った確定表現を依頼文へ入れない'
 Add-Result ($prompt.Contains('1:12')) '録画内の時刻が入る'
 Add-Result ($prompt.Contains('ここで申請ボタンを押します')) '録画の音声が入る'
 Add-Result ($prompt.Contains('ログイン')) '文体の見本が入る'
 Add-Result ($prompt.Contains('MB_END')) '終了の合図が入る'
 # 回答の始まりを見つける目印。末尾に無いと依頼文自体を回答と読み違える。
 Add-Result ($prompt.EndsWith((Get-MbCopilotPromptTailAnchor))) '依頼文が目印で終わる'
+
+$badgeRect = [pscustomobject]@{ x1 = 0.2; y1 = 0.3; x2 = 0.5; y2 = 0.6 }
+$badgePoints = & (Get-Module ManualBuilder.CopilotJob) {
+    param($Rect)
+    @(0..3 | ForEach-Object { Get-MbCopilotCandidateBadgePoint -Rect $Rect -CandidateIndex $_ })
+} $badgeRect
+$badgeYs = @($badgePoints | ForEach-Object { [Math]::Round([double]$_.y, 3) } | Sort-Object -Unique)
+Add-Result ($badgeYs.Count -eq 4 -and ([double]$badgeYs[1] - [double]$badgeYs[0]) -ge 0.039) `
+    '同じ左上の候補番号を識別できる間隔でずらす'
+
+$attachmentRoot = Join-Path ([IO.Path]::GetTempPath()) ('mb-copilot-attachment-test-' + [guid]::NewGuid().ToString('N'))
+[void](New-Item -ItemType Directory -Path $attachmentRoot -Force)
+try {
+    Add-Type -AssemblyName System.Drawing
+    $attachmentSource = Join-Path $attachmentRoot 'source.png'
+    $attachmentBitmap = New-Object Drawing.Bitmap 100, 80
+    try { $attachmentBitmap.Save($attachmentSource, [Drawing.Imaging.ImageFormat]::Png) } finally { $attachmentBitmap.Dispose() }
+    $attachmentStep = [pscustomobject]@{
+        annotations = @()
+        crop = [pscustomobject]@{ x = 0.25; y = 0.25; width = 0.5; height = 0.5 }
+        targetCandidates = @(0..3 | ForEach-Object {
+            [pscustomobject]@{
+                id = 'candidate-' + ($_ + 1); rect = $badgeRect
+                source = 'video-diff'; confidence = 'low'; label = ''; targetType = ''
+            }
+        })
+    }
+    $attachmentPath = New-MbCopilotAttachment -Step $attachmentStep -SourcePath $attachmentSource `
+        -WorkDirectory $attachmentRoot -FileName 'candidate.jpg'
+    $attachmentImage = [Drawing.Image]::FromFile($attachmentPath)
+    try {
+        Add-Result ($attachmentImage.Width -eq 100 -and $attachmentImage.Height -eq 80) `
+            '候補添付では現在のcropを使わず全画面を保持する'
+    } finally { $attachmentImage.Dispose() }
+} finally {
+    Remove-Item -LiteralPath $attachmentRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 Add-Result ((Format-MbTimeCode -Milliseconds 0) -eq '') '時刻0は空文字になる'
 Add-Result ((Format-MbTimeCode -Milliseconds 5000) -eq '0:05') '秒が2桁で並ぶ'
@@ -240,6 +284,23 @@ $dropDrafts = ConvertFrom-MbCopilotStepAnswer -Answer (Get-MbStepAnswerJson -Tex
 Add-Result ($dropDrafts[0].keep -eq $false -and $dropDrafts[0].confident -eq $false) '不要・自信なしの判断が残る'
 Add-Result ([string]$dropDrafts[0].reason -eq '直前と同じ画面です') '判断の理由が残る'
 
+$visualBody = '{"steps":[{"id":"' + $targetId + '","targetCandidateId":"video-diff-1","zoom":"focus","visualConfident":true,"visualReason":"申請ボタンと一致","title":"申請","description":"申請を選択します。"}]}'
+$visualDrafts = ConvertFrom-MbCopilotStepAnswer -Answer (Get-MbStepAnswerJson -Text $visualBody) -PacketSteps $packet
+Add-Result ([string]$visualDrafts[0].targetCandidateId -eq 'video-diff-1') '列挙した視覚候補IDを受け取る'
+Add-Result ($visualDrafts[0].visualConfident -eq $true -and [string]$visualDrafts[0].zoom -eq 'focus') '枠の確信度と拡大方針を受け取る'
+$unknownVisualBody = '{"steps":[{"id":"' + $targetId + '","targetCandidateId":"made-up","zoom":"focus","visualConfident":true,"title":"申請","description":"申請を選択します。"}]}'
+$unknownVisualDrafts = ConvertFrom-MbCopilotStepAnswer -Answer (Get-MbStepAnswerJson -Text $unknownVisualBody) -PacketSteps $packet
+Add-Result ([string]::IsNullOrWhiteSpace([string]$unknownVisualDrafts[0].targetCandidateId) -and -not $unknownVisualDrafts[0].visualConfident) '一覧にない候補IDを拒否する'
+Add-Result ([string]$unknownVisualDrafts[0].zoom -eq 'keep') '一覧にない候補の拡大指示を拒否する'
+
+$withoutCandidates = @($packet | ForEach-Object { $_.PSObject.Copy() })
+$withoutCandidates[0].targetCandidates = @()
+$noneWithoutCandidatesBody = '{"steps":[{"id":"' + $targetId + '","targetCandidateId":"none","zoom":"full","visualConfident":true,"title":"申請","description":"申請を選択します。"}]}'
+$noneWithoutCandidatesDrafts = ConvertFrom-MbCopilotStepAnswer -Answer (Get-MbStepAnswerJson -Text $noneWithoutCandidatesBody) -PacketSteps $withoutCandidates
+Add-Result ([string]::IsNullOrWhiteSpace([string]$noneWithoutCandidatesDrafts[0].targetCandidateId) -and
+    [string]$noneWithoutCandidatesDrafts[0].zoom -eq 'keep' -and -not $noneWithoutCandidatesDrafts[0].visualConfident) `
+    '候補がない手順のnoneと拡大指示を拒否する'
+
 Add-Result (@(ConvertFrom-MbCopilotStepAnswer -Answer $null -PacketSteps $packet).Count -eq 0) '回答がnullでも落ちない'
 
 # ---------------------------------------------------------------------
@@ -265,10 +326,42 @@ Add-Result ((Set-MbCopilotDraftSelection -Project $project -SelectionJson $missi
 # 手順に付く録画の情報
 # ---------------------------------------------------------------------
 [void](Set-MbStepCapture -Project $project -StepId $applyTarget -Kind 'video-scene' -VideoTimeMs 4500 `
-    -ClickLabel '登録' -ScreenText '経費申請 / 登録 / 取消' -Narration '登録を押します')
+    -ClickLabel '登録' -ScreenText '経費申請 / 登録 / 取消' -Narration '登録を押します' `
+    -TargetSource 'video-diff' -TargetConfidence 'low' -TargetCandidateId 'video-diff-1' `
+    -TargetCandidatesJson '[{"id":"video-diff-1","source":"video-diff","confidence":"low","label":"登録","targetType":"","rect":{"x1":0.70,"y1":0.70,"x2":0.90,"y2":0.82}},{"id":"video-diff-2","source":"video-diff","confidence":"low","label":"取消","targetType":"","rect":{"x1":0.45,"y1":0.70,"x2":0.65,"y2":0.82}}]')
 $captured = Get-MbStepById -Project $project -StepId $applyTarget
 Add-Result ([int]$captured.capture.videoTimeMs -eq 4500) '録画の時刻を保存する'
 Add-Result ([string]$captured.capture.clickLabel -eq '登録') '操作対象を保存する'
+Add-Result (@($captured.capture.targetCandidates).Count -eq 2) '操作対象の複数候補を保存する'
+
+# 空の候補IDと拡大指示を組み合わせても、現在の自動赤枠を外さない。
+$existingAutoRect = [pscustomobject]@{
+    id = 'annotation-' + [guid]::NewGuid().ToString('N'); type = 'rect'; label = 0
+    x1 = 0.70; y1 = 0.70; x2 = 0.90; y2 = 0.82
+}
+[void](Set-MbStepAnnotations -Project $project -StepId $applyTarget `
+    -AnnotationsJson (ConvertTo-Json -InputObject @($existingAutoRect) -Depth 5))
+$emptyCandidateSelection = '{"accept":[{"id":"' + $applyTarget + '","title":"","description":"","note":"","targetCandidateId":"","zoom":"focus"}]}'
+Add-Result ((Set-MbCopilotDraftSelection -Project $project -SelectionJson $emptyCandidateSelection) -eq 0 -and
+    @((Get-MbStepById -Project $project -StepId $applyTarget).annotations).Count -eq 1) `
+    '空の候補IDでは拡大も赤枠変更も適用しない'
+
+$visualSelection = '{"accept":[{"id":"' + $applyTarget + '","title":"","description":"","note":"","targetCandidateId":"video-diff-2","zoom":"focus"}]}'
+[void](Set-MbCopilotDraftSelection -Project $project -SelectionJson $visualSelection)
+$captured = Get-MbStepById -Project $project -StepId $applyTarget
+Add-Result ([string]$captured.capture.targetCandidateId -eq 'video-diff-2' -and [string]$captured.capture.clickLabel -eq '取消') '採用した候補へ赤枠の根拠を切り替える'
+Add-Result ([double]$captured.crop.width -lt 1.0 -and [double]$captured.crop.height -lt 1.0) '選んだ候補の周辺へ拡大する'
+
+# 候補がない手順では、noneとfullが来ても手動cropと操作対象名を保持する。
+$noCandidateTarget = $stepIds[2]
+$noCandidateStep = Get-MbStepById -Project $project -StepId $noCandidateTarget
+[void](Set-MbStepCapture -Project $project -StepId $noCandidateTarget -ClickLabel '利用者の対象名')
+[void](Set-MbStepImageEdits -Project $project -StepId $noCandidateTarget -AnnotationsJson '[]' `
+    -CropJson '{"x":0.1,"y":0.1,"width":0.6,"height":0.6}')
+$noCandidateSelection = '{"accept":[{"id":"' + $noCandidateTarget + '","title":"","description":"","note":"","targetCandidateId":"none","zoom":"full"}]}'
+Add-Result ((Set-MbCopilotDraftSelection -Project $project -SelectionJson $noCandidateSelection) -eq 0 -and
+    [double]$noCandidateStep.crop.width -eq 0.6 -and [string]$noCandidateStep.capture.clickLabel -eq '利用者の対象名') `
+    '候補がない手順のnoneと拡大指示では既存編集を変えない'
 
 # capture を持たない古いプロジェクトを保存して読み直しても壊れないこと。
 # v0.27.3以前で作ったマニュアルがこの形になっている。

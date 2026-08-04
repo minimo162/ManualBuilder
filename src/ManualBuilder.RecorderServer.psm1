@@ -508,9 +508,48 @@ function Import-MbRecordedEvents {
         $targetName = ConvertTo-MbRecorderTargetName -Value $targetName -Suffix $suffix
         $spoken = ''
         if ($narration.ContainsKey($index)) { $spoken = [string]$narration[$index] }
+        $targetSource = if ($record.PSObject.Properties.Name -contains 'targetSource') { [string]$record.targetSource } else { '' }
+        $targetConfidence = if ($record.PSObject.Properties.Name -contains 'confidence' -and
+            [string]$record.confidence -in @('high', 'medium', 'low')) { [string]$record.confidence } else { '' }
+        $candidateId = if ($record.PSObject.Properties.Name -contains 'targetCandidateId') { [string]$record.targetCandidateId } else { '' }
+        $recordedCandidates = New-Object System.Collections.ArrayList
+        if ($record.PSObject.Properties.Name -contains 'targetCandidates') {
+            foreach ($candidate in @($record.targetCandidates | Select-Object -First 4)) {
+                if ($null -eq $candidate -or $candidate.PSObject.Properties.Name -notcontains 'id' -or
+                    $candidate.PSObject.Properties.Name -notcontains 'rect') { continue }
+                $candidateLabel = if ($candidate.PSObject.Properties.Name -contains 'label') { [string]$candidate.label } else { '' }
+                $candidateLabel = ConvertTo-MbRecorderTargetName -Value $candidateLabel -Suffix $(if ([string]::IsNullOrWhiteSpace($candidateLabel)) { '' } else { $suffix })
+                [void]$recordedCandidates.Add([pscustomobject]@{
+                    id = [string]$candidate.id
+                    source = $(if ($candidate.PSObject.Properties.Name -contains 'source') { [string]$candidate.source } else { '' })
+                    confidence = $(if ($candidate.PSObject.Properties.Name -contains 'confidence') { [string]$candidate.confidence } else { '' })
+                    label = $candidateLabel
+                    targetType = $(if ($candidate.PSObject.Properties.Name -contains 'targetType') { [string]$candidate.targetType } else { '' })
+                    rect = $candidate.rect
+                })
+            }
+        }
+        if ($recordedCandidates.Count -eq 0 -and $null -ne $rect -and (Test-MbNormalizedRect -Rect $rect)) {
+            $safeSource = if ([string]::IsNullOrWhiteSpace($targetSource)) { 'observed' } else { $targetSource.ToLowerInvariant() -replace '[^a-z0-9]+', '-' }
+            $candidateId = ($safeSource.Trim('-') + '-1')
+            if ($candidateId -eq '-1') { $candidateId = 'observed-1' }
+            [void]$recordedCandidates.Add([pscustomobject]@{
+                id = $candidateId; source = $targetSource; confidence = $targetConfidence
+                label = $targetName; targetType = $targetType; rect = $rect
+            })
+        }
+        $candidateIds = @($recordedCandidates | ForEach-Object { if ($null -ne $_ -and $_.PSObject.Properties.Name -contains 'id') { [string]$_.id } })
+        if ($candidateIds -notcontains $candidateId) {
+            $candidateId = if ($candidateIds.Count -gt 0) { [string]$candidateIds[0] } else { '' }
+        }
+        $candidatesJson = if ($recordedCandidates.Count -gt 0) {
+            ConvertTo-Json -InputObject @($recordedCandidates) -Depth 8 -Compress
+        } else { '' }
         [void](Set-MbStepCapture -Project $Project -StepId $stepId -Kind $kind `
             -VideoTimeMs ([int]$record.timeMs) -ClickLabel $targetName `
-            -WindowTitle ([string]$record.windowTitle) -Narration $spoken)
+            -WindowTitle ([string]$record.windowTitle) -Narration $spoken -TargetType $targetType `
+            -TargetSource $targetSource -TargetConfidence $targetConfidence `
+            -TargetCandidateId $candidateId -TargetCandidatesJson $candidatesJson)
         $added++
     }
     return [pscustomobject]@{ added = $added; skipped = $skipped }

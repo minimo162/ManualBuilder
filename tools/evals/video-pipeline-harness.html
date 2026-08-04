@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<title>ManualBuilder video pipeline harness</title>
+<style>
+  body { font-family: sans-serif; margin: 24px; }
+  video { width: 480px; max-height: 300px; background: #111; display: block; margin: 12px 0; }
+  pre { white-space: pre-wrap; }
+</style>
+<h1>Video pipeline harness</h1>
+<input id="files" type="file" accept="video/*" multiple>
+<p id="status">録画を選択してください</p>
+<video id="player" muted playsinline></video>
+<pre id="result"></pre>
+<script src="../../web/assets/js/video-scenes.js"></script>
+<script>
+  const input = document.querySelector('#files');
+  const status = document.querySelector('#status');
+  const player = document.querySelector('#player');
+  const result = document.querySelector('#result');
+  const loadVideo = (file) => new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    player.src = url;
+    player.onloadedmetadata = () => resolve(url);
+    player.onerror = () => reject(new Error(`動画を読めません: ${file.name}`));
+  });
+  input.addEventListener('change', async () => {
+    const outputs = [];
+    try {
+      for (const file of [...input.files]) {
+        status.textContent = `${file.name} を解析しています`;
+        const url = await loadVideo(file);
+        try {
+          const extracted = await window.MbVideoScenes.extractScenes(player, {
+            maxEdge: 1280,
+            quality: 0.9,
+            onProgress: ({ message, percent }) => { status.textContent = `${file.name}: ${message} ${percent}%`; }
+          });
+          outputs.push({
+            file: file.name,
+            samples: extracted.samples,
+            scenes: extracted.scenes.map(({ index, timeMs, stillMs, operationRect, operationCandidates }) => ({
+              index, timeMs, stillMs, operationRect, operationCandidates
+            }))
+          });
+        } finally {
+          URL.revokeObjectURL(url);
+        }
+      }
+      result.textContent = JSON.stringify(outputs, null, 2);
+      status.textContent = `完了: ${outputs.length}本`;
+      document.title = `DONE ${outputs.length}`;
+    } catch (error) {
+      status.textContent = error.message || String(error);
+      document.title = 'ERROR';
+    }
+  });
+</script>
+</html>
