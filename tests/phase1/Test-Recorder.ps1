@@ -248,6 +248,16 @@ $inferred = Select-MbUiaNamedTargetInfo -Candidates @($page, $namedText) -X 740 
 Add-Result ($null -ne $inferred -and [string]$inferred.name -eq '承認依頼を送信') '操作パターンが無い名前付き要素もクリック位置から補う'
 Add-Result ([bool]$inferred.isInferred) '推定で補った操作対象を識別できる'
 
+$msaaButton = New-MbMsaaElementInfo -Name '保存' -Role 43 -DefaultAction '押す' `
+    -Left 820 -Top 540 -Width 96 -Height 32
+Add-Result ([string]$msaaButton.controlType -eq 'ControlType.Button' -and [bool]$msaaButton.isActionable) 'MSAAのボタンを操作対象へ変換する'
+$msaaLink = New-MbMsaaElementInfo -Name '詳細を見る' -Role 30 -DefaultAction '' `
+    -Left 620 -Top 440 -Width 120 -Height 22
+Add-Result ([string]$msaaLink.controlType -eq 'ControlType.Hyperlink' -and [bool]$msaaLink.isActionable) 'MSAAのリンクを操作対象へ変換する'
+$msaaText = New-MbMsaaElementInfo -Name '説明だけの文字' -Role 41 -DefaultAction '' `
+    -Left 620 -Top 470 -Width 120 -Height 22
+Add-Result (-not [bool]$msaaText.isActionable) 'MSAAの静的な文字を操作可能と誤判定しない'
+
 Add-Result ($null -eq (Select-MbUiaTargetInfo -Candidates @($page, $linkText) -X 200 -Y 430)) '操作できる候補が無ければページ全体の赤枠を付けない'
 
 $window = [pscustomobject]@{ left = 100.0; top = 100.0; width = 800.0; height = 600.0 }

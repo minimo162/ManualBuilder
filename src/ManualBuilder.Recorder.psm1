@@ -45,6 +45,7 @@ function Initialize-MbRecorderNative {
     if ($script:MbRecorderNativeReady) { return }
 
     Add-Type -AssemblyName System.Drawing -ErrorAction Stop
+    Add-Type -AssemblyName Accessibility -ErrorAction Stop
     Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -80,6 +81,14 @@ public static class MbRecorderNative
 
     [DllImport("dwmapi.dll")]
     public static extern int DwmGetWindowAttribute(IntPtr hwnd, int dwAttribute, out RECT pvAttribute, int cbAttribute);
+
+    // UI Automationを公開しない旧式/独自アプリの操作対象をMSAAから取得する。
+    // 戻り値のchildはCHILDID_SELFまたは親IAccessible内の子IDになる。
+    [DllImport("oleacc.dll")]
+    public static extern int AccessibleObjectFromPoint(
+        POINT point,
+        [MarshalAs(UnmanagedType.Interface)] out object accessible,
+        [MarshalAs(UnmanagedType.Struct)] out object child);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -309,6 +318,135 @@ function Select-MbUiaNamedTargetInfo {
     return $best
 }
 
+# MSAAの数値ロールをUI Automationと同じ名称へ寄せる。保存形式と後段の説明生成を
+# UIA経路と共通にでき、どのAPIから取得したかを利用者が意識せずに済む。
+function ConvertTo-MbMsaaControlType {
+    param([Parameter(Mandatory = $true)][int]$Role)
+
+    switch ($Role) {
+        12 { return 'ControlType.MenuItem' }
+        29 { return 'ControlType.DataItem' }
+        30 { return 'ControlType.Hyperlink' }
+        34 { return 'ControlType.ListItem' }
+        36 { return 'ControlType.TreeItem' }
+        37 { return 'ControlType.TabItem' }
+        42 { return 'ControlType.Edit' }
+        43 { return 'ControlType.Button' }
+        44 { return 'ControlType.CheckBox' }
+        45 { return 'ControlType.RadioButton' }
+        { $_ -in @(46, 47) } { return 'ControlType.ComboBox' }
+        { $_ -in @(56, 57, 58, 62) } { return 'ControlType.SplitButton' }
+        default { return 'ControlType.Custom' }
+    }
+}
+
+function New-MbMsaaElementInfo {
+    param(
+        [AllowEmptyString()][string]$Name,
+        [Parameter(Mandatory = $true)][int]$Role,
+        [AllowEmptyString()][string]$DefaultAction,
+        [Parameter(Mandatory = $true)][double]$Left,
+        [Parameter(Mandatory = $true)][double]$Top,
+        [Parameter(Mandatory = $true)][double]$Width,
+        [Parameter(Mandatory = $true)][double]$Height
+    )
+
+    $actionableRoles = @(12, 29, 30, 34, 36, 37, 42, 43, 44, 45, 46, 47, 50, 51, 52, 56, 57, 58, 62, 64)
+    return [pscustomobject]@{
+        name = $Name
+        controlType = ConvertTo-MbMsaaControlType -Role $Role
+        automationId = ''
+        className = ''
+        left = $Left
+        top = $Top
+        width = $Width
+        height = $Height
+        isActionable = (($actionableRoles -contains $Role) -or -not [string]::IsNullOrWhiteSpace($DefaultAction))
+        provider = 'MSAA'
+    }
+}
+
+# UIAが対象を返さないアプリでは、Windows標準のアクセシビリティAPI (MSAA) を
+# クリック点へ直接問い合わせる。画面全体に近いオブジェクトはここでも除外する。
+function Get-MbMsaaTargetAtPoint {
+    param(
+        [Parameter(Mandatory = $true)][int]$X,
+        [Parameter(Mandatory = $true)][int]$Y,
+        [AllowNull()]$Window = $null
+    )
+
+    $accessible = $null
+    try {
+        Initialize-MbRecorderNative
+        $point = New-Object 'MbRecorderNative+POINT'
+        $point.X = $X
+        $point.Y = $Y
+        $child = $null
+        $result = [MbRecorderNative]::AccessibleObjectFromPoint($point, [ref]$accessible, [ref]$child)
+        if ($result -lt 0 -or $null -eq $accessible) { return $null }
+
+        $accessibleObject = [Accessibility.IAccessible]$accessible
+        $childId = if ($null -eq $child) { [object]0 } else { [object]$child }
+        $name = ''
+        $defaultAction = ''
+        $role = 0
+        try { $name = [string]$accessibleObject.get_accName($childId) } catch { }
+        try { $defaultAction = [string]$accessibleObject.get_accDefaultAction($childId) } catch { }
+        try { $role = [int]$accessibleObject.get_accRole($childId) } catch { }
+
+        $left = 0
+        $top = 0
+        $width = 0
+        $height = 0
+        try {
+            $accessibleObject.accLocation([ref]$left, [ref]$top, [ref]$width, [ref]$height, $childId)
+        } catch {
+            return $null
+        }
+
+        $info = New-MbMsaaElementInfo -Name $name -Role $role -DefaultAction $defaultAction `
+            -Left $left -Top $top -Width $width -Height $height
+
+        # 点の直下がボタン内の静的なラベルだった場合、pvarChildを返したIAccessible本体が
+        # 操作可能な親であることがある。子を静的文字として採用せず、親自身を1段だけ確認する。
+        if (-not $info.isActionable -and [int]$childId -ne 0) {
+            $parentName = ''
+            $parentAction = ''
+            $parentRole = 0
+            $self = [object]0
+            try { $parentName = [string]$accessibleObject.get_accName($self) } catch { }
+            try { $parentAction = [string]$accessibleObject.get_accDefaultAction($self) } catch { }
+            try { $parentRole = [int]$accessibleObject.get_accRole($self) } catch { }
+            $parentLeft = 0
+            $parentTop = 0
+            $parentWidth = 0
+            $parentHeight = 0
+            try {
+                $accessibleObject.accLocation([ref]$parentLeft, [ref]$parentTop, [ref]$parentWidth, [ref]$parentHeight, $self)
+                $parentInfo = New-MbMsaaElementInfo -Name $parentName -Role $parentRole -DefaultAction $parentAction `
+                    -Left $parentLeft -Top $parentTop -Width $parentWidth -Height $parentHeight
+                if ($parentInfo.isActionable) { $info = $parentInfo }
+            } catch { }
+        }
+
+        if (-not (Test-MbPointWithinElementInfo -Info $info -X $X -Y $Y -Tolerance 12.0)) { return $null }
+        if (-not $info.isActionable) { return $null }
+
+        if ($null -ne $Window) {
+            $windowArea = [double]$Window.width * [double]$Window.height
+            $targetArea = [double]$info.width * [double]$info.height
+            if ($windowArea -gt 0 -and $targetArea -gt ($windowArea * 0.4)) { return $null }
+        }
+        return $info
+    } catch {
+        return $null
+    } finally {
+        if ($null -ne $accessible -and [Runtime.InteropServices.Marshal]::IsComObject($accessible)) {
+            try { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($accessible) } catch { }
+        }
+    }
+}
+
 # FromPoint は境界線や文字の隙間では親の Document/Pane を返すことがある。
 # 同じ操作対象の内側を数ピクセルずらして再照会し、各要素の親も Raw/Control の
 # 両方のビューで確認する。DOM全体を1件ずつ歩くより軽く、入れ子の深いWeb UIにも強い。
@@ -446,7 +584,11 @@ function Get-MbUiaTargetAtPoint {
         [AllowNull()]$Window = $null
     )
 
-    if (-not (Initialize-MbRecorderUia)) { return (New-MbClickPointTargetInfo -X $X -Y $Y -Window $Window) }
+    if (-not (Initialize-MbRecorderUia)) {
+        $msaaTarget = Get-MbMsaaTargetAtPoint -X $X -Y $Y -Window $Window
+        if ($null -ne $msaaTarget) { return $msaaTarget }
+        return (New-MbClickPointTargetInfo -X $X -Y $Y -Window $Window)
+    }
     try {
         $candidates = New-Object System.Collections.ArrayList
         $root = $null
@@ -488,6 +630,35 @@ function Get-MbUiaTargetAtPoint {
             $selected = Select-MbUiaTargetInfo -Candidates @($candidates) -X $X -Y $Y
             if ($null -ne $selected) { return $selected }
         }
+
+        # クリック後にフォーカスが移った要素は、FromPointがDocumentを返す画面でも
+        # 実際の操作対象である可能性が高い。クリック点を含む場合だけ候補へ加える。
+        $focused = Get-MbUiaFocusedElement
+        if (Test-MbPointWithinElementInfo -Info $focused -X $X -Y $Y -Tolerance 12.0) {
+            [void]$candidates.Add($focused)
+            $selected = Select-MbUiaTargetInfo -Candidates @($candidates) -X $X -Y $Y
+            if ($null -ne $selected) { return $selected }
+        }
+
+        # FromPoint由来の枝にポップアップや別アクセシビリティ枝が含まれない場合がある。
+        # 最後に前面ウィンドウのHWNDからUIAルートを取り直して、全枝を1回だけ検索する。
+        if ($null -ne $Window -and $Window.PSObject.Properties.Name -contains 'handle' -and [long]$Window.handle -ne 0) {
+            $windowRoot = $null
+            try {
+                $windowRoot = [System.Windows.Automation.AutomationElement]::FromHandle(
+                    [IntPtr]::new([long]$Window.handle)
+                )
+            } catch { $windowRoot = $null }
+            if ($null -ne $windowRoot) {
+                Add-MbUiaInteractiveDescendantCandidates -Candidates $candidates -Root $windowRoot -X $X -Y $Y
+                $selected = Select-MbUiaTargetInfo -Candidates @($candidates) -X $X -Y $Y
+                if ($null -ne $selected) { return $selected }
+            }
+        }
+
+        # UIAよりMSAAの方が正確なボタン/リンク矩形を公開する旧式アプリを補う。
+        $msaaTarget = Get-MbMsaaTargetAtPoint -X $X -Y $Y -Window $Window
+        if ($null -ne $msaaTarget) { return $msaaTarget }
 
         $namedTarget = Select-MbUiaNamedTargetInfo -Candidates @($candidates) -X $X -Y $Y -Window $Window
         if ($null -ne $namedTarget) { return $namedTarget }
@@ -538,6 +709,7 @@ function Get-MbForegroundWindowInfo {
     if ($handle -eq [IntPtr]::Zero) { return $null }
     $rect = [MbRecorderNative]::GetVisualWindowRect($handle)
     return [pscustomobject]@{
+        handle = [long]$handle.ToInt64()
         title  = [MbRecorderNative]::GetWindowTitle($handle)
         class  = [MbRecorderNative]::GetWindowClass($handle)
         left   = [int]$rect.Left
@@ -1080,6 +1252,7 @@ Export-ModuleMember -Function @(
     'Get-MbUiaFocusedElement',
     'Select-MbUiaTargetInfo',
     'Select-MbUiaNamedTargetInfo',
+    'New-MbMsaaElementInfo',
     'New-MbClickPointTargetInfo',
     'Get-MbForegroundWindowInfo',
     'Get-MbVirtualScreenBounds',
