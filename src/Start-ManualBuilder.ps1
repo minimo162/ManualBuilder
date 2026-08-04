@@ -1789,6 +1789,16 @@ function Invoke-MbRoute {
             }
             return
         }
+        '/api/steps/move-many' {
+            try {
+                $stepIds = @((Get-MbFormValue $form 'stepIds').Split(',') | Where-Object { $_ })
+                [void](Move-MbStepsToSheet -Project $project -StepIds $stepIds -TargetSheetId (Get-MbFormValue $form 'targetSheetId'))
+                Write-MbResponse $Context (Save-MbAndRenderWorkspace -Project $project -TabId $tabId)
+            } catch {
+                Write-MbResponse $Context $_.Exception.Message 400 'text/plain; charset=utf-8'
+            }
+            return
+        }
         '/api/steps/annotations' {
             try {
                 Set-MbStepImageEdits -Project $project -StepId (Get-MbFormValue $form 'stepId') `
@@ -1879,6 +1889,44 @@ function Invoke-MbRoute {
                 Write-MbResponse $Context (ConvertTo-MbSaveStatusHtml)
             } catch {
                 Write-MbResponse $Context (ConvertTo-MbSaveStatusHtml -Message $_.Exception.Message -State error) 400
+            }
+            return
+        }
+        '/api/steps/delete-many' {
+            try {
+                $stepIds = @((Get-MbFormValue $form 'stepIds').Split(',') | Where-Object { $_ })
+                $removedSteps = New-Object System.Collections.ArrayList
+                foreach ($stepId in $stepIds) {
+                    $step = Get-MbStepById -Project $project -StepId $stepId
+                    if (-not $step) { throw '対象手順が見つかりません。' }
+                    [void]$removedSteps.Add($step)
+                }
+                Remove-MbSteps -Project $project -StepIds $stepIds
+                $unusedPaths = New-Object System.Collections.ArrayList
+                foreach ($step in @($removedSteps)) {
+                    $stepId = [string]$step.id
+                    $historyImageId = ''
+                    if ($script:ImageReplacementHistory.ContainsKey($stepId)) {
+                        $historyImageId = [string]$script:ImageReplacementHistory[$stepId].imageId
+                        [void]$script:ImageReplacementHistory.Remove($stepId)
+                    }
+                    foreach ($unusedPath in @(
+                        Remove-MbUnusedImage -Project $project -ProjectPath $ProjectPath -ImageId ([string]$step.imageId)
+                        Remove-MbUnusedImage -Project $project -ProjectPath $ProjectPath -ImageId $historyImageId
+                        Remove-MbUnusedVideo -Project $project -ProjectPath $ProjectPath -VideoId ([string]$step.videoId)
+                    )) {
+                        if ($unusedPath) { [void]$unusedPaths.Add([string]$unusedPath) }
+                    }
+                }
+                $html = Save-MbAndRenderWorkspace -Project $project -TabId $tabId
+                foreach ($unusedPath in @($unusedPaths | Select-Object -Unique)) {
+                    if (Test-Path -LiteralPath $unusedPath -PathType Leaf) {
+                        Remove-Item -LiteralPath $unusedPath -Force -ErrorAction SilentlyContinue
+                    }
+                }
+                Write-MbResponse $Context $html
+            } catch {
+                Write-MbResponse $Context $_.Exception.Message 400 'text/plain; charset=utf-8'
             }
             return
         }
