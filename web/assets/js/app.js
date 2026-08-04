@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const appVersion = '0.32.9';
+  const appVersion = '0.32.10';
   // 番号注釈はSVG属性で指定するためCSS変数を参照できない。
   // 編集画面とExcel・Word出力（New-MbAnnotatedImage）で同じ見た目にするため、基準フォントを揃える。
   const ANNOTATION_NUMBER_FONT = '"BIZ UDPGothic", "BIZ UDPゴシック", "BIZ UDGothic", "BIZ UDゴシック", Meiryo, "Yu Gothic UI", "MS Pゴシック", sans-serif';
@@ -2868,13 +2868,17 @@
     // imgタグはヘッダーを送れないので、画像だけはクエリにトークンを載せる。
     const token = encodeURIComponent(sessionHeaders()['X-Manual-Token'] || '');
     list.innerHTML = events.map((item) => {
-      const label = item.targetName || '（名前を取得できませんでした）';
+      const fallback = item.targetType === 'ControlType.ClickPoint';
+      const label = item.targetName || (fallback ? 'クリック位置（対象を特定できませんでした）' : '（名前を取得できませんでした）');
       const kind = item.kind === 'input' ? '入力' : (item.kind === 'right-click' ? '右クリック' : 'クリック');
+      const detail = fallback
+        ? `${kind}・対象不明（空クリックならチェックを外せます）`
+        : `${kind}・${item.windowTitle || ''}`;
       const src = `/images/recording/${encodeURIComponent(item.image)}?token=${token}`;
       return `<label class="recorder-event" data-recorder-event data-index="${item.index}">
 <input type="checkbox" data-recorder-accept checked>
 <img class="recorder-event__shot" src="${src}" alt="" loading="lazy">
-<span class="recorder-event__body"><strong>${escapeHtml(label)}</strong><span>${kind}・${escapeHtml(item.windowTitle || '')}</span></span>
+<span class="recorder-event__body"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(detail)}</span></span>
 <span class="recorder-event__index">${item.index}</span>
 </label>`;
     }).join('');
@@ -3024,6 +3028,7 @@
       + '</section>'
       + '<section data-recorder-view="review" hidden>'
       + '<div class="copilot-dialog__state"><strong data-recorder-message></strong><span data-recorder-detail></span></div>'
+      + '<p class="copilot-note">対象を特定できた画像は、元のウィンドウ全体を残したまま周辺を大きく表示します。全体が必要な手順は、取り込み後に「画像を編集 → 切り抜きを戻す」で戻せます。対象不明のクリックも記録漏れを避けるため選択されています。不要ならチェックを外してください。</p>'
       + '<div class="recorder-list" data-recorder-list></div>'
       + '</section>'
       + '</div>'
