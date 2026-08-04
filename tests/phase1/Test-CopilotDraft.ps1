@@ -173,10 +173,16 @@ foreach ($step in $packet) { $names[[string]$step.id] = ('step-{0:d3}.jpg' -f [i
 $packet[0].clickLabel = '申請'
 $packet[0].videoTimeMs = 72000
 $packet[0].narration = 'ここで申請ボタンを押します'
-$packet[0].targetCandidates = @([pscustomobject]@{
-    id = 'video-diff-1'; source = 'video-diff'; confidence = 'low'; label = '申請'; targetType = ''
-    rect = [pscustomobject]@{ x1 = 0.1; y1 = 0.2; x2 = 0.3; y2 = 0.4 }
-})
+$packet[0].targetCandidates = @(
+    [pscustomobject]@{
+        id = 'video-diff-1'; source = 'video-diff'; confidence = 'low'; label = '申請'; targetType = ''
+        rect = [pscustomobject]@{ x1 = 0.1; y1 = 0.2; x2 = 0.3; y2 = 0.4 }
+    },
+    [pscustomobject]@{
+        id = 'video-diff-2'; source = 'video-diff'; confidence = 'low'; label = '取消'; targetType = ''
+        rect = [pscustomobject]@{ x1 = 0.5; y1 = 0.6; x2 = 0.7; y2 = 0.8 }
+    }
+)
 
 $prompt = New-MbCopilotStepPrompt -Project $project -PacketSteps $packet -AttachmentNames $names `
     -StyleSamples $samples -TotalSteps 5 -Marker 'MB_END'
@@ -284,10 +290,13 @@ $dropDrafts = ConvertFrom-MbCopilotStepAnswer -Answer (Get-MbStepAnswerJson -Tex
 Add-Result ($dropDrafts[0].keep -eq $false -and $dropDrafts[0].confident -eq $false) '不要・自信なしの判断が残る'
 Add-Result ([string]$dropDrafts[0].reason -eq '直前と同じ画面です') '判断の理由が残る'
 
-$visualBody = '{"steps":[{"id":"' + $targetId + '","targetCandidateId":"video-diff-1","zoom":"focus","visualConfident":true,"visualReason":"申請ボタンと一致","title":"申請","description":"申請を選択します。"}]}'
+$visualBody = '{"steps":[{"id":"' + $targetId + '","targetCandidateId":"video-diff-2","zoom":"focus","visualConfident":true,"visualReason":"取消ボタンと一致","title":"取消","description":"取消を選択します。"}]}'
 $visualDrafts = ConvertFrom-MbCopilotStepAnswer -Answer (Get-MbStepAnswerJson -Text $visualBody) -PacketSteps $packet
-Add-Result ([string]$visualDrafts[0].targetCandidateId -eq 'video-diff-1') '列挙した視覚候補IDを受け取る'
+Add-Result ([string]$visualDrafts[0].targetCandidateId -eq 'video-diff-2') '列挙した視覚候補IDを受け取る'
 Add-Result ($visualDrafts[0].visualConfident -eq $true -and [string]$visualDrafts[0].zoom -eq 'focus') '枠の確信度と拡大方針を受け取る'
+Add-Result ([string]$visualDrafts[0].clickLabel -eq '取消') 'Copilotが選んだ候補の名前を確認画面へ返す'
+Add-Result ([Math]::Abs([double]$visualDrafts[0].targetRect.x1 - 0.5) -lt 0.001 -and
+    -not [string]::IsNullOrWhiteSpace([string]$visualDrafts[0].imageId)) '選んだ赤枠と元画像を確認画面へ返す'
 $unknownVisualBody = '{"steps":[{"id":"' + $targetId + '","targetCandidateId":"made-up","zoom":"focus","visualConfident":true,"title":"申請","description":"申請を選択します。"}]}'
 $unknownVisualDrafts = ConvertFrom-MbCopilotStepAnswer -Answer (Get-MbStepAnswerJson -Text $unknownVisualBody) -PacketSteps $packet
 Add-Result ([string]::IsNullOrWhiteSpace([string]$unknownVisualDrafts[0].targetCandidateId) -and -not $unknownVisualDrafts[0].visualConfident) '一覧にない候補IDを拒否する'

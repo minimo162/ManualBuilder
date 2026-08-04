@@ -1535,6 +1535,12 @@ kbd {
   font-weight: 700;
 }
 
+.empty-state__icon--record {
+  padding-left: 0;
+  color: #fff;
+  font-size: 18px;
+}
+
 .empty-state h2 {
   margin: 14px 0 4px;
   font-size: clamp(20px, 2.2vw, 26px);
@@ -1635,6 +1641,12 @@ kbd {
 .empty-state__button {
   min-height: 40px;
   margin-top: 9px;
+}
+
+.empty-state__button small {
+  margin-left: 5px;
+  font-size: 10px;
+  font-weight: 400;
 }
 
 .drop-target {
@@ -3323,6 +3335,53 @@ kbd {
   min-width: 0;
 }
 
+.copilot-draft__visual {
+  width: min(100%, 440px);
+  padding: 0;
+  color: var(--text-muted);
+  background: transparent;
+  border: 0;
+  font-size: 12px;
+  text-align: left;
+  cursor: zoom-in;
+}
+
+.copilot-draft__visual-stage {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  margin-bottom: 5px;
+  background: var(--surface-inset);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+
+.copilot-draft__visual img,
+.copilot-draft__visual-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.copilot-draft__visual img {
+  object-fit: contain;
+}
+
+.copilot-draft__visual-overlay {
+  pointer-events: none;
+}
+
+.copilot-draft__target-box {
+  position: absolute;
+  box-sizing: border-box;
+  border: 3px solid #d92d20;
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.8);
+}
+
 .copilot-draft__flags {
   display: flex;
   flex-wrap: wrap;
@@ -3383,42 +3442,77 @@ kbd {
 }
 
 /* 記録した操作の確認一覧。サムネイルで押し間違いを見分けられるようにする。 */
-.recorder-mode-options {
-  display: grid;
-  gap: 8px;
+.recorder-scope {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   margin: 14px 0;
-}
-
-.recorder-mode-option {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  align-items: start;
-  gap: 10px;
-  padding: 11px 12px;
-  border: 1px solid var(--border);
+  padding: 12px 14px;
+  border: 1px solid var(--accent);
   border-radius: 8px;
-  cursor: pointer;
-}
-
-.recorder-mode-option:has(input:checked) {
-  border-color: var(--accent);
   background: var(--accent-soft, rgba(20, 92, 170, 0.08));
 }
 
-.recorder-mode-option span {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.recorder-mode-option small {
+.recorder-scope span {
   color: var(--text-muted);
-  line-height: 1.5;
+  font-size: 13px;
+  line-height: 1.6;
 }
 
-.recorder-mode-option.is-disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
+.recorder-flow {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin: 0 0 16px;
+  padding: 0;
+  list-style: none;
+}
+
+.recorder-flow li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 8px 10px;
+  color: var(--text-muted);
+  background: var(--surface-inset);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.recorder-flow li span {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  background: var(--surface);
+  border-radius: 50%;
+  font-size: 11px;
+}
+
+.recorder-flow li.is-current {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.recorder-flow li.is-done {
+  color: var(--text-2);
+}
+
+.recorder-flow li.is-done span::before {
+  content: "✓";
+}
+
+.recorder-flow li.is-done span {
+  font-size: 0;
+}
+
+.recorder-flow li.is-done span::before {
+  font-size: 12px;
 }
 
 .recorder-list {
@@ -3510,4 +3604,34 @@ kbd {
 .copilot-flag--kind {
   color: #244a7a;
   background: rgba(58, 91, 160, 0.14);
+}
+
+@media (max-width: 620px) {
+  .recorder-flow {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .recorder-flow li {
+    padding: 6px 8px;
+  }
+
+  .recorder-event {
+    grid-template-columns: auto 84px 1fr;
+    gap: 8px;
+  }
+
+  .recorder-event__shot {
+    width: 84px;
+    height: 48px;
+  }
+
+  .copilot-draft {
+    grid-template-columns: 1fr;
+  }
+
+  .copilot-draft__accept {
+    flex-direction: row;
+    justify-content: flex-start;
+  }
 }

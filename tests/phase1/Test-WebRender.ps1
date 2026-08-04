@@ -121,19 +121,19 @@ function New-MbTestProject {
 }
 
 $emptyWorkspaceHtml = ConvertTo-MbWorkspaceHtml -Project (New-MbTestProject -Steps @()) -Token 'testtoken'
-Assert-Mb ($emptyWorkspaceHtml -match '録画から手順書を自動作成') '空の画面で主機能を成果が分かる見出しにする'
-Assert-Mb ($emptyWorkspaceHtml -match 'empty-state__main-button[^>]*data-open-video-picker[^>]*>録画ファイルを選ぶ') '空の画面で録画選択を主ボタンにする'
-Assert-Mb (([regex]::Matches($emptyWorkspaceHtml, 'button button--primary[^>]*data-open-video-picker')).Count -eq 1) '空の画面では録画の主ボタンを重複させない'
-Assert-Mb ($emptyWorkspaceHtml -match 'data-record-operations>操作を今から記録') 'ライブ記録をメニュー外から選べる'
-Assert-Mb (([regex]::Matches($emptyWorkspaceHtml, 'data-record-operations>操作を今から記録')).Count -eq 1) '空の画面ではライブ記録の入口を重複させない'
-Assert-Mb ($emptyWorkspaceHtml -match '録画を選ぶ.+場面を自動分割.+Copilotで文章化') '主機能の3段階を最初に示す'
+Assert-Mb ($emptyWorkspaceHtml -match '操作を記録して、手順書を作る') '空の画面で主機能を成果が分かる見出しにする'
+Assert-Mb ($emptyWorkspaceHtml -match 'empty-state__main-button[^>]*data-record-operations[^>]*>操作の記録を開始') '空の画面で操作記録を主ボタンにする'
+Assert-Mb (([regex]::Matches($emptyWorkspaceHtml, 'button button--primary[^>]*data-record-operations')).Count -eq 1) '空の画面では操作記録の主ボタンを重複させない'
+Assert-Mb ($emptyWorkspaceHtml -match 'data-open-video-picker>録画ファイルを取り込む') '既存録画の取り込みを同じ画面から選べる'
+Assert-Mb (([regex]::Matches($emptyWorkspaceHtml, 'data-open-video-picker>録画ファイルを取り込む')).Count -eq 1) '空の画面では既存録画の入口を重複させない'
+Assert-Mb ($emptyWorkspaceHtml -match '操作を記録.+使う操作を確認.+Copilotの提案を確認') '主機能の3段階を最初に示す'
 Assert-Mb ($emptyWorkspaceHtml -match 'accept="video/mp4,video/webm"') '主ボタンから選べる動画形式を制限する'
 
 $filledWorkspaceHtml = ConvertTo-MbWorkspaceHtml -Project (New-MbTestProject -Steps @((New-MbTestStep -AnnotationCount 0))) -Token 'testtoken'
 Assert-Mb ($filledWorkspaceHtml -notmatch 'class="empty-state') '手順がある画面では開始案内を重複表示しない'
-Assert-Mb ($filledWorkspaceHtml -match 'topbar__main-action[^>]*data-open-video-picker[^>]*>録画から手順書を作る') '編集中も主機能へスクロールせず戻れる'
-Assert-Mb (([regex]::Matches($filledWorkspaceHtml, 'button button--primary[^>]*data-open-video-picker')).Count -eq 1) '編集中も録画の主ボタンを重複させない'
-Assert-Mb ($filledWorkspaceHtml -match 'topbar__record-action[^>]*data-record-operations') '編集中も操作記録へメニューを開かず進める'
+Assert-Mb ($filledWorkspaceHtml -match 'topbar__main-action[^>]*data-record-operations[^>]*>操作を記録') '編集中も主機能へスクロールせず戻れる'
+Assert-Mb (([regex]::Matches($filledWorkspaceHtml, 'button button--primary[^>]*data-record-operations')).Count -eq 1) '編集中も操作記録の主ボタンを重複させない'
+Assert-Mb ($filledWorkspaceHtml -match 'topbar__video-action[^>]*data-open-video-picker[^>]*>録画を取り込む') '編集中も既存録画をメニューを開かず取り込める'
 
 Write-Host ''
 Write-Host 'Web rendering tests passed.' -ForegroundColor Green

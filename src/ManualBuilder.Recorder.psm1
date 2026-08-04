@@ -1615,20 +1615,26 @@ function Invoke-MbRecordingLoop {
                 $sameBufferedWindow = $null -ne $preClickWindow -and $null -ne $window -and
                     [long]$preClickWindow.handle -eq [long]$window.handle
                 $bufferedDomTarget = $null
+                $bufferedCachedTarget = $null
                 $bufferTitleMatches = $sameBufferedWindow -and
                     [string]$preClickWindow.title -eq [string]$window.title
                 $canUseBufferedCapture = $null -ne $preClickCapture -and $sameBufferedWindow -and
                     $captureAgeMs -ge 0 -and $captureAgeMs -le $preClickCaptureMaxAgeMs
-                if ($canUseBufferedCapture -and -not $bufferTitleMatches -and
-                    -not [string]::IsNullOrWhiteSpace($DomTargetPath)) {
-                    # タイトルがすでに変わっている場合、遷移前pointerdownを取得できた時だけ
-                    # 古い画面を採用する。自動遷移後に押した別操作へ古い画面を使わない。
-                    for ($domAttempt = 0; $domAttempt -lt 7 -and $null -eq $bufferedDomTarget; $domAttempt++) {
-                        if ($domAttempt -gt 0) { Start-Sleep -Milliseconds 20 }
-                        $bufferedDomTarget = Get-MbDomTargetFromCache -Path $DomTargetPath `
-                            -X ([int]$point.X) -Y ([int]$point.Y) -Window $preClickWindow
+                if ($canUseBufferedCapture -and -not $bufferTitleMatches) {
+                    # 通常のEdgeや標準ダイアログでも、クリック前UIAが同じウィンドウと
+                    # クリック点を示すなら、タイトル変更前の画像を安全に採用できる。
+                    $bufferedCachedTarget = Get-MbUiaTargetFromCache -Path $UiaTargetPath `
+                        -X ([int]$point.X) -Y ([int]$point.Y) -Window $preClickWindow -MaxAgeMs 700
+                    if (-not [string]::IsNullOrWhiteSpace($DomTargetPath)) {
+                        # 旧DOM監視を明示的に使う実験経路ではpointerdownも証拠にできる。
+                        for ($domAttempt = 0; $domAttempt -lt 7 -and $null -eq $bufferedDomTarget; $domAttempt++) {
+                            if ($domAttempt -gt 0) { Start-Sleep -Milliseconds 20 }
+                            $bufferedDomTarget = Get-MbDomTargetFromCache -Path $DomTargetPath `
+                                -X ([int]$point.X) -Y ([int]$point.Y) -Window $preClickWindow
+                        }
                     }
-                    $canUseBufferedCapture = $null -ne $bufferedDomTarget
+                    # 証拠がない古い画面は、自動遷移後に押した次の操作へ誤適用しない。
+                    $canUseBufferedCapture = $null -ne $bufferedDomTarget -or $null -ne $bufferedCachedTarget
                 }
                 if ($canUseBufferedCapture) {
                     # pointerdownを検出した時点では遷移済みでも、同じEdgeウィンドウの
@@ -1659,8 +1665,11 @@ function Invoke-MbRecordingLoop {
                     $domTarget = $target
                     # DOMが取れていてもUIAを代替候補として残す。以前はDOMが誤っていると
                     # UIAを一度も比較せず、その矩形だけがCopilotへ渡っていた。
-                    $cachedTarget = Get-MbUiaTargetFromCache -Path $UiaTargetPath `
-                        -X ([int]$point.X) -Y ([int]$point.Y) -Window $window
+                    $cachedTarget = $bufferedCachedTarget
+                    if ($null -eq $cachedTarget) {
+                        $cachedTarget = Get-MbUiaTargetFromCache -Path $UiaTargetPath `
+                            -X ([int]$point.X) -Y ([int]$point.Y) -Window $window
+                    }
                     $domFileInput = $null -ne $target -and
                         $target.PSObject.Properties.Name -contains 'provider' -and [string]$target.provider -eq 'DOM' -and
                         $target.PSObject.Properties.Name -contains 'inputType' -and [string]$target.inputType -eq 'file'
@@ -1720,7 +1729,6 @@ function Invoke-MbRecordingLoop {
         # 押下が無い巡回だけで低頻度に更新し、撮影中にタイトル／前面ウィンドウが
         # 変わった不安定なフレームは保持しない。
         if (-not $clicked -and -not $leftDown -and -not $rightDown -and
-            -not [string]::IsNullOrWhiteSpace($DomTargetPath) -and
             (([int]$watch.ElapsedMilliseconds - $preClickCaptureAttemptAtMs) -ge $preClickCaptureIntervalMs)) {
             $replacementCapture = $null
             try {

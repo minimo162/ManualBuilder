@@ -250,7 +250,7 @@ function ConvertTo-MbProjectLibraryHtml {
     )
 
     $sb = New-Object System.Text.StringBuilder
-    [void]$sb.AppendLine('<div id="workspace" class="workspace project-library" data-app-version="0.36.0">')
+    [void]$sb.AppendLine('<div id="workspace" class="workspace project-library" data-app-version="0.36.1">')
     [void]$sb.AppendLine('<header class="topbar project-library__topbar"><button type="button" class="brand brand--home" data-project-home hx-post="/api/projects/home" hx-target="#workspace" hx-swap="outerHTML" title="マニュアル一覧" aria-label="マニュアル一覧" aria-current="page"><span class="brand__mark" aria-hidden="true">M</span><span>ManualBuilder</span></button><div class="project-library__topbar-title">マニュアル一覧</div><div></div><div class="topbar__actions"><details class="action-menu topbar-menu"><summary class="icon-button" title="その他" aria-label="その他の操作">…</summary><div class="action-menu__panel action-menu__panel--right"><button type="button" class="menu-command menu-command--danger" hx-post="/api/shutdown" hx-target="body" hx-swap="none" hx-confirm="ManualBuilderを終了しますか？">ManualBuilderを終了</button></div></details></div></header>')
     [void]$sb.AppendLine('<main class="project-library__main">')
     [void]$sb.AppendLine('<section class="project-library__intro"><div><p class="eyebrow">作成したマニュアル</p><h1>マニュアルを選ぶ</h1></div><div class="project-library__actions"><input id="project-package-input" type="file" accept=".zip,application/zip" hidden><button type="button" class="button button--ghost" data-import-project-package>ZIPを取り込む</button><form class="project-create" hx-post="/api/projects/create" hx-target="#workspace" hx-swap="outerHTML"><label><span class="sr-only">新しいマニュアルの名前</span><input type="text" name="title" maxlength="100" placeholder="新しいマニュアルの名前"></label><button type="submit" class="button button--primary">＋ 新規作成</button></form></div></section>')
@@ -288,7 +288,7 @@ function ConvertTo-MbProjectLibraryHtml {
         }
         [void]$sb.AppendLine('</div></details>')
     }
-    [void]$sb.AppendLine('<footer class="project-library__footer"><span>v0.36.0</span></footer></main></div>')
+    [void]$sb.AppendLine('<footer class="project-library__footer"><span>v0.36.1</span></footer></main></div>')
     return $sb.ToString()
 }
 
@@ -310,18 +310,18 @@ function ConvertTo-MbWorkspaceHtml {
     $steps = @($sheet.steps)
     $sb = New-Object System.Text.StringBuilder
 
-    [void]$sb.AppendLine('<div id="workspace" class="workspace" data-app-version="0.36.0" data-revision="' + [int]$Project.revision + '" data-capture-version="' + $CaptureVersion + '">')
+    [void]$sb.AppendLine('<div id="workspace" class="workspace" data-app-version="0.36.1" data-revision="' + [int]$Project.revision + '" data-capture-version="' + $CaptureVersion + '">')
     [void]$sb.AppendLine('<header class="topbar">')
     [void]$sb.AppendLine('<button type="button" class="brand brand--home" data-project-home hx-post="/api/projects/home" hx-target="#workspace" hx-swap="outerHTML" title="マニュアル一覧へ戻る" aria-label="マニュアル一覧へ戻る"><span class="brand__mark" aria-hidden="true">M</span><span>ManualBuilder</span></button>')
     [void]$sb.AppendLine('<label class="project-title editable-name name-field" data-editable-name title="マニュアル名を編集"><span class="sr-only">マニュアル名</span><input type="text" name="title" maxlength="100" value="' + $title + '" aria-label="マニュアル名。入力して変更" hx-post="/api/project/title" hx-trigger="input changed delay:700ms, change" hx-target="#save-status" hx-swap="outerHTML"></label>')
     [void]$sb.AppendLine('<div class="topbar__state">' + (ConvertTo-MbSaveStatusHtml) + (ConvertTo-MbWatchStatusHtml -State $CaptureState -Role $CaptureRole -Directory $CaptureDirectory) + '</div>')
-    $topbarCreateAction = if ($steps.Count -gt 0) { '<button type="button" class="button button--primary topbar__main-action" data-open-video-picker>録画から手順書を作る</button>' } else { '' }
-    $topbarRecordAction = if ($steps.Count -gt 0) { '<button type="button" class="button button--secondary topbar__record-action" data-record-operations>操作を今から記録</button>' } else { '' }
-    [void]$sb.AppendLine('<div class="topbar__actions">' + $topbarCreateAction + $topbarRecordAction + '<details class="action-menu topbar-export"><summary class="button button--secondary" aria-label="手順書を出力">出力</summary><div class="action-menu__panel action-menu__panel--right"><button type="button" class="menu-command" data-export-excel>Excelで作成</button><button type="button" class="menu-command" data-export-word>Wordで作成</button><button type="button" class="menu-command" data-export-html>HTMLで作成</button></div></details><details class="action-menu topbar-menu"><summary class="icon-button" title="その他" aria-label="その他の操作">…</summary><div class="action-menu__panel action-menu__panel--right"><button type="button" class="menu-command" data-copilot-draft>Copilotで手順の文章を作る</button><button type="button" class="menu-command" data-copilot-review>Copilotで文章を整える</button><button type="button" class="menu-command menu-command--danger" hx-post="/api/shutdown" hx-target="body" hx-swap="none" hx-confirm="ManualBuilderを終了しますか？">ManualBuilderを終了</button></div></details></div>')
+    $topbarRecordAction = if ($steps.Count -gt 0) { '<button type="button" class="button button--primary topbar__main-action topbar__record-action" data-record-operations>操作を記録</button>' } else { '' }
+    $topbarVideoAction = if ($steps.Count -gt 0) { '<button type="button" class="button button--secondary topbar__video-action" data-open-video-picker>録画を取り込む</button>' } else { '' }
+    [void]$sb.AppendLine('<div class="topbar__actions">' + $topbarRecordAction + $topbarVideoAction + '<details class="action-menu topbar-export"><summary class="button button--secondary" aria-label="手順書を出力">出力</summary><div class="action-menu__panel action-menu__panel--right"><button type="button" class="menu-command" data-export-excel>Excelで作成</button><button type="button" class="menu-command" data-export-word>Wordで作成</button><button type="button" class="menu-command" data-export-html>HTMLで作成</button></div></details><details class="action-menu topbar-menu"><summary class="icon-button" title="その他" aria-label="その他の操作">…</summary><div class="action-menu__panel action-menu__panel--right"><button type="button" class="menu-command" data-copilot-draft>Copilotで手順の文章を作る</button><button type="button" class="menu-command" data-copilot-review>Copilotで文章を整える</button><button type="button" class="menu-command menu-command--danger" hx-post="/api/shutdown" hx-target="body" hx-swap="none" hx-confirm="ManualBuilderを終了しますか？">ManualBuilderを終了</button></div></details></div>')
     [void]$sb.AppendLine('</header>')
 
     [void]$sb.AppendLine('<div class="app-layout">')
-    [void]$sb.AppendLine('<aside class="sidebar">' + (Render-MbSheetNavigation -Project $Project) + (Render-MbStepNavigation -Sheet $sheet -Project $Project) + '<div class="sidebar__footer"><span class="sidebar__version">v0.36.0</span></div></aside>')
+    [void]$sb.AppendLine('<aside class="sidebar">' + (Render-MbSheetNavigation -Project $Project) + (Render-MbStepNavigation -Sheet $sheet -Project $Project) + '<div class="sidebar__footer"><span class="sidebar__version">v0.36.1</span></div></aside>')
     [void]$sb.AppendLine('<main class="editor">')
     # 編集画面の見出しは入力欄なので、文書構造としての見出しが無い。読み上げの目次から
     # 何を編集中か分かるよう、画面には出さない h1 を置く。
@@ -344,7 +344,7 @@ function ConvertTo-MbWorkspaceHtml {
     [void]$sb.AppendLine('<div class="editor-import-inputs"><input id="image-file-input" type="file" accept="image/png,image/jpeg,image/bmp" multiple hidden><input id="replacement-image-file-input" type="file" accept="image/png,image/jpeg,image/bmp" hidden><input id="video-file-input" type="file" accept="video/mp4,video/webm" hidden></div>')
     [void]$sb.AppendLine('<section class="steps" aria-label="手順一覧">')
     if ($steps.Count -eq 0) {
-        [void]$sb.AppendLine('<div class="empty-state drop-target"><p class="empty-state__eyebrow">おすすめ</p><div class="empty-state__icon" aria-hidden="true">▶</div><h2>録画から手順書を自動作成</h2><p class="empty-state__lead">録画を場面ごとに分け、Copilotが手順名と説明の下書きを作ります。</p><ol class="empty-state__flow" aria-label="作成の流れ"><li><span>1</span>録画を選ぶ</li><li><span>2</span>場面を自動分割</li><li><span>3</span>Copilotで文章化</li></ol><button type="button" class="button button--primary empty-state__main-button" data-open-video-picker>録画ファイルを選ぶ <small>mp4・webm</small></button><p class="empty-state__privacy">動画全体はCopilotへ送らず、抽出した場面の画像だけを使います。</p><div class="empty-state__alternatives"><span>ほかの作り方</span><div class="empty-state__actions"><button type="button" class="button button--secondary empty-state__button" data-record-operations>操作を今から記録</button><button type="button" class="button button--ghost empty-state__button" data-open-image-picker>画像を追加</button></div><p>画像の貼り付け・ドラッグ＆ドロップにも対応しています。</p></div></div>')
+        [void]$sb.AppendLine('<div class="empty-state drop-target"><p class="empty-state__eyebrow">最短の作り方</p><div class="empty-state__icon empty-state__icon--record" aria-hidden="true">●</div><h2>操作を記録して、手順書を作る</h2><p class="empty-state__lead">クリックした時の画面と赤枠候補を保存し、Copilotが候補を比較して文章の下書きを提案します。</p><ol class="empty-state__flow" aria-label="作成の流れ"><li><span>1</span>操作を記録</li><li><span>2</span>使う操作を確認</li><li><span>3</span>Copilotの提案を確認</li></ol><button type="button" class="button button--primary empty-state__main-button" data-record-operations>操作の記録を開始</button><p class="empty-state__privacy">不要な操作と合わない赤枠は確認して外せます。文章化にはMicrosoft 365 Copilotへのサインインが必要です。</p><div class="empty-state__alternatives"><span>すでに録画がある場合</span><div class="empty-state__actions"><button type="button" class="button button--secondary empty-state__button" data-open-video-picker>録画ファイルを取り込む <small>mp4・webm</small></button><button type="button" class="button button--ghost empty-state__button" data-open-image-picker>画像から作る</button></div><p>録画は自動で場面分割します。動画全体をCopilotへ送らず、抽出した画像だけを使います。</p></div></div>')
     } else {
         for ($i = 0; $i -lt $steps.Count; $i++) {
             $canUndo = $UndoImageStepIds -contains [string]$steps[$i].id
