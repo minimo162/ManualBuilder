@@ -14,8 +14,9 @@
 #     寿命管理も要らず、人間の操作速度には十分間に合う。
 #
 #   キーの文字は記録しない。
-#     パスワードや個人情報をそのまま拾ってしまうため。「入力があった」ことと
-#     「どの入力欄か」（UIAのフォーカス要素の名前）だけを見る。
+#     GetAsyncKeyStateからは「入力があった」ことだけを見て、文字列へ変換しない。
+#     ただし画面に表示された文字はスクリーンショットへ残し、必要な箇所だけ利用者が
+#     取り込み後の画像編集で黒塗りする。
 #
 #   プロセスを DPI 認識にする。
 #     これをしないと、高DPI環境で GetCursorPos や CopyFromScreen が仮想化された座標を
@@ -229,13 +230,14 @@ function Test-MbPointWithinElementInfo {
     param(
         [AllowNull()]$Info,
         [Parameter(Mandatory = $true)][double]$X,
-        [Parameter(Mandatory = $true)][double]$Y
+        [Parameter(Mandatory = $true)][double]$Y,
+        [double]$Tolerance = 1.0
     )
     if (-not (Test-MbUsableElementInfo -Info $Info)) { return $false }
     $right = [double]$Info.left + [double]$Info.width
     $bottom = [double]$Info.top + [double]$Info.height
-    return ($X -ge ([double]$Info.left - 1.0) -and $X -le ($right + 1.0) -and
-        $Y -ge ([double]$Info.top - 1.0) -and $Y -le ($bottom + 1.0))
+    return ($X -ge ([double]$Info.left - $Tolerance) -and $X -le ($right + $Tolerance) -and
+        $Y -ge ([double]$Info.top - $Tolerance) -and $Y -le ($bottom + $Tolerance))
 }
 
 # 同じ点に重なる候補から、実際に操作できる最小の要素を選ぶ。
@@ -250,7 +252,7 @@ function Select-MbUiaTargetInfo {
     $best = $null
     $bestArea = [double]::PositiveInfinity
     foreach ($candidate in @($Candidates)) {
-        if (-not (Test-MbPointWithinElementInfo -Info $candidate -X $X -Y $Y)) { continue }
+        if (-not (Test-MbPointWithinElementInfo -Info $candidate -X $X -Y $Y -Tolerance 7.0)) { continue }
         if (-not (Test-MbRecorderInteractiveElementInfo -Info $candidate)) { continue }
 
         $area = [double]$candidate.width * [double]$candidate.height
@@ -265,80 +267,172 @@ function Select-MbUiaTargetInfo {
     return $best
 }
 
+# FromPoint は境界線や文字の隙間では親の Document/Pane を返すことがある。
+# 同じ操作対象の内側を数ピクセルずらして再照会し、各要素の親も Raw/Control の
+# 両方のビューで確認する。DOM全体を1件ずつ歩くより軽く、入れ子の深いWeb UIにも強い。
+function Add-MbUiaPointCandidates {
+    param(
+        [Parameter(Mandatory = $true)]$Candidates,
+        [Parameter(Mandatory = $true)]$Element,
+        [Parameter(Mandatory = $true)][double]$X,
+        [Parameter(Mandatory = $true)][double]$Y
+    )
+
+    foreach ($walker in @(
+        [System.Windows.Automation.TreeWalker]::ControlViewWalker,
+        [System.Windows.Automation.TreeWalker]::RawViewWalker
+    )) {
+        $node = $Element
+        for ($depth = 0; $depth -lt 12 -and $null -ne $node; $depth++) {
+            $info = $null
+            try { $info = Get-MbAutomationElementInfo -Element $node } catch { $info = $null }
+            if (Test-MbPointWithinElementInfo -Info $info -X $X -Y $Y -Tolerance 7.0) {
+                [void]$Candidates.Add($info)
+            }
+            if ($null -ne $info -and [string]$info.controlType -eq 'ControlType.Window') { break }
+            try { $node = $walker.GetParent($node) } catch { $node = $null }
+        }
+    }
+}
+
+# FromPoint がページ全体を返した場合は、標準の操作コントロールだけをUIAプロバイダー側で
+# 絞り込む。前版の「各階層の先頭256兄弟を順に調べる」方式では、長いページの後半や
+# 重なった別枝にあるリンクを見落としていた。非表示要素を除くことで照会量も抑える。
+function Add-MbUiaInteractiveDescendantCandidates {
+    param(
+        [Parameter(Mandatory = $true)]$Candidates,
+        [Parameter(Mandatory = $true)]$Root,
+        [Parameter(Mandatory = $true)][double]$X,
+        [Parameter(Mandatory = $true)][double]$Y
+    )
+
+    try {
+        $types = @(
+            [System.Windows.Automation.ControlType]::Button,
+            [System.Windows.Automation.ControlType]::MenuItem,
+            [System.Windows.Automation.ControlType]::TabItem,
+            [System.Windows.Automation.ControlType]::ListItem,
+            [System.Windows.Automation.ControlType]::TreeItem,
+            [System.Windows.Automation.ControlType]::CheckBox,
+            [System.Windows.Automation.ControlType]::RadioButton,
+            [System.Windows.Automation.ControlType]::ComboBox,
+            [System.Windows.Automation.ControlType]::Hyperlink,
+            [System.Windows.Automation.ControlType]::SplitButton,
+            [System.Windows.Automation.ControlType]::Edit,
+            [System.Windows.Automation.ControlType]::DataItem
+        )
+        $conditions = New-Object 'System.Collections.Generic.List[System.Windows.Automation.Condition]'
+        foreach ($type in $types) {
+            [void]$conditions.Add((New-Object System.Windows.Automation.PropertyCondition -ArgumentList @(
+                [System.Windows.Automation.AutomationElement]::ControlTypeProperty, $type
+            )))
+        }
+        $typeCondition = [System.Windows.Automation.OrCondition]::new(
+            [System.Windows.Automation.Condition[]]$conditions.ToArray()
+        )
+        $visibleCondition = New-Object System.Windows.Automation.PropertyCondition -ArgumentList @(
+            [System.Windows.Automation.AutomationElement]::IsOffscreenProperty, $false
+        )
+        $condition = [System.Windows.Automation.AndCondition]::new($typeCondition, $visibleCondition)
+        $elements = $Root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+        foreach ($element in @($elements)) {
+            $info = $null
+            try { $info = Get-MbAutomationElementInfo -Element $element } catch { $info = $null }
+            if (Test-MbPointWithinElementInfo -Info $info -X $X -Y $Y -Tolerance 7.0) {
+                [void]$Candidates.Add($info)
+            }
+        }
+    } catch {
+        # UIAプロバイダーが子孫検索へ応答しないアプリでも、近傍点とフォールバックは使える。
+    }
+}
+
+# UIAを公開しないキャンバス、リモートデスクトップ、独自描画アプリでは正確な矩形を
+# 取得できない。その場合もクリック場所が分かるよう、小さな枠だけを残す。
+# ウィンドウ全体へフォールバックしないため、以前の全画面赤枠は再発しない。
+function New-MbClickPointTargetInfo {
+    param(
+        [Parameter(Mandatory = $true)][double]$X,
+        [Parameter(Mandatory = $true)][double]$Y,
+        [AllowNull()]$Window
+    )
+
+    $width = 56.0
+    $height = 36.0
+    $left = $X - ($width / 2.0)
+    $top = $Y - ($height / 2.0)
+    if ($null -ne $Window -and [double]$Window.width -gt 0 -and [double]$Window.height -gt 0) {
+        $minLeft = [double]$Window.left
+        $minTop = [double]$Window.top
+        $maxLeft = $minLeft + [double]$Window.width - $width
+        $maxTop = $minTop + [double]$Window.height - $height
+        $left = [Math]::Max($minLeft, [Math]::Min($maxLeft, $left))
+        $top = [Math]::Max($minTop, [Math]::Min($maxTop, $top))
+    }
+    return [pscustomobject]@{
+        name = ''; controlType = 'ControlType.ClickPoint'; automationId = ''; className = ''
+        left = $left; top = $top; width = $width; height = $height
+        isActionable = $true; isFallback = $true
+    }
+}
+
 # クリックした点にあるコントロールを返す。
 #
 # UIAのFromPointは、多くのアプリでは最も内側の要素を返すが、Chromium系ブラウザーでは
 # ページ全体のDocument/Paneを返すことがある。その場合は点を含む子を下へ掘り、
 # 文字要素が返った場合は親も調べる。最後は操作可能な最小要素だけを採用する。
 function Get-MbUiaTargetAtPoint {
-    param([Parameter(Mandatory = $true)][int]$X, [Parameter(Mandatory = $true)][int]$Y)
+    param(
+        [Parameter(Mandatory = $true)][int]$X,
+        [Parameter(Mandatory = $true)][int]$Y,
+        [AllowNull()]$Window = $null
+    )
 
-    if (-not (Initialize-MbRecorderUia)) { return $null }
+    if (-not (Initialize-MbRecorderUia)) { return (New-MbClickPointTargetInfo -X $X -Y $Y -Window $Window) }
     try {
-        $point = New-Object System.Windows.Point -ArgumentList @([double]$X, [double]$Y)
-        $element = [System.Windows.Automation.AutomationElement]::FromPoint($point)
-        if ($null -eq $element) { return $null }
-
-        $info = Get-MbAutomationElementInfo -Element $element
-        if (-not (Test-MbUsableElementInfo -Info $info)) { return $null }
-
-        $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
         $candidates = New-Object System.Collections.ArrayList
-        if (Test-MbPointWithinElementInfo -Info $info -X $X -Y $Y) {
-            [void]$candidates.Add($info)
+        $root = $null
+        $offsets = @(
+            @(0, 0), @(-3, 0), @(3, 0), @(0, -3), @(0, 3),
+            @(-6, -6), @(6, -6), @(-6, 6), @(6, 6)
+        )
+        foreach ($offset in $offsets) {
+            $samplePoint = New-Object System.Windows.Point -ArgumentList @(
+                [double]($X + [int]$offset[0]), [double]($Y + [int]$offset[1])
+            )
+            $element = $null
+            try { $element = [System.Windows.Automation.AutomationElement]::FromPoint($samplePoint) } catch { $element = $null }
+            if ($null -eq $element) { continue }
+            if ($null -eq $root) { $root = $element }
+            Add-MbUiaPointCandidates -Candidates $candidates -Element $element -X $X -Y $Y
+            $selected = Select-MbUiaTargetInfo -Candidates @($candidates) -X $X -Y $Y
+            if ($null -ne $selected) { return $selected }
         }
 
-        # FromPointが文字などの葉を返したとき、リンクやボタンの親まで調べる。
-        $node = $element
-        for ($depth = 0; $depth -lt 6; $depth++) {
-            $parent = $null
-            try { $parent = $walker.GetParent($node) } catch { $parent = $null }
-            if ($null -eq $parent) { break }
-
-            $parentInfo = $null
-            try { $parentInfo = Get-MbAutomationElementInfo -Element $parent } catch { $parentInfo = $null }
-            if (-not (Test-MbUsableElementInfo -Info $parentInfo)) { break }
-            if ([string]$parentInfo.controlType -eq 'ControlType.Window') { break }
-            if (Test-MbPointWithinElementInfo -Info $parentInfo -X $X -Y $Y) {
-                [void]$candidates.Add($parentInfo)
+        if ($null -ne $root) {
+            # 最初の点がTextなどの葉でも、その配下だけを検索して終わらないよう、
+            # クリック点を含むDocument/Paneまで検索根を引き上げる。
+            $searchRoot = $root
+            $node = $root
+            $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+            for ($depth = 0; $depth -lt 12 -and $null -ne $node; $depth++) {
+                $rootInfo = $null
+                try { $rootInfo = Get-MbAutomationElementInfo -Element $node } catch { $rootInfo = $null }
+                if ($null -ne $rootInfo -and [string]$rootInfo.controlType -in @(
+                    'ControlType.Document', 'ControlType.Pane', 'ControlType.Group'
+                )) { $searchRoot = $node }
+                if ($null -ne $rootInfo -and [string]$rootInfo.controlType -eq 'ControlType.Window') { break }
+                try { $node = $walker.GetParent($node) } catch { $node = $null }
             }
-            $node = $parent
+            Add-MbUiaInteractiveDescendantCandidates -Candidates $candidates -Root $searchRoot -X $X -Y $Y
+            $selected = Select-MbUiaTargetInfo -Candidates @($candidates) -X $X -Y $Y
+            if ($null -ne $selected) { return $selected }
         }
 
-        # FromPointがページ全体を返したとき、クリック点を含む最小の子を選びながら下へ掘る。
-        $node = $element
-        for ($depth = 0; $depth -lt 10; $depth++) {
-            $child = $null
-            try { $child = $walker.GetFirstChild($node) } catch { $child = $null }
-            if ($null -eq $child) { break }
-
-            $nextNode = $null
-            $nextArea = [double]::PositiveInfinity
-            $checked = 0
-            while ($null -ne $child -and $checked -lt 256) {
-                $checked++
-                $childInfo = $null
-                try { $childInfo = Get-MbAutomationElementInfo -Element $child } catch { $childInfo = $null }
-                if (Test-MbPointWithinElementInfo -Info $childInfo -X $X -Y $Y) {
-                    [void]$candidates.Add($childInfo)
-                    $area = [double]$childInfo.width * [double]$childInfo.height
-                    if ($area -lt $nextArea) {
-                        $nextNode = $child
-                        $nextArea = $area
-                    }
-                }
-                try { $child = $walker.GetNextSibling($child) } catch { $child = $null }
-            }
-            if ($null -eq $nextNode) { break }
-            $node = $nextNode
-        }
-
-        # DocumentやPaneしか得られなかった場合はnullにする。
-        # 不確かな画面全体の枠より、赤枠なしのほうが手順として誤解が少ない。
-        return (Select-MbUiaTargetInfo -Candidates @($candidates) -X $X -Y $Y)
+        return (New-MbClickPointTargetInfo -X $X -Y $Y -Window $Window)
     } catch {
-        # 応答しないアプリでは例外になる。記録は止めず、赤枠なしの手順として残す。
-        return $null
+        # 応答しないアプリでも記録は止めず、クリック位置だけは小さな枠で残す。
+        return (New-MbClickPointTargetInfo -X $X -Y $Y -Window $Window)
     }
 }
 
@@ -361,7 +455,7 @@ function Get-MbUiaFocusedElement {
             try { $node = $walker.GetParent($node) } catch { $node = $null }
         }
 
-        # 入力欄を特定できないときにDocument全体を黒塗りしない。
+        # 入力欄を特定できないときにDocument全体を操作対象にしない。
         foreach ($candidate in @($candidates)) {
             if (Test-MbRecorderInteractiveElementInfo -Info $candidate) { return $candidate }
         }
@@ -468,8 +562,7 @@ function Save-MbBitmapRegion {
         [Parameter(Mandatory = $true)]$Region,
         [Parameter(Mandatory = $true)][string]$Path,
         [int]$MaxEdge = 1600,
-        [long]$Quality = 88,
-        [AllowNull()]$RedactTarget = $null
+        [long]$Quality = 88
     )
 
     Initialize-MbRecorderNative
@@ -489,25 +582,6 @@ function Save-MbBitmapRegion {
     try {
         $rectangle = New-Object Drawing.Rectangle -ArgumentList @($left, $top, $width, $height)
         $cropped = $source.Clone($rectangle, $source.PixelFormat)
-
-        # キー入力の内容は読み取らないだけでなく、入力欄に表示された文字も画像へ残さない。
-        # UI Automation の物理座標を、切り出した画像内の座標へ直して入力欄全体を隠す。
-        if ($null -ne $RedactTarget) {
-            $redactLeft = [Math]::Max(0, [int][Math]::Floor([double]$RedactTarget.left - ($left + [int]$origin.left)))
-            $redactTop = [Math]::Max(0, [int][Math]::Floor([double]$RedactTarget.top - ($top + [int]$origin.top)))
-            $redactRight = [Math]::Min($width, [int][Math]::Ceiling([double]$RedactTarget.left + [double]$RedactTarget.width - ($left + [int]$origin.left)))
-            $redactBottom = [Math]::Min($height, [int][Math]::Ceiling([double]$RedactTarget.top + [double]$RedactTarget.height - ($top + [int]$origin.top)))
-            if ($redactRight -gt $redactLeft -and $redactBottom -gt $redactTop) {
-                $redactionGraphics = $null
-                try {
-                    $redactionGraphics = [Drawing.Graphics]::FromImage($cropped)
-                    $redactionGraphics.FillRectangle([Drawing.Brushes]::Black, $redactLeft, $redactTop,
-                        ($redactRight - $redactLeft), ($redactBottom - $redactTop))
-                } finally {
-                    if ($null -ne $redactionGraphics) { try { $redactionGraphics.Dispose() } catch { } }
-                }
-            }
-        }
 
         $output = $cropped
         $longest = [Math]::Max($width, $height)
@@ -666,14 +740,13 @@ function Save-MbRecordingEvent {
         [Parameter(Mandatory = $true)][string]$EventsPath,
         [AllowNull()]$Target,
         [AllowNull()]$Window,
-        [AllowNull()]$RedactTarget = $null,
         [int]$MaxEdge = 1600
     )
 
     $region = Get-MbCaptureRegion -Window $Window -Target $Target
     $fileName = ('event-{0:d3}.jpg' -f $Index)
     $saved = Save-MbBitmapRegion -Capture $Capture -Region $region -Path (Join-Path $EventsDirectory $fileName) `
-        -MaxEdge $MaxEdge -RedactTarget $RedactTarget
+        -MaxEdge $MaxEdge
     # 実際に切り出せた範囲で正規化する。画面の端では要求した範囲より狭くなる。
     $rect = ConvertTo-MbRegionRect -Region $saved -Target $Target
 
@@ -731,6 +804,7 @@ function Invoke-MbRecordingLoop {
     $typingField = $null
     $typingWindow = $null
     $typingCapture = $null
+    $typingCaptureAtMs = 0
     $lastTypingMs = 0
 
     Write-MbRecordingStatus -StatusPath $StatusPath -JobId $JobId -State 'recording' -Count 0 -Message '操作を記録しています'
@@ -751,22 +825,25 @@ function Invoke-MbRecordingLoop {
         $rightWasDown = $rightDown
 
         $typingNow = $false
+        $typingPressed = $false
         foreach ($vk in $typingKeys) {
             $keyState = [int][MbRecorderNative]::GetAsyncKeyState($vk)
-            if ((Test-MbAsyncKeyStateDown -State $keyState) -or (Test-MbAsyncKeyStatePressed -State $keyState)) {
+            $keyPressed = Test-MbAsyncKeyStatePressed -State $keyState
+            if ((Test-MbAsyncKeyStateDown -State $keyState) -or $keyPressed) {
                 $typingNow = $true
-                break
             }
+            if ($keyPressed) { $typingPressed = $true }
         }
         if ($typingNow) {
             if (-not $typingActive) {
                 $typingActive = $true
-                # 入力後に撮ると、文字列そのものがスクリーンショットへ残る。
-                # 最初のキーを検出した時点の画面を保持し、保存時には入力欄も黒塗りする。
+                # キーそのものは読まない。入力中の画面だけを保持し、表示された文字を
+                # 残すか隠すかは、取り込み後の画像編集（黒塗り）で利用者が決める。
                 try {
                     $candidateWindow = Get-MbForegroundWindowInfo
                     if (-not (Test-MbIgnoredWindow -Window $candidateWindow -IgnoreTitlePatterns $IgnoreTitlePatterns)) {
                         $typingCapture = Copy-MbScreenBitmap
+                        $typingCaptureAtMs = [int]$watch.ElapsedMilliseconds
                         $typingWindow = $candidateWindow
                         $typingField = Get-MbUiaFocusedElement
                     }
@@ -776,20 +853,45 @@ function Invoke-MbRecordingLoop {
                     $typingWindow = $null
                     $typingField = $null
                 }
+            } elseif ($typingPressed -and (([int]$watch.ElapsedMilliseconds - $typingCaptureAtMs) -ge 120)) {
+                # クリックで画面遷移する直前にも、入力済みの表示がなるべく残るよう更新する。
+                $replacementCapture = $null
+                try {
+                    $replacementCapture = Copy-MbScreenBitmap
+                    if ($null -ne $typingCapture) { try { $typingCapture.bitmap.Dispose() } catch { } }
+                    $typingCapture = $replacementCapture
+                    $replacementCapture = $null
+                    $typingCaptureAtMs = [int]$watch.ElapsedMilliseconds
+                } catch {
+                    if ($null -ne $replacementCapture) { try { $replacementCapture.bitmap.Dispose() } catch { } }
+                }
             }
             $lastTypingMs = [int]$watch.ElapsedMilliseconds
         }
 
-        # 入力が途切れたか、次のクリックが来たら、保持していた入力開始時の画面を1手順にする。
+        # 入力が途切れたか、次のクリックが来たら、保持していた最新の入力画面を1手順にする。
         $typingFinished = $typingActive -and ($clicked -or (([int]$watch.ElapsedMilliseconds - $lastTypingMs) -ge $TypingIdleMs))
         if ($typingFinished) {
             $typingActive = $false
             try {
+                # 待機で入力が完了した場合は、確定後の文字が見える最新画面へ更新する。
+                # クリックで完了した場合は画面遷移後を撮らないよう、最後の入力時点を使う。
+                if (-not $clicked -and $null -ne $typingCapture) {
+                    $replacementCapture = $null
+                    try {
+                        $replacementCapture = Copy-MbScreenBitmap
+                        $typingCapture.bitmap.Dispose()
+                        $typingCapture = $replacementCapture
+                        $replacementCapture = $null
+                    } catch {
+                        if ($null -ne $replacementCapture) { try { $replacementCapture.bitmap.Dispose() } catch { } }
+                    }
+                }
                 if ($null -ne $typingCapture -and $index -lt $MaxEvents) {
                     $index++
                     $record = Save-MbRecordingEvent -Capture $typingCapture -Index $index -ElapsedMs ([int]$watch.ElapsedMilliseconds) `
                         -Kind 'input' -EventsDirectory $EventsDirectory -EventsPath $EventsPath -Target $typingField `
-                        -Window $typingWindow -RedactTarget $typingField
+                        -Window $typingWindow
                     $lastTarget = [string]$record.targetName
                 }
             } catch {
@@ -800,6 +902,7 @@ function Invoke-MbRecordingLoop {
             $typingField = $null
             $typingWindow = $null
             $typingCapture = $null
+            $typingCaptureAtMs = 0
         }
 
         if ($clicked -and $index -lt $MaxEvents) {
@@ -811,7 +914,7 @@ function Invoke-MbRecordingLoop {
                 [void][MbRecorderNative]::GetCursorPos([ref]$point)
                 $window = Get-MbForegroundWindowInfo
                 if (-not (Test-MbIgnoredWindow -Window $window -IgnoreTitlePatterns $IgnoreTitlePatterns)) {
-                    $target = Get-MbUiaTargetAtPoint -X ([int]$point.X) -Y ([int]$point.Y)
+                    $target = Get-MbUiaTargetAtPoint -X ([int]$point.X) -Y ([int]$point.Y) -Window $window
                     $index++
                     $clickKind = if ($rightClicked) { 'right-click' } else { 'click' }
                     $record = Save-MbRecordingEvent -Capture $capture -Index $index -ElapsedMs ([int]$watch.ElapsedMilliseconds) `
@@ -833,13 +936,13 @@ function Invoke-MbRecordingLoop {
         Start-Sleep -Milliseconds $PollIntervalMs
     }
 
-    # 停止要求が入力の途中で届いても、保持していた入力前の画面を最後の1手順として残す。
+    # 停止要求が入力の途中で届いても、保持していた入力画面を最後の1手順として残す。
     if ($typingActive -and $null -ne $typingCapture -and $index -lt $MaxEvents) {
         try {
             $index++
             $record = Save-MbRecordingEvent -Capture $typingCapture -Index $index -ElapsedMs ([int]$watch.ElapsedMilliseconds) `
                 -Kind 'input' -EventsDirectory $EventsDirectory -EventsPath $EventsPath -Target $typingField `
-                -Window $typingWindow -RedactTarget $typingField
+                -Window $typingWindow
             $lastTarget = [string]$record.targetName
         } catch {
             # 最後の1件に失敗しても、それまでの記録は利用できる。
@@ -872,6 +975,7 @@ Export-ModuleMember -Function @(
     'Get-MbUiaTargetAtPoint',
     'Get-MbUiaFocusedElement',
     'Select-MbUiaTargetInfo',
+    'New-MbClickPointTargetInfo',
     'Get-MbForegroundWindowInfo',
     'Get-MbVirtualScreenBounds',
     'Get-MbCaptureRegion',
