@@ -168,31 +168,108 @@ function Get-MbAutomationElementInfo {
 
     $current = $Element.Current
     $rect = $current.BoundingRectangle
+    $controlType = [string]$current.ControlType.ProgrammaticName
+    $isActionable = $script:MbRecorderInteractiveTypes -contains $controlType
+
+    # Chromium系ブラウザーや独自業務アプリでは、リンクやボタンがText/Pane/Customとして
+    # 公開されても InvokePattern などを持つことがある。種類だけでなく操作パターンも見る。
+    # ただし全要素への個別プロパティ照会は遅いため、候補になり得る種類だけを1回で調べる。
+    $patternCandidateTypes = @('ControlType.Text', 'ControlType.Pane', 'ControlType.Custom', 'ControlType.Image', 'ControlType.Group')
+    if (-not $isActionable -and $patternCandidateTypes -contains $controlType) {
+        $actionPatternNames = @(
+            'InvokePatternIdentifiers.Pattern',
+            'SelectionItemPatternIdentifiers.Pattern',
+            'TogglePatternIdentifiers.Pattern',
+            'ExpandCollapsePatternIdentifiers.Pattern',
+            'RangeValuePatternIdentifiers.Pattern'
+        )
+        try {
+            foreach ($pattern in @($Element.GetSupportedPatterns())) {
+                if ($actionPatternNames -contains [string]$pattern.ProgrammaticName) {
+                    $isActionable = $true
+                    break
+                }
+            }
+        } catch { }
+    }
+
     return [pscustomobject]@{
-        name        = [string]$current.Name
-        controlType = [string]$current.ControlType.ProgrammaticName
+        name         = [string]$current.Name
+        controlType  = $controlType
         automationId = [string]$current.AutomationId
-        className   = [string]$current.ClassName
-        left        = [double]$rect.Left
-        top         = [double]$rect.Top
-        width       = [double]$rect.Width
-        height      = [double]$rect.Height
+        className    = [string]$current.ClassName
+        left         = [double]$rect.Left
+        top          = [double]$rect.Top
+        width        = [double]$rect.Width
+        height       = [double]$rect.Height
+        isActionable = $isActionable
     }
 }
 
 function Test-MbUsableElementInfo {
     param([AllowNull()]$Info)
     if ($null -eq $Info) { return $false }
+    foreach ($value in @([double]$Info.left, [double]$Info.top, [double]$Info.width, [double]$Info.height)) {
+        if ([double]::IsNaN($value) -or [double]::IsInfinity($value)) { return $false }
+    }
     if ([double]$Info.width -le 0 -or [double]$Info.height -le 0) { return $false }
-    if ([double]::IsInfinity([double]$Info.left) -or [double]::IsInfinity([double]$Info.top)) { return $false }
     return $true
+}
+
+function Test-MbRecorderInteractiveElementInfo {
+    param([AllowNull()]$Info)
+    if (-not (Test-MbUsableElementInfo -Info $Info)) { return $false }
+    if ($Info.PSObject.Properties.Name -contains 'isActionable') {
+        return [bool]$Info.isActionable
+    }
+    return $script:MbRecorderInteractiveTypes -contains [string]$Info.controlType
+}
+
+function Test-MbPointWithinElementInfo {
+    param(
+        [AllowNull()]$Info,
+        [Parameter(Mandatory = $true)][double]$X,
+        [Parameter(Mandatory = $true)][double]$Y
+    )
+    if (-not (Test-MbUsableElementInfo -Info $Info)) { return $false }
+    $right = [double]$Info.left + [double]$Info.width
+    $bottom = [double]$Info.top + [double]$Info.height
+    return ($X -ge ([double]$Info.left - 1.0) -and $X -le ($right + 1.0) -and
+        $Y -ge ([double]$Info.top - 1.0) -and $Y -le ($bottom + 1.0))
+}
+
+# 同じ点に重なる候補から、実際に操作できる最小の要素を選ぶ。
+# 名前は操作説明の手がかりだが、名前が空でもボタンの矩形は赤枠として有用なので除外しない。
+function Select-MbUiaTargetInfo {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Candidates,
+        [Parameter(Mandatory = $true)][double]$X,
+        [Parameter(Mandatory = $true)][double]$Y
+    )
+
+    $best = $null
+    $bestArea = [double]::PositiveInfinity
+    foreach ($candidate in @($Candidates)) {
+        if (-not (Test-MbPointWithinElementInfo -Info $candidate -X $X -Y $Y)) { continue }
+        if (-not (Test-MbRecorderInteractiveElementInfo -Info $candidate)) { continue }
+
+        $area = [double]$candidate.width * [double]$candidate.height
+        $preferNamed = ($area -eq $bestArea -and $null -ne $best -and
+            [string]::IsNullOrWhiteSpace([string]$best.name) -and
+            -not [string]::IsNullOrWhiteSpace([string]$candidate.name))
+        if ($area -lt $bestArea -or $preferNamed) {
+            $best = $candidate
+            $bestArea = $area
+        }
+    }
+    return $best
 }
 
 # クリックした点にあるコントロールを返す。
 #
-# FromPoint は最も内側の要素を返すため、ボタンの中の文字だけが取れることがある。
-# 名前が空だったり、操作できない種類だったりしたら、操作できる親まで数段だけ遡る。
-# 遡りすぎるとウィンドウ全体が赤枠になるので、上限を設ける。
+# UIAのFromPointは、多くのアプリでは最も内側の要素を返すが、Chromium系ブラウザーでは
+# ページ全体のDocument/Paneを返すことがある。その場合は点を含む子を下へ掘り、
+# 文字要素が返った場合は親も調べる。最後は操作可能な最小要素だけを採用する。
 function Get-MbUiaTargetAtPoint {
     param([Parameter(Mandatory = $true)][int]$X, [Parameter(Mandatory = $true)][int]$Y)
 
@@ -205,33 +282,62 @@ function Get-MbUiaTargetAtPoint {
         $info = Get-MbAutomationElementInfo -Element $element
         if (-not (Test-MbUsableElementInfo -Info $info)) { return $null }
 
-        $isInteractive = $script:MbRecorderInteractiveTypes -contains [string]$info.controlType
-        $hasName = -not [string]::IsNullOrWhiteSpace([string]$info.name)
-        if ($isInteractive -and $hasName) { return $info }
-
         $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+        $candidates = New-Object System.Collections.ArrayList
+        if (Test-MbPointWithinElementInfo -Info $info -X $X -Y $Y) {
+            [void]$candidates.Add($info)
+        }
+
+        # FromPointが文字などの葉を返したとき、リンクやボタンの親まで調べる。
         $node = $element
-        $best = $info
-        for ($depth = 0; $depth -lt 3; $depth++) {
+        for ($depth = 0; $depth -lt 6; $depth++) {
             $parent = $null
             try { $parent = $walker.GetParent($node) } catch { $parent = $null }
             if ($null -eq $parent) { break }
+
             $parentInfo = $null
             try { $parentInfo = Get-MbAutomationElementInfo -Element $parent } catch { $parentInfo = $null }
             if (-not (Test-MbUsableElementInfo -Info $parentInfo)) { break }
-            # ウィンドウそのものまで来たら、それは操作対象ではない。
             if ([string]$parentInfo.controlType -eq 'ControlType.Window') { break }
-
-            $parentInteractive = $script:MbRecorderInteractiveTypes -contains [string]$parentInfo.controlType
-            $parentHasName = -not [string]::IsNullOrWhiteSpace([string]$parentInfo.name)
-            if ($parentInteractive -and $parentHasName) { return $parentInfo }
-            # 名前が取れただけでも、名前なしの葉よりは手がかりになる。
-            if ($parentHasName -and -not $hasName) { $best = $parentInfo; $hasName = $true }
+            if (Test-MbPointWithinElementInfo -Info $parentInfo -X $X -Y $Y) {
+                [void]$candidates.Add($parentInfo)
+            }
             $node = $parent
         }
-        return $best
+
+        # FromPointがページ全体を返したとき、クリック点を含む最小の子を選びながら下へ掘る。
+        $node = $element
+        for ($depth = 0; $depth -lt 10; $depth++) {
+            $child = $null
+            try { $child = $walker.GetFirstChild($node) } catch { $child = $null }
+            if ($null -eq $child) { break }
+
+            $nextNode = $null
+            $nextArea = [double]::PositiveInfinity
+            $checked = 0
+            while ($null -ne $child -and $checked -lt 256) {
+                $checked++
+                $childInfo = $null
+                try { $childInfo = Get-MbAutomationElementInfo -Element $child } catch { $childInfo = $null }
+                if (Test-MbPointWithinElementInfo -Info $childInfo -X $X -Y $Y) {
+                    [void]$candidates.Add($childInfo)
+                    $area = [double]$childInfo.width * [double]$childInfo.height
+                    if ($area -lt $nextArea) {
+                        $nextNode = $child
+                        $nextArea = $area
+                    }
+                }
+                try { $child = $walker.GetNextSibling($child) } catch { $child = $null }
+            }
+            if ($null -eq $nextNode) { break }
+            $node = $nextNode
+        }
+
+        # DocumentやPaneしか得られなかった場合はnullにする。
+        # 不確かな画面全体の枠より、赤枠なしのほうが手順として誤解が少ない。
+        return (Select-MbUiaTargetInfo -Candidates @($candidates) -X $X -Y $Y)
     } catch {
-        # 応答しないアプリでは例外になる。記録は止めず、名前なしの手順として残す。
+        # 応答しないアプリでは例外になる。記録は止めず、赤枠なしの手順として残す。
         return $null
     }
 }
@@ -241,9 +347,25 @@ function Get-MbUiaFocusedElement {
     try {
         $element = [System.Windows.Automation.AutomationElement]::FocusedElement
         if ($null -eq $element) { return $null }
-        $info = Get-MbAutomationElementInfo -Element $element
-        if (-not (Test-MbUsableElementInfo -Info $info)) { return $null }
-        return $info
+
+        $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+        $candidates = New-Object System.Collections.ArrayList
+        $node = $element
+        for ($depth = 0; $depth -lt 6 -and $null -ne $node; $depth++) {
+            $info = $null
+            try { $info = Get-MbAutomationElementInfo -Element $node } catch { $info = $null }
+            if (Test-MbUsableElementInfo -Info $info) {
+                [void]$candidates.Add($info)
+            }
+            if ($null -ne $info -and [string]$info.controlType -eq 'ControlType.Window') { break }
+            try { $node = $walker.GetParent($node) } catch { $node = $null }
+        }
+
+        # 入力欄を特定できないときにDocument全体を黒塗りしない。
+        foreach ($candidate in @($candidates)) {
+            if (Test-MbRecorderInteractiveElementInfo -Info $candidate) { return $candidate }
+        }
+        return $null
     } catch {
         return $null
     }
@@ -427,8 +549,12 @@ function ConvertTo-MbRegionRect {
     $x2 = & $clamp ((([double]$Target.left + [double]$Target.width) - [double]$Region.left) / $width)
     $y2 = & $clamp ((([double]$Target.top + [double]$Target.height) - [double]$Region.top) / $height)
     if (($x2 - $x1) -lt 0.002 -or ($y2 - $y1) -lt 0.002) { return $null }
-    # ほぼ画面いっぱいの矩形は、ウィンドウ全体を掴んでいる。赤枠にしても意味がない。
-    if (($x2 - $x1) -gt 0.96 -and ($y2 - $y1) -gt 0.96) { return $null }
+    # ページ全体のDocument/Paneを掴んだ場合は赤枠にしない。
+    # ブラウザーの枠やサイドバーを除くと96%未満になるため、従来の閾値では防げなかった。
+    $rectWidth = $x2 - $x1
+    $rectHeight = $y2 - $y1
+    if (($rectWidth -gt 0.82 -and $rectHeight -gt 0.82) -or
+        (($rectWidth * $rectHeight) -gt 0.72)) { return $null }
     return [pscustomobject]@{ x1 = $x1; y1 = $y1; x2 = $x2; y2 = $y2 }
 }
 
@@ -745,6 +871,7 @@ Export-ModuleMember -Function @(
     'Get-MbRecorderCapability',
     'Get-MbUiaTargetAtPoint',
     'Get-MbUiaFocusedElement',
+    'Select-MbUiaTargetInfo',
     'Get-MbForegroundWindowInfo',
     'Get-MbVirtualScreenBounds',
     'Get-MbCaptureRegion',
