@@ -106,7 +106,7 @@ Add-Result (($serverText -match '\$projectReady = \$false') -and ($serverText -m
 Add-Result ($serverText -match '\$storageLayout\.RuntimePath') '二重起動情報をユーザーデータ配下へ置く'
 Add-Result ($serverText -match '\$storageLayout\.ExportJobsRoot') 'Office一時ジョブをユーザーデータ配下へ置く'
 Add-Result (($runCommandText -match '%~dp0src\\Start-ManualBuilderLauncher\.ps1') -and ($runCommandText -notmatch '(?im)^cd /d')) 'UNC共有フォルダーから更新ランチャーを起動できる'
-Add-Result ([string]$appVersionManifest.appVersion -eq '0.34.0') '配布用アプリバージョンを0.34.0へ更新する'
+Add-Result ([string]$appVersionManifest.appVersion -eq '0.34.1') '配布用アプリバージョンを0.34.1へ更新する'
 Add-Result ($workspaceModuleText -notmatch "ManualBuilder\.Project\.psm1'\) -Force") 'WorkspaceがProjectコマンドを強制再読込しない'
 Add-Result ($launcherModuleText -match "'ManualBuilder\\app'") 'アプリ実行コードをLocalApplicationDataへキャッシュする'
 Add-Result ($launcherModuleText -match "@\('src', 'web', 'run\.cmd', 'app-version\.json'\)") 'キャッシュ対象からプロジェクトデータを除外する'
@@ -411,9 +411,16 @@ Add-Result (($recorderModuleText -match '\$domFileInput') -and
     ($recorderModuleText -match '\$useCachedTarget = \[string\]\$cachedTarget\.controlType')) 'Edgeのファイル選択欄はWindowsの内側のボタン矩形を優先する'
 Add-Result (($recorderModuleText -match 'Get-MbDomTargetFromCache') -and
     ($recorderModuleText -match 'Get-MbUiaTargetAtPoint')) 'DOMを優先し、取得できない操作はWindows検出へ戻す'
+Add-Result (($recorderModuleText -match '\$preClickCaptureIntervalMs = 80') -and
+    ($recorderModuleText -match '\$capture = \$preClickCapture') -and
+    ($recorderModuleText -match '\$window = \$preClickWindow')) 'Edgeの遷移前画像・タイトル・DOM対象を同じ時点へ揃える'
+Add-Result (($recorderModuleText -match 'if \(-not \[string\]::IsNullOrWhiteSpace\(\$snapshotTitle\)\)') -and
+    ($recorderModuleText -match '\$windowTitle\.IndexOf\(\$snapshotTitle')) '遷移後ページのタイトルだけで古いDOM対象を許可しない'
 Add-Result (($jsText -match 'data-recorder-mode') -and
     ($jsText -match '記録用Edgeを使う（推奨）') -and
     ($jsText -match 'その他のアプリを記録する')) '記録用Edgeとデスクトップ記録を選べる'
+Add-Result (($jsText -match '専用プロファイルを次回も使い') -and
+    ($jsText -match 'お気に入りや保存パスワード')) '記録用Edgeのプロファイル保持と同期できる項目を案内する'
 Add-Result (($recorderServerText -match 'Get-MbRecorderTargetCrop') -and ($recorderServerText -match 'ControlType\.ClickPoint')) '対象周辺を非破壊で初期表示し対象不明クリックは全体を残す'
 Add-Result ($serverText -match '/api/recorder/start') '操作記録の開始口がある'
 Add-Result ($serverText -match '/api/recorder/import') '記録した操作の取り込み口がある'

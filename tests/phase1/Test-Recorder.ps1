@@ -331,6 +331,39 @@ $farDomSnapshot = [pscustomobject]@{
 }
 Add-Result ($null -eq (ConvertFrom-MbDomSnapshotTarget -Snapshot $farDomSnapshot -X 1000 -Y 500)) 'クリック点と離れたDOM矩形を誤適用しない'
 
+# ページ遷移直後は、現在ページのタイトルとpointerdown時のタイトルが異なる。
+# 遷移前画像には旧対象を使えるが、遷移後画像へ旧矩形を重ねてはならない。
+$domCachePath = Join-Path $env:TEMP ('ManualBuilder-DomTarget-' + [guid]::NewGuid().ToString('N') + '.json')
+try {
+    $epoch = [DateTime]::new(1970, 1, 1, 0, 0, 0, [DateTimeKind]::Utc)
+    $pointerAt = [long](([DateTime]::UtcNow - $epoch).TotalMilliseconds)
+    $transitionPointer = [pscustomobject]@{
+        source = 'pointerdown'; at = $pointerAt; pageTitle = '申請入力'; pageUrl = 'https://example.test/input'
+        name = '確認へ'; role = 'button'; tag = 'button'; type = ''
+        clientX = 100.0; clientY = 50.0; screenX = 1000.0; screenY = 500.0; dpr = 1.0
+        rect = [pscustomobject]@{ left = 80.0; top = 40.0; width = 60.0; height = 24.0 }
+    }
+    $transitionCache = [pscustomobject]@{
+        updatedAtUtc = [DateTime]::UtcNow.ToString('o'); cursorX = 1000; cursorY = 500
+        page = [pscustomobject]@{ title = '申請完了'; url = 'https://example.test/done'; pointer = $transitionPointer; hover = $null }
+    }
+    [IO.File]::WriteAllText($domCachePath, ($transitionCache | ConvertTo-Json -Depth 10), (New-Object Text.UTF8Encoding($false)))
+    $beforeTransitionWindow = [pscustomobject]@{
+        handle = 9876; title = '申請入力 - Microsoft Edge'; class = 'Chrome_WidgetWin_1'
+        left = 0; top = 0; width = 1200; height = 800
+    }
+    $afterTransitionWindow = [pscustomobject]@{
+        handle = 9876; title = '申請完了 - Microsoft Edge'; class = 'Chrome_WidgetWin_1'
+        left = 0; top = 0; width = 1200; height = 800
+    }
+    Add-Result ($null -ne (Get-MbDomTargetFromCache -Path $domCachePath -X 1000 -Y 500 -Window $beforeTransitionWindow)) `
+        '遷移前の画像とタイトルにはpointerdown時のDOM対象を使う'
+    Add-Result ($null -eq (Get-MbDomTargetFromCache -Path $domCachePath -X 1000 -Y 500 -Window $afterTransitionWindow)) `
+        '遷移後の画像へ遷移前のDOM矩形を誤適用しない'
+} finally {
+    Remove-Item -LiteralPath $domCachePath -Force -ErrorAction SilentlyContinue
+}
+
 # ---------------------------------------------------------------------
 # 入力の検出に使うキー
 # ---------------------------------------------------------------------

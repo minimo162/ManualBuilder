@@ -1299,11 +1299,17 @@ function Get-MbDomTargetFromCache {
             [Math]::Pow(($expectedX - $X), 2.0) + [Math]::Pow(($expectedY - $Y), 2.0)
         )
         if ($cursorDistance -gt 64.0) { return $null }
-        $titleMatches = [string]::IsNullOrWhiteSpace($pageTitle) -and [string]::IsNullOrWhiteSpace($snapshotTitle)
-        if (-not [string]::IsNullOrWhiteSpace($pageTitle) -and
-            $windowTitle.IndexOf($pageTitle, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $titleMatches = $true }
-        if (-not [string]::IsNullOrWhiteSpace($snapshotTitle) -and
-            $windowTitle.IndexOf($snapshotTitle, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $titleMatches = $true }
+        # pointerdownの直後にページが遷移すると、cache.page.titleは遷移後、
+        # pointer.pageTitleは遷移前になる。現在ページのタイトルだけで許可すると、
+        # 遷移前の矩形を遷移後の画像へ描いてしまうため、snapshot側を必ず優先する。
+        $titleMatches = $false
+        if (-not [string]::IsNullOrWhiteSpace($snapshotTitle)) {
+            $titleMatches = $windowTitle.IndexOf($snapshotTitle, [StringComparison]::OrdinalIgnoreCase) -ge 0
+        } elseif (-not [string]::IsNullOrWhiteSpace($pageTitle)) {
+            $titleMatches = $windowTitle.IndexOf($pageTitle, [StringComparison]::OrdinalIgnoreCase) -ge 0
+        } else {
+            $titleMatches = $true
+        }
         if (-not $titleMatches) {
             return $null
         }
@@ -1399,6 +1405,17 @@ function Invoke-MbRecordingLoop {
     $lastTypingMs = 0
     $lastDomTarget = $null
     $lastDomWindowHandle = 0L
+    # Edgeはpointerdownだけ先に取得できても、直後の画面遷移がスクリーンショットより
+    # 速いことがある。専用Edgeだけ直前の安定画面を保持し、画像・タイトル・DOMを
+    # 同じ時点へ揃える。デスクトップ記録は従来どおりクリック時だけ撮影する。
+    $preClickCapture = $null
+    $preClickWindow = $null
+    $preClickCaptureAtMs = -1000
+    $preClickCaptureAttemptAtMs = -1000
+    $preClickCaptureIntervalMs = 80
+    $preClickCaptureMaxAgeMs = 180
+    $pendingLeftClick = $false
+    $pendingRightClick = $false
 
     Write-MbRecordingStatus -StatusPath $StatusPath -JobId $JobId -State 'recording' -Count 0 -Message '操作を記録しています'
 
@@ -1411,8 +1428,10 @@ function Invoke-MbRecordingLoop {
         $rightState = [int][MbRecorderNative]::GetAsyncKeyState($script:MbVkRightButton)
         $leftDown = Test-MbAsyncKeyStateDown -State $leftState
         $rightDown = Test-MbAsyncKeyStateDown -State $rightState
-        $leftClicked = (Test-MbAsyncKeyStatePressed -State $leftState) -or ($leftDown -and -not $leftWasDown)
-        $rightClicked = (Test-MbAsyncKeyStatePressed -State $rightState) -or ($rightDown -and -not $rightWasDown)
+        $leftClicked = $pendingLeftClick -or (Test-MbAsyncKeyStatePressed -State $leftState) -or ($leftDown -and -not $leftWasDown)
+        $rightClicked = $pendingRightClick -or (Test-MbAsyncKeyStatePressed -State $rightState) -or ($rightDown -and -not $rightWasDown)
+        $pendingLeftClick = $false
+        $pendingRightClick = $false
         $clicked = ($leftClicked -or $rightClicked)
         $leftWasDown = $leftDown
         $rightWasDown = $rightDown
@@ -1506,13 +1525,46 @@ function Invoke-MbRecordingLoop {
         if ($clicked -and $index -lt $MaxEvents) {
             $capture = $null
             try {
-                # 押した瞬間の画面を最優先で確保する。UIAはこのあと。
-                $capture = Copy-MbScreenBitmap
                 $point = New-Object 'MbRecorderNative+POINT'
                 [void][MbRecorderNative]::GetCursorPos([ref]$point)
                 $window = Get-MbForegroundWindowInfo
+                $captureAgeMs = ([int]$watch.ElapsedMilliseconds - $preClickCaptureAtMs)
+                $sameBufferedWindow = $null -ne $preClickWindow -and $null -ne $window -and
+                    [long]$preClickWindow.handle -eq [long]$window.handle
+                $bufferedDomTarget = $null
+                $bufferTitleMatches = $sameBufferedWindow -and
+                    [string]$preClickWindow.title -eq [string]$window.title
+                $canUseBufferedCapture = $null -ne $preClickCapture -and $sameBufferedWindow -and
+                    $captureAgeMs -ge 0 -and $captureAgeMs -le $preClickCaptureMaxAgeMs
+                if ($canUseBufferedCapture -and -not $bufferTitleMatches -and
+                    -not [string]::IsNullOrWhiteSpace($DomTargetPath)) {
+                    # タイトルがすでに変わっている場合、遷移前pointerdownを取得できた時だけ
+                    # 古い画面を採用する。自動遷移後に押した別操作へ古い画面を使わない。
+                    for ($domAttempt = 0; $domAttempt -lt 7 -and $null -eq $bufferedDomTarget; $domAttempt++) {
+                        if ($domAttempt -gt 0) { Start-Sleep -Milliseconds 20 }
+                        $bufferedDomTarget = Get-MbDomTargetFromCache -Path $DomTargetPath `
+                            -X ([int]$point.X) -Y ([int]$point.Y) -Window $preClickWindow
+                    }
+                    $canUseBufferedCapture = $null -ne $bufferedDomTarget
+                }
+                if ($canUseBufferedCapture) {
+                    # pointerdownを検出した時点では遷移済みでも、同じEdgeウィンドウの
+                    # 遷移前画像とタイトルを使う。所有権を移し、次のクリックでは再利用しない。
+                    $capture = $preClickCapture
+                    $window = $preClickWindow
+                    $preClickCapture = $null
+                    $preClickWindow = $null
+                    $preClickCaptureAtMs = -1000
+                } else {
+                    # 別ウィンドウへ切り替えてすぐ押した場合は古い画像を使わない。
+                    if ($null -ne $preClickCapture) { try { $preClickCapture.bitmap.Dispose() } catch { } }
+                    $preClickCapture = $null
+                    $preClickWindow = $null
+                    $preClickCaptureAtMs = -1000
+                    $capture = Copy-MbScreenBitmap
+                }
                 if (-not (Test-MbIgnoredWindow -Window $window -IgnoreTitlePatterns $IgnoreTitlePatterns)) {
-                    $target = $null
+                    $target = $bufferedDomTarget
                     if (-not [string]::IsNullOrWhiteSpace($DomTargetPath)) {
                         # 画面はすでに押下直前で確保済み。Edgeからpointerdown通知が届くまで
                         # 最大約120msだけ待ち、速いマウス移動直後のクリックもDOMで拾う。
@@ -1568,6 +1620,45 @@ function Invoke-MbRecordingLoop {
             }
         }
 
+        # クリックを検出してから撮ると、遷移の速いページでは間に合わない。
+        # 押下が無い巡回だけで低頻度に更新し、撮影中にタイトル／前面ウィンドウが
+        # 変わった不安定なフレームは保持しない。
+        if (-not $clicked -and -not $leftDown -and -not $rightDown -and
+            -not [string]::IsNullOrWhiteSpace($DomTargetPath) -and
+            (([int]$watch.ElapsedMilliseconds - $preClickCaptureAttemptAtMs) -ge $preClickCaptureIntervalMs)) {
+            $replacementCapture = $null
+            try {
+                $preClickCaptureAttemptAtMs = [int]$watch.ElapsedMilliseconds
+                $windowBeforeCapture = Get-MbForegroundWindowInfo
+                $replacementCapture = Copy-MbScreenBitmap
+                $windowAfterCapture = Get-MbForegroundWindowInfo
+                # CopyFromScreen中に短いクリックと遷移が完了しても、その画像を
+                # 「クリック前」として採用せず、押下履歴は次の巡回へ渡す。
+                $leftAfterCapture = [int][MbRecorderNative]::GetAsyncKeyState($script:MbVkLeftButton)
+                $rightAfterCapture = [int][MbRecorderNative]::GetAsyncKeyState($script:MbVkRightButton)
+                $pendingLeftClick = (Test-MbAsyncKeyStatePressed -State $leftAfterCapture) -or
+                    (Test-MbAsyncKeyStateDown -State $leftAfterCapture)
+                $pendingRightClick = (Test-MbAsyncKeyStatePressed -State $rightAfterCapture) -or
+                    (Test-MbAsyncKeyStateDown -State $rightAfterCapture)
+                $stableWindow = $null -ne $windowBeforeCapture -and $null -ne $windowAfterCapture -and
+                    [long]$windowBeforeCapture.handle -eq [long]$windowAfterCapture.handle -and
+                    [string]$windowBeforeCapture.title -eq [string]$windowAfterCapture.title -and
+                    -not $pendingLeftClick -and -not $pendingRightClick
+                if ($stableWindow -and
+                    -not (Test-MbIgnoredWindow -Window $windowBeforeCapture -IgnoreTitlePatterns $IgnoreTitlePatterns)) {
+                    if ($null -ne $preClickCapture) { try { $preClickCapture.bitmap.Dispose() } catch { } }
+                    $preClickCapture = $replacementCapture
+                    $replacementCapture = $null
+                    $preClickWindow = $windowBeforeCapture
+                    $preClickCaptureAtMs = [int]$watch.ElapsedMilliseconds
+                }
+            } catch {
+                # 直前画面を更新できなくても、クリック時の通常撮影へ戻れる。
+            } finally {
+                if ($null -ne $replacementCapture) { try { $replacementCapture.bitmap.Dispose() } catch { } }
+            }
+        }
+
         if (([int]$watch.ElapsedMilliseconds - $lastStatusMs) -ge 400) {
             $lastStatusMs = [int]$watch.ElapsedMilliseconds
             Write-MbRecordingStatus -StatusPath $StatusPath -JobId $JobId -State 'recording' -Count $index `
@@ -1593,6 +1684,10 @@ function Invoke-MbRecordingLoop {
     } elseif ($null -ne $typingCapture) {
         try { $typingCapture.bitmap.Dispose() } catch { }
         $typingCapture = $null
+    }
+    if ($null -ne $preClickCapture) {
+        try { $preClickCapture.bitmap.Dispose() } catch { }
+        $preClickCapture = $null
     }
 
     $reason = 'stopped'
