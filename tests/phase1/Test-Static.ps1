@@ -50,6 +50,7 @@ $required = @(
     'src\ManualBuilder.Recorder.psm1',
     'src\ManualBuilder.RecorderServer.psm1',
     'src\Invoke-ManualBuilderRecorder.ps1',
+    'src\Invoke-ManualBuilderUiaRecorder.ps1',
     'src\ManualBuilder.EdgeRecorder.psm1',
     'src\Invoke-ManualBuilderEdgeRecorder.ps1',
     'src\ManualBuilder.Dictation.psm1',
@@ -105,7 +106,7 @@ Add-Result (($serverText -match '\$projectReady = \$false') -and ($serverText -m
 Add-Result ($serverText -match '\$storageLayout\.RuntimePath') '二重起動情報をユーザーデータ配下へ置く'
 Add-Result ($serverText -match '\$storageLayout\.ExportJobsRoot') 'Office一時ジョブをユーザーデータ配下へ置く'
 Add-Result (($runCommandText -match '%~dp0src\\Start-ManualBuilderLauncher\.ps1') -and ($runCommandText -notmatch '(?im)^cd /d')) 'UNC共有フォルダーから更新ランチャーを起動できる'
-Add-Result ([string]$appVersionManifest.appVersion -eq '0.33.2') '配布用アプリバージョンを0.33.2へ更新する'
+Add-Result ([string]$appVersionManifest.appVersion -eq '0.34.0') '配布用アプリバージョンを0.34.0へ更新する'
 Add-Result ($workspaceModuleText -notmatch "ManualBuilder\.Project\.psm1'\) -Force") 'WorkspaceがProjectコマンドを強制再読込しない'
 Add-Result ($launcherModuleText -match "'ManualBuilder\\app'") 'アプリ実行コードをLocalApplicationDataへキャッシュする'
 Add-Result ($launcherModuleText -match "@\('src', 'web', 'run\.cmd', 'app-version\.json'\)") 'キャッシュ対象からプロジェクトデータを除外する'
@@ -399,8 +400,15 @@ Add-Result (($edgeRecorderModuleText -match '\$delaysMs = @\(0, 25, 50, 100, 200
     ($edgeRecorderModuleText -match 'if \(Test-Path -LiteralPath \$StopPath -PathType Leaf\) \{ Stop-MbRecorderEdge')) '一時的な監視エラーではEdgeを閉じず、明示停止時だけ終了する'
 Add-Result (($edgeRecorderModuleText -match "addEventListener\('pointerdown'") -and
     ($edgeRecorderModuleText -match '__manualBuilderRecorderRead')) '画面遷移前のDOM操作対象を保持する'
+Add-Result (($edgeRecorderModuleText -match "'screenX'") -and
+    ($recorderModuleText -match '\$anchorX = \$snapshotScreenX')) 'Edgeの赤枠はpointerdown時の物理座標へ固定する'
 Add-Result (($recorderServerText -match 'Invoke-ManualBuilderEdgeRecorder\.ps1') -and
     ($recorderServerText -match 'DomTargetPath')) 'DOM監視を画面記録とは別プロセスで動かす'
+Add-Result (($recorderServerText -match 'Invoke-ManualBuilderUiaRecorder\.ps1') -and
+    ($recorderServerText -match 'UiaTargetPath') -and
+    ($recorderModuleText -match 'Get-MbUiaTargetFromCache')) 'Windows操作対象もクリック前に別プロセスで保持する'
+Add-Result (($recorderModuleText -match '\$domFileInput') -and
+    ($recorderModuleText -match '\$useCachedTarget = \[string\]\$cachedTarget\.controlType')) 'Edgeのファイル選択欄はWindowsの内側のボタン矩形を優先する'
 Add-Result (($recorderModuleText -match 'Get-MbDomTargetFromCache') -and
     ($recorderModuleText -match 'Get-MbUiaTargetAtPoint')) 'DOMを優先し、取得できない操作はWindows検出へ戻す'
 Add-Result (($jsText -match 'data-recorder-mode') -and

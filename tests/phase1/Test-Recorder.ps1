@@ -248,6 +248,33 @@ $inferred = Select-MbUiaNamedTargetInfo -Candidates @($page, $namedText) -X 740 
 Add-Result ($null -ne $inferred -and [string]$inferred.name -eq '承認依頼を送信') '操作パターンが無い名前付き要素もクリック位置から補う'
 Add-Result ([bool]$inferred.isInferred) '推定で補った操作対象を識別できる'
 
+# エクスプローラーのフォルダー移動などでクリック後に元要素が消えても、
+# 直前の同じウィンドウ・同じカーソル位置のキャッシュを利用できる。
+$uiaCachePath = Join-Path $env:TEMP ('ManualBuilder-UiaTarget-' + [guid]::NewGuid().ToString('N') + '.json')
+try {
+    $cachedListItem = [pscustomobject]@{
+        name = '請求書'; controlType = 'ControlType.ListItem'; isActionable = $true
+        left = 300.0; top = 220.0; width = 120.0; height = 28.0
+    }
+    $cacheValue = [pscustomobject]@{
+        updatedAtUtc = [DateTime]::UtcNow.ToString('o'); cursorX = 340; cursorY = 234
+        windowHandle = 12345
+        window = [pscustomobject]@{ handle = 12345; title = '請求書'; class = 'CabinetWClass'; left = 0; top = 0; width = 1000; height = 700 }
+        target = $cachedListItem
+    }
+    [IO.File]::WriteAllText($uiaCachePath, ($cacheValue | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding($false)))
+    $cacheWindow = [pscustomobject]@{ handle = 12345; left = 0; top = 0; width = 1000; height = 700 }
+    $cachedTarget = Get-MbUiaTargetFromCache -Path $uiaCachePath -X 342 -Y 235 -Window $cacheWindow
+    Add-Result ($null -ne $cachedTarget -and [string]$cachedTarget.name -eq '請求書' -and
+        [long]$cachedTarget.captureWindow.handle -eq 12345) 'クリック前に保持したWindows操作対象とウィンドウを利用する'
+    $cacheValue.updatedAtUtc = [DateTime]::UtcNow.AddMilliseconds(-800).ToString('o')
+    [IO.File]::WriteAllText($uiaCachePath, ($cacheValue | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding($false)))
+    $otherWindow = [pscustomobject]@{ handle = 54321; left = 0; top = 0; width = 1000; height = 700 }
+    Add-Result ($null -eq (Get-MbUiaTargetFromCache -Path $uiaCachePath -X 342 -Y 235 -Window $otherWindow)) '別ウィンドウのUIAキャッシュを誤適用しない'
+} finally {
+    Remove-Item -LiteralPath $uiaCachePath -Force -ErrorAction SilentlyContinue
+}
+
 $msaaButton = New-MbMsaaElementInfo -Name '保存' -Role 43 -DefaultAction '押す' `
     -Left 820 -Top 540 -Width 96 -Height 32
 Add-Result ([string]$msaaButton.controlType -eq 'ControlType.Button' -and [bool]$msaaButton.isActionable) 'MSAAのボタンを操作対象へ変換する'
@@ -282,6 +309,21 @@ Add-Result ([string]$domTarget.controlType -eq 'ControlType.Button' -and [string
 Add-Result ([Math]::Abs([double]$domTarget.left - 960.0) -lt 0.001 -and
     [Math]::Abs([double]$domTarget.top - 480.0) -lt 0.001 -and
     [Math]::Abs([double]$domTarget.width - 120.0) -lt 0.001) '表示倍率を含むDOM矩形を物理ピクセルへ変換する'
+$anchoredDomSnapshot = [pscustomobject]@{
+    name = '申請する'; role = 'button'; tag = 'button'; type = ''
+    clientX = 100.0; clientY = 50.0; screenX = 980.0; screenY = 490.0; dpr = 2.0
+    rect = [pscustomobject]@{ left = 80.0; top = 40.0; width = 60.0; height = 24.0 }
+}
+$anchoredDomTarget = ConvertFrom-MbDomSnapshotTarget -Snapshot $anchoredDomSnapshot -X 1000 -Y 500
+Add-Result ([Math]::Abs([double]$anchoredDomTarget.left - 940.0) -lt 0.001 -and
+    [Math]::Abs([double]$anchoredDomTarget.top - 470.0) -lt 0.001) 'クリック後にマウスが動いてもpointerdown時のEdge赤枠を維持する'
+$fileDomSnapshot = [pscustomobject]@{
+    name = 'ファイルの選択'; role = ''; tag = 'input'; type = 'file'
+    clientX = 100.0; clientY = 50.0; dpr = 1.0
+    rect = [pscustomobject]@{ left = 80.0; top = 40.0; width = 240.0; height = 24.0 }
+}
+$fileDomTarget = ConvertFrom-MbDomSnapshotTarget -Snapshot $fileDomSnapshot -X 1000 -Y 500
+Add-Result ([string]$fileDomTarget.inputType -eq 'file') 'DOMのファイル選択欄を内側のWindowsボタンへ補正できるよう識別する'
 $farDomSnapshot = [pscustomobject]@{
     name = '別の要素'; role = 'link'; tag = 'a'; type = ''
     clientX = 5.0; clientY = 5.0; dpr = 1.0
