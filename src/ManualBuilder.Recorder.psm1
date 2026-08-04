@@ -496,10 +496,37 @@ function Write-MbRecordingStatus {
         jobId = $JobId; state = $State; count = $Count; message = $Message
         lastTarget = $LastTarget; updatedAt = [DateTime]::UtcNow.ToString('o')
     }
-    $temporary = $StatusPath + '.tmp'
-    [IO.File]::WriteAllText($temporary, ($status | ConvertTo-Json -Depth 5), (New-Object Text.UTF8Encoding($false)))
-    [IO.File]::Copy($temporary, $StatusPath, $true)
-    Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+    $temporary = $StatusPath + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+    $backup = $StatusPath + '.' + [guid]::NewGuid().ToString('N') + '.bak'
+    try {
+        [IO.File]::WriteAllText($temporary, ($status | ConvertTo-Json -Depth 5), (New-Object Text.UTF8Encoding($false)))
+
+        # 画面側が進捗を読んでいる瞬間や、ウイルス対策ソフトが短時間ファイルを
+        # 開いた瞬間でも記録全体を止めない。まず同一フォルダー内で書き終え、
+        # 完成したファイルを原子的に差し替える。
+        $delaysMs = @(0, 25, 50, 100, 200, 400, 800)
+        for ($attempt = 0; $attempt -lt $delaysMs.Count; $attempt++) {
+            if ([int]$delaysMs[$attempt] -gt 0) {
+                Start-Sleep -Milliseconds ([int]$delaysMs[$attempt])
+            }
+            try {
+                if ([IO.File]::Exists($StatusPath)) {
+                    [IO.File]::Replace($temporary, $StatusPath, $backup, $true)
+                } else {
+                    [IO.File]::Move($temporary, $StatusPath)
+                }
+                return
+            } catch [IO.IOException] {
+                if ($attempt -eq ($delaysMs.Count - 1)) { throw }
+            } catch [UnauthorizedAccessException] {
+                if ($attempt -eq ($delaysMs.Count - 1)) { throw }
+            }
+        }
+    } finally {
+        foreach ($temporaryFile in @($temporary, $backup)) {
+            Remove-Item -LiteralPath $temporaryFile -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 # 1件ぶんの操作を記録する。押す直前の画面を先に確保してからUIAを引く。
