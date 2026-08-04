@@ -11,23 +11,18 @@ Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Project.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Capture.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Recorder.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Dictation.psm1')
-Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.EdgeRecorder.psm1')
 
 $script:MbRecordingJobsRoot = ''
 $script:MbRecordingScriptRoot = ''
-$script:MbRecordingEdgeProfileRoot = ''
-$script:MbRecordingEdgePort = 9465
 $script:MbRecordingJob = $null
 
 function Initialize-MbRecorderServer {
     param(
         [Parameter(Mandatory = $true)][string]$JobsRoot,
-        [Parameter(Mandatory = $true)][string]$ScriptRoot,
-        [Parameter(Mandatory = $true)][string]$EdgeProfileRoot
+        [Parameter(Mandatory = $true)][string]$ScriptRoot
     )
     $script:MbRecordingJobsRoot = $JobsRoot
     $script:MbRecordingScriptRoot = $ScriptRoot
-    $script:MbRecordingEdgeProfileRoot = $EdgeProfileRoot
 }
 
 function Get-MbRecordingIdleStatus {
@@ -71,18 +66,6 @@ function Read-MbRecordingStatus {
             $status.state = 'failed'
             $status.message = '記録が途中で終わりました。もう一度実行してください。'
         }
-        if ($script:MbRecordingJob.PSObject.Properties.Name -contains 'Mode' -and
-            [string]$script:MbRecordingJob.Mode -eq 'edge' -and
-            $script:MbRecordingJob.PSObject.Properties.Name -contains 'EdgeWorkerProcessId') {
-            $edgeWorkerAlive = $false
-            try {
-                $edgeWorkerAlive = $null -ne (Get-Process -Id ([int]$script:MbRecordingJob.EdgeWorkerProcessId) -ErrorAction SilentlyContinue)
-            } catch { $edgeWorkerAlive = $false }
-            if (-not $edgeWorkerAlive) {
-                $status | Add-Member -NotePropertyName 'warning' -NotePropertyValue `
-                    '記録用EdgeのDOM監視を開始できなかったため、Windowsの対象検出で記録を続けています。' -Force
-            }
-        }
         if ($script:MbRecordingJob.PSObject.Properties.Name -contains 'UiaWorkerProcessId') {
             $uiaWorkerAlive = $false
             $uiaWorkerProcessId = [int]$script:MbRecordingJob.UiaWorkerProcessId
@@ -101,25 +84,14 @@ function Read-MbRecordingStatus {
             }
         }
     }
-    if ([string]$status.state -ne 'recording' -and
-        $script:MbRecordingJob.PSObject.Properties.Name -contains 'Mode' -and
-        [string]$script:MbRecordingJob.Mode -eq 'edge') {
-        # 件数・時間上限で記録側だけが終了した場合も、DOM監視と専用Edgeを残さない。
-        try {
-            $stopPath = [string]$script:MbRecordingJob.StopPath
-            if (-not (Test-Path -LiteralPath $stopPath -PathType Leaf)) {
-                [IO.File]::WriteAllText($stopPath, 'stop', (New-Object Text.UTF8Encoding($false)))
-            }
-        } catch { }
-    }
     return $status
 }
 
 function Start-MbRecordingJob {
     param(
         [string[]]$IgnoreTitlePatterns = @('ManualBuilder'),
-        [switch]$WithNarration,
-        [ValidateSet('edge', 'desktop')][string]$Mode = 'edge'
+        [int[]]$IgnoreProcessIds = @(),
+        [switch]$WithNarration
     )
 
     $current = Read-MbRecordingStatus
@@ -127,10 +99,6 @@ function Start-MbRecordingJob {
 
     $capability = Get-MbRecorderCapability
     if (-not $capability.available) { throw ([string]$capability.reason) }
-    if ($Mode -eq 'edge') {
-        $edgeCapability = Get-MbEdgeRecorderCapability
-        if (-not $edgeCapability.available) { throw ([string]$edgeCapability.reason) }
-    }
 
     # 前回の記録が残っていれば片付けてから始める。
     Remove-MbRecordingJob
@@ -144,14 +112,12 @@ function Start-MbRecordingJob {
     $stopPath = Join-Path $jobDirectory 'stop.requested'
     $narrationPath = Join-Path $jobDirectory 'narration.jsonl'
     $narrationStatusPath = Join-Path $jobDirectory 'narration-status.json'
-    $domTargetPath = Join-Path $jobDirectory 'dom-target.json'
     $uiaTargetPath = Join-Path $jobDirectory 'uia-target.json'
-    $edgeLogPath = Join-Path $jobDirectory 'edge-monitor.log'
     $uiaLogPath = Join-Path $jobDirectory 'uia-monitor.log'
 
     $queued = [pscustomobject]@{
         jobId = $jobId; state = 'recording'; count = 0
-        message = if ($Mode -eq 'edge') { '記録用Edgeを開いています' } else { '記録の準備をしています' }
+        message = '記録の準備をしています'
         lastTarget = ''; updatedAt = [DateTime]::UtcNow.ToString('o')
     }
     [IO.File]::WriteAllText($statusPath, ($queued | ConvertTo-Json -Depth 5), (New-Object Text.UTF8Encoding($false)))
@@ -162,28 +128,6 @@ function Start-MbRecordingJob {
     if (-not (Test-Path -LiteralPath $powerShellPath -PathType Leaf)) { throw 'Windows PowerShell 5.1が見つかりません。' }
     $workerPath = Join-Path $script:MbRecordingScriptRoot 'Invoke-ManualBuilderRecorder.ps1'
     $quote = { param([string]$Value) '"' + $Value.Replace('"', '\"') + '"' }
-    $edgeWorkerProcessId = 0
-    if ($Mode -eq 'edge') {
-        try {
-            Start-MbRecorderEdge -ProfileDirectory $script:MbRecordingEdgeProfileRoot -Port $script:MbRecordingEdgePort
-            $edgeWorkerPath = Join-Path $script:MbRecordingScriptRoot 'Invoke-ManualBuilderEdgeRecorder.ps1'
-            $edgeArguments = @(
-                '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-STA', '-File', (& $quote $edgeWorkerPath),
-                '-CachePath', (& $quote $domTargetPath),
-                '-StopPath', (& $quote $stopPath),
-                '-LogPath', (& $quote $edgeLogPath),
-                '-Port', ([string]$script:MbRecordingEdgePort)
-            )
-            $edgeWorker = Start-Process -FilePath $powerShellPath -ArgumentList $edgeArguments -WindowStyle Hidden -PassThru
-            $edgeWorkerProcessId = [int]$edgeWorker.Id
-            $edgeWorker.Dispose()
-        } catch {
-            try { Stop-MbRecorderEdge -Port $script:MbRecordingEdgePort } catch { }
-            try { Remove-Item -LiteralPath $jobDirectory -Recurse -Force -ErrorAction SilentlyContinue } catch { }
-            throw
-        }
-    }
-
     # エクスプローラーや標準ダイアログはクリック直後に対象が消えることがあるため、
     # クリック前のカーソル下を別プロセスで保持する。起動に失敗しても従来のクリック後検索は使える。
     $uiaWorkerProcessId = 0
@@ -197,6 +141,9 @@ function Start-MbRecordingJob {
         )
         if (@($IgnoreTitlePatterns).Count -gt 0) {
             $uiaArguments += @('-IgnoreTitlePatterns', (& $quote ((@($IgnoreTitlePatterns) -join ','))))
+        }
+        if (@($IgnoreProcessIds).Count -gt 0) {
+            $uiaArguments += @('-IgnoreProcessIds', (& $quote ((@($IgnoreProcessIds) -join ','))))
         }
         $uiaWorker = Start-Process -FilePath $powerShellPath -ArgumentList $uiaArguments -WindowStyle Hidden -PassThru
         $uiaWorkerProcessId = [int]$uiaWorker.Id
@@ -214,12 +161,13 @@ function Start-MbRecordingJob {
         '-JobId', (& $quote $jobId),
         '-UiaTargetPath', (& $quote $uiaTargetPath)
     )
-    if ($Mode -eq 'edge') {
-        $arguments += @('-DomTargetPath', (& $quote $domTargetPath))
-    }
     if (@($IgnoreTitlePatterns).Count -gt 0) {
         $arguments += '-IgnoreTitlePatterns'
-        $arguments += (@($IgnoreTitlePatterns) | ForEach-Object { & $quote $_ }) -join ','
+        $arguments += (& $quote ((@($IgnoreTitlePatterns) -join ',')))
+    }
+    if (@($IgnoreProcessIds).Count -gt 0) {
+        $arguments += '-IgnoreProcessIds'
+        $arguments += (& $quote ((@($IgnoreProcessIds) -join ',')))
     }
 
     try {
@@ -230,10 +178,6 @@ function Start-MbRecordingJob {
         if ($uiaWorkerProcessId -gt 0) {
             try { (Get-Process -Id $uiaWorkerProcessId -ErrorAction SilentlyContinue).Kill() } catch { }
         }
-        if ($edgeWorkerProcessId -gt 0) {
-            try { (Get-Process -Id $edgeWorkerProcessId -ErrorAction SilentlyContinue).Kill() } catch { }
-        }
-        if ($Mode -eq 'edge') { try { Stop-MbRecorderEdge -Port $script:MbRecordingEdgePort } catch { } }
         try { Remove-Item -LiteralPath $jobDirectory -Recurse -Force -ErrorAction SilentlyContinue } catch { }
         throw
     }
@@ -265,10 +209,9 @@ function Start-MbRecordingJob {
         StatusPath = $statusPath; StopPath = $stopPath; StartedAt = Get-Date
         NarrationPath = $narrationPath; NarrationStatusPath = $narrationStatusPath
         DictationProcessId = $dictationProcessId
-        Mode = $Mode; DomTargetPath = $domTargetPath
+        Mode = 'desktop'
         UiaTargetPath = $uiaTargetPath; UiaLogPath = $uiaLogPath
-        UiaWorkerProcessId = $uiaWorkerProcessId; EdgeLogPath = $edgeLogPath
-        EdgeWorkerProcessId = $edgeWorkerProcessId; EdgePort = $script:MbRecordingEdgePort
+        UiaWorkerProcessId = $uiaWorkerProcessId
     }
     return (Read-MbRecordingStatus)
 }
@@ -308,7 +251,7 @@ function Get-MbRecordedEvents {
 function Get-MbRecordedEventImagePath {
     param([Parameter(Mandatory = $true)][string]$FileName)
     if ($null -eq $script:MbRecordingJob) { return '' }
-    if ($FileName -notmatch '^event-\d{3}\.jpg$') { return '' }
+    if ($FileName -notmatch '^event-\d{3}(-after)?\.jpg$') { return '' }
     $path = Join-Path ([string]$script:MbRecordingJob.EventsDirectory) $FileName
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return '' }
     return $path
@@ -414,10 +357,8 @@ function Merge-MbNarrationIntoEvents {
     return $assigned
 }
 
-# 記録した操作を手順にする。
-#
-# 録画からの取り込みと違い、赤枠はUI Automationの矩形、またはUIA非対応画面の
-# 小さなクリック位置枠である。文字認識や全画面矩形への推定は行わず、受け取った矩形を使う。
+# 記録した操作を、Copilotが再解析できる証跡つきの手順にする。
+# UIA/MSAAの矩形は正解として赤枠にせず、候補のまま保存する。
 function Import-MbRecordedEvents {
     param(
         [Parameter(Mandatory = $true)][object]$Project,
@@ -471,29 +412,15 @@ function Import-MbRecordedEvents {
         }
         $stepId = [string]$result.Step.id
 
-        $rect = $null
-        if ($record.PSObject.Properties.Name -contains 'rect') { $rect = $record.rect }
-        $annotation = @()
-        if ($null -ne $rect -and (Test-MbNormalizedRect -Rect $rect)) {
-            $annotation = @([pscustomobject]@{
-                id    = New-MbRecorderAnnotationId
-                type  = 'rect'
-                x1    = [Math]::Round([double]$rect.x1, 6)
-                y1    = [Math]::Round([double]$rect.y1, 6)
-                x2    = [Math]::Round([double]$rect.x2, 6)
-                y2    = [Math]::Round([double]$rect.y2, 6)
-                label = 0
-            })
-        }
-
-        $targetType = if ($record.PSObject.Properties.Name -contains 'targetType') { [string]$record.targetType } else { '' }
-        $crop = Get-MbRecorderTargetCrop -Rect $rect -TargetType $targetType
-        if ($null -ne $crop) {
-            [void](Set-MbStepImageEdits -Project $Project -StepId $stepId `
-                -AnnotationsJson (ConvertTo-Json -InputObject $annotation -Depth 5) `
-                -CropJson (ConvertTo-Json -InputObject $crop -Compress))
-        } elseif (@($annotation).Count -gt 0) {
-            [void](Set-MbStepAnnotations -Project $Project -StepId $stepId -AnnotationsJson (ConvertTo-Json -InputObject $annotation -Depth 5))
+        $afterImageId = ''
+        if ($record.PSObject.Properties.Name -contains 'afterImage' -and
+            -not [string]::IsNullOrWhiteSpace([string]$record.afterImage)) {
+            $afterPath = Get-MbRecordedEventImagePath -FileName ([string]$record.afterImage)
+            if (-not [string]::IsNullOrWhiteSpace($afterPath)) {
+                $afterAsset = Add-MbImageAsset -Project $Project -ProjectPath $ProjectPath `
+                    -Bytes ([IO.File]::ReadAllBytes($afterPath)) -Source 'recorder'
+                $afterImageId = [string]$afterAsset.Image.id
+            }
         }
 
         $kind = if ([string]$record.kind -eq 'input') { 'recorded-input' } else { 'recorded-click' }
@@ -508,9 +435,16 @@ function Import-MbRecordedEvents {
         $targetName = ConvertTo-MbRecorderTargetName -Value $targetName -Suffix $suffix
         $spoken = ''
         if ($narration.ContainsKey($index)) { $spoken = [string]$narration[$index] }
+        $candidates = @()
+        if ($record.PSObject.Properties.Name -contains 'candidates') { $candidates = @($record.candidates) }
+        $clickX = if ($record.PSObject.Properties.Name -contains 'clickX') { [double]$record.clickX } else { -1.0 }
+        $clickY = if ($record.PSObject.Properties.Name -contains 'clickY') { [double]$record.clickY } else { -1.0 }
         [void](Set-MbStepCapture -Project $Project -StepId $stepId -Kind $kind `
             -VideoTimeMs ([int]$record.timeMs) -ClickLabel $targetName `
-            -WindowTitle ([string]$record.windowTitle) -Narration $spoken)
+            -WindowTitle ([string]$record.windowTitle) -Narration $spoken `
+            -TargetType $(if ($record.PSObject.Properties.Name -contains 'targetType') { [string]$record.targetType } else { '' }) `
+            -ClickX $clickX -ClickY $clickY -AfterImageId $afterImageId -TargetCandidates $candidates `
+            -AnalysisState 'pending' -AnalysisReason 'Copilotによる操作対象の確認待ち' -NeedsReview:$true)
         $added++
     }
     return [pscustomobject]@{ added = $added; skipped = $skipped }
@@ -523,27 +457,21 @@ function Remove-MbRecordingJob {
     $processId = [int]$job.ProcessId
     $dictationProcessId = 0
     if ($job.PSObject.Properties.Name -contains 'DictationProcessId') { $dictationProcessId = [int]$job.DictationProcessId }
-    $edgeWorkerProcessId = 0
-    if ($job.PSObject.Properties.Name -contains 'EdgeWorkerProcessId') { $edgeWorkerProcessId = [int]$job.EdgeWorkerProcessId }
     $uiaWorkerProcessId = 0
     if ($job.PSObject.Properties.Name -contains 'UiaWorkerProcessId') { $uiaWorkerProcessId = [int]$job.UiaWorkerProcessId }
-    $mode = if ($job.PSObject.Properties.Name -contains 'Mode') { [string]$job.Mode } else { 'desktop' }
     $stopPath = if ($job.PSObject.Properties.Name -contains 'StopPath') { [string]$job.StopPath } else { '' }
     if (-not [string]::IsNullOrWhiteSpace($stopPath)) {
         try { [IO.File]::WriteAllText($stopPath, 'stop', (New-Object Text.UTF8Encoding($false))) } catch { }
-        # 正常終了ならDOM監視側がBrowser.closeまで行う。短時間だけその機会を与える。
-        if ($mode -eq 'edge' -and $edgeWorkerProcessId -gt 0) { Start-Sleep -Milliseconds 500 }
     }
     $script:MbRecordingJob = $null
     # まだ記録プロセスが動いていたら止める。放置すると画面を撮り続ける。
-    foreach ($id in @($processId, $dictationProcessId, $edgeWorkerProcessId, $uiaWorkerProcessId)) {
+    foreach ($id in @($processId, $dictationProcessId, $uiaWorkerProcessId)) {
         if ($id -le 0) { continue }
         try {
             $process = Get-Process -Id $id -ErrorAction SilentlyContinue
             if ($null -ne $process) { $process.Kill() }
         } catch { }
     }
-    if ($mode -eq 'edge') { try { Stop-MbRecorderEdge -Port $script:MbRecordingEdgePort } catch { } }
     if ([string]::IsNullOrWhiteSpace($directory)) { return }
     try { Remove-Item -LiteralPath $directory -Recurse -Force -ErrorAction SilentlyContinue } catch { }
 }
@@ -552,7 +480,6 @@ function Remove-MbRecordingJob {
 # 本体からは この関数を通して記録できるかどうかを受け取る。
 function Get-MbRecordingCapability {
     $recorder = Get-MbRecorderCapability
-    $edge = Get-MbEdgeRecorderCapability
     # 音声は任意。使えなくても操作の記録はできるので、別々に返す。
     $dictation = $null
     try { $dictation = Get-MbDictationCapability } catch {
@@ -562,8 +489,7 @@ function Get-MbRecordingCapability {
         available = $recorder.available
         reason    = $recorder.reason
         narration = $dictation
-        edge      = $edge
-        recommendedMode = if ($edge.available) { 'edge' } else { 'desktop' }
+        architecture = 'copilot-first'
     }
 }
 

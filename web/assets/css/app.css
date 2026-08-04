@@ -263,6 +263,76 @@ button:disabled {
   gap: 8px;
 }
 
+.copilot-runtime {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-inset);
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.copilot-runtime:hover {
+  border-color: var(--border-strong);
+  background: var(--surface);
+}
+
+.copilot-runtime:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.copilot-runtime__dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #7c879b;
+}
+
+.copilot-runtime--starting .copilot-runtime__dot,
+.copilot-runtime--loading .copilot-runtime__dot {
+  background: #b7791f;
+  animation: copilot-runtime-pulse 1.2s ease-in-out infinite;
+}
+
+.copilot-runtime--ready {
+  border-color: #b8dec8;
+  background: #effaf3;
+  color: #17643a;
+}
+
+.copilot-runtime--ready .copilot-runtime__dot {
+  background: #23915a;
+}
+
+.copilot-runtime--signin-required,
+.copilot-runtime--closed,
+.copilot-runtime--failed {
+  border-color: #e8c2bd;
+  background: #fff4f2;
+  color: #9b3328;
+}
+
+.copilot-runtime--signin-required .copilot-runtime__dot,
+.copilot-runtime--closed .copilot-runtime__dot,
+.copilot-runtime--failed .copilot-runtime__dot {
+  background: #c54a3d;
+}
+
+@keyframes copilot-runtime-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+
 .save-status,
 .watch-status {
   display: inline-flex;
@@ -1076,6 +1146,17 @@ kbd {
 .step-card__label {
   color: var(--text-2);
   font-size: 12px;
+  font-weight: 700;
+}
+
+.step-card__pending {
+  margin-left: 4px;
+  padding: 2px 7px;
+  border: 1px solid #d7a85c;
+  border-radius: 999px;
+  color: #76511b;
+  background: #fff8e8;
+  font-size: 11px;
   font-weight: 700;
 }
 

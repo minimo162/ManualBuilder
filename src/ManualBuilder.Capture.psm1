@@ -230,6 +230,8 @@ function Remove-MbUnusedImage {
     foreach ($sheet in @($Project.sheets)) {
         foreach ($step in @($sheet.steps)) {
             if ([string]$step.imageId -eq $ImageId) { return $null }
+            if ($step.capture -and $step.capture.PSObject.Properties.Name -contains 'afterImageId' -and
+                [string]$step.capture.afterImageId -eq $ImageId) { return $null }
         }
     }
 
@@ -251,6 +253,10 @@ function Remove-MbUnreferencedImages {
         foreach ($step in @($sheet.steps)) {
             $imageId = [string]$step.imageId
             if (-not [string]::IsNullOrWhiteSpace($imageId)) { $referenced[$imageId] = $true }
+            if ($step.capture -and $step.capture.PSObject.Properties.Name -contains 'afterImageId') {
+                $afterImageId = [string]$step.capture.afterImageId
+                if (-not [string]::IsNullOrWhiteSpace($afterImageId)) { $referenced[$afterImageId] = $true }
+            }
         }
     }
 

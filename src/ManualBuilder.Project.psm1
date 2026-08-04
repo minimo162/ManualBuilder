@@ -34,12 +34,20 @@ function Get-MbText {
 # Copilotへ渡す材料であり、出力（Excel・Word・HTML）には出さない。
 function New-MbStepCapture {
     return [pscustomobject]@{
-        kind        = ''   # 'video-scene' なら録画の場面から取り込んだ手順
-        videoTimeMs = 0    # 録画のどの時点か
-        clickLabel  = ''   # 操作された場所から読み取れた文字、または押したコントロールの名前
-        windowTitle = ''   # 操作していたウィンドウの題名
-        screenText  = ''   # 画面に出ていた文字
-        narration   = ''   # 操作しながら話した内容（操作記録モードでのみ入る）
+        kind             = ''   # 'video-scene' なら録画の場面から取り込んだ手順
+        videoTimeMs      = 0    # 録画のどの時点か
+        clickLabel       = ''   # Copilotまたは利用者が確定した操作対象
+        targetType       = ''   # button / link / input など、確定した対象種類
+        windowTitle      = ''   # 操作していたウィンドウの題名
+        screenText       = ''   # 画面に出ていた文字
+        narration        = ''   # 操作しながら話した内容（操作記録モードでのみ入る）
+        clickX           = -1.0 # 原画像内の正規化クリック座標。-1は未記録
+        clickY           = -1.0
+        afterImageId     = ''   # 操作後の原画像。通常表示・出力には使わない
+        targetCandidates = @()  # UIA/MSAAなどの候補。正解ではなくCopilotへの手掛かり
+        analysisState    = ''   # pending / confirmed / needs-review
+        analysisReason   = ''
+        needsReview      = $false
     }
 }
 
@@ -158,6 +166,15 @@ function Repair-MbProject {
                 Add-MbPropertyIfMissing $step.capture 'windowTitle' ''
                 Add-MbPropertyIfMissing $step.capture 'screenText' ''
                 Add-MbPropertyIfMissing $step.capture 'narration' ''
+                Add-MbPropertyIfMissing $step.capture 'targetType' ''
+                Add-MbPropertyIfMissing $step.capture 'clickX' -1.0
+                Add-MbPropertyIfMissing $step.capture 'clickY' -1.0
+                Add-MbPropertyIfMissing $step.capture 'afterImageId' ''
+                Add-MbPropertyIfMissing $step.capture 'targetCandidates' @()
+                Add-MbPropertyIfMissing $step.capture 'analysisState' ''
+                Add-MbPropertyIfMissing $step.capture 'analysisReason' ''
+                Add-MbPropertyIfMissing $step.capture 'needsReview' $false
+                $step.capture.targetCandidates = @($step.capture.targetCandidates)
             }
         }
     }
@@ -237,6 +254,10 @@ function Test-MbProject {
                 if ([string]$annotation.type -ne 'number' -and $label -ne 0) { throw '番号以外の注釈ラベルが不正です。' }
             }
             if ($step.imageId) { [void]$referencedImageIds.Add([string]$step.imageId) }
+            if ($step.capture -and $step.capture.PSObject.Properties.Name -contains 'afterImageId' -and
+                -not [string]::IsNullOrWhiteSpace([string]$step.capture.afterImageId)) {
+                [void]$referencedImageIds.Add([string]$step.capture.afterImageId)
+            }
             if ($step.videoId) { [void]$referencedVideoIds.Add([string]$step.videoId) }
         }
     }
@@ -586,7 +607,15 @@ function Set-MbStepCapture {
         [AllowEmptyString()][string]$ClickLabel = '',
         [AllowEmptyString()][string]$WindowTitle = '',
         [AllowEmptyString()][string]$ScreenText = '',
-        [AllowEmptyString()][string]$Narration = ''
+        [AllowEmptyString()][string]$Narration = '',
+        [AllowEmptyString()][string]$TargetType = '',
+        [double]$ClickX = -1.0,
+        [double]$ClickY = -1.0,
+        [AllowEmptyString()][string]$AfterImageId = '',
+        [AllowNull()][object[]]$TargetCandidates = @(),
+        [AllowEmptyString()][string]$AnalysisState = '',
+        [AllowEmptyString()][string]$AnalysisReason = '',
+        [bool]$NeedsReview = $false
     )
 
     $target = Get-MbStepById -Project $Project -StepId $StepId
@@ -596,10 +625,20 @@ function Set-MbStepCapture {
     }
     $target.capture.kind = Get-MbText -Value $Kind -MaxLength 40 -FieldName '取り込み種別'
     $target.capture.videoTimeMs = [Math]::Max(0, $VideoTimeMs)
-    $target.capture.clickLabel = Get-MbText -Value $ClickLabel -MaxLength 200 -FieldName '操作対象'
+    # WindowsやWebページはアクセシビリティ名へ長い説明を入れることがある。
+    # 表示用の操作対象は十分な余裕を持たせ、最終的な手順文の上限とは分ける。
+    $target.capture.clickLabel = Get-MbText -Value $ClickLabel -MaxLength 1000 -FieldName '操作対象'
     $target.capture.windowTitle = Get-MbText -Value $WindowTitle -MaxLength 300 -FieldName 'ウィンドウの題名'
     $target.capture.screenText = Get-MbText -Value $ScreenText -MaxLength 4000 -FieldName '画面の文字'
     $target.capture.narration = Get-MbText -Value $Narration -MaxLength 2000 -FieldName '話した内容'
+    $target.capture.targetType = Get-MbText -Value $TargetType -MaxLength 80 -FieldName '操作対象の種類'
+    $target.capture.clickX = if ($ClickX -ge 0 -and $ClickX -le 1) { [Math]::Round($ClickX, 6) } else { -1.0 }
+    $target.capture.clickY = if ($ClickY -ge 0 -and $ClickY -le 1) { [Math]::Round($ClickY, 6) } else { -1.0 }
+    $target.capture.afterImageId = Get-MbText -Value $AfterImageId -MaxLength 64 -FieldName '操作後画像ID'
+    $target.capture.targetCandidates = @($TargetCandidates | Select-Object -First 16)
+    $target.capture.analysisState = Get-MbText -Value $AnalysisState -MaxLength 40 -FieldName '解析状態'
+    $target.capture.analysisReason = Get-MbText -Value $AnalysisReason -MaxLength 500 -FieldName '解析理由'
+    $target.capture.needsReview = [bool]$NeedsReview
     $target.updatedAt = Get-MbUtcTimestamp
     return $target
 }

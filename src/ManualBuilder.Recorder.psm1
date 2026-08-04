@@ -70,6 +70,9 @@ public static class MbRecorderNative
     public static extern IntPtr GetForegroundWindow();
 
     [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+    [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
 
@@ -770,6 +773,7 @@ function Invoke-MbUiaTargetCacheLoop {
         [Parameter(Mandatory = $true)][string]$StopPath,
         [AllowEmptyString()][string]$LogPath = '',
         [string[]]$IgnoreTitlePatterns = @(),
+        [int[]]$IgnoreProcessIds = @(),
         [int]$PollIntervalMs = 55
     )
 
@@ -785,7 +789,7 @@ function Invoke-MbUiaTargetCacheLoop {
             $point = New-Object 'MbRecorderNative+POINT'
             [void][MbRecorderNative]::GetCursorPos([ref]$point)
             $window = Get-MbForegroundWindowInfo
-            if (-not (Test-MbIgnoredWindow -Window $window -IgnoreTitlePatterns $IgnoreTitlePatterns)) {
+            if (-not (Test-MbIgnoredWindow -Window $window -IgnoreTitlePatterns $IgnoreTitlePatterns -IgnoreProcessIds $IgnoreProcessIds)) {
                 $elapsed = ([DateTime]::UtcNow - $lastChecked).TotalMilliseconds
                 $moved = [Math]::Abs([int]$point.X - $lastX) -gt 2 -or [Math]::Abs([int]$point.Y - $lastY) -gt 2
                 $windowChanged = [long]$window.handle -ne $lastHandle
@@ -853,8 +857,11 @@ function Get-MbForegroundWindowInfo {
     $handle = [MbRecorderNative]::GetForegroundWindow()
     if ($handle -eq [IntPtr]::Zero) { return $null }
     $rect = [MbRecorderNative]::GetVisualWindowRect($handle)
+    [uint32]$processId = 0
+    [void][MbRecorderNative]::GetWindowThreadProcessId($handle, [ref]$processId)
     return [pscustomobject]@{
         handle = [long]$handle.ToInt64()
+        processId = [int]$processId
         title  = [MbRecorderNative]::GetWindowTitle($handle)
         class  = [MbRecorderNative]::GetWindowClass($handle)
         left   = [int]$rect.Left
@@ -1056,9 +1063,15 @@ function Test-MbAsyncKeyStatePressed {
 }
 
 function Test-MbIgnoredWindow {
-    param([AllowNull()]$Window, [string[]]$IgnoreTitlePatterns = @())
+    param(
+        [AllowNull()]$Window,
+        [string[]]$IgnoreTitlePatterns = @(),
+        [int[]]$IgnoreProcessIds = @()
+    )
     if ($null -eq $Window) { return $true }
     if ($script:MbRecorderIgnoredClasses -contains [string]$Window.class) { return $true }
+    if ($Window.PSObject.Properties.Name -contains 'processId' -and
+        @($IgnoreProcessIds) -contains [int]$Window.processId) { return $true }
     $title = [string]$Window.title
     foreach ($pattern in $IgnoreTitlePatterns) {
         if ([string]::IsNullOrWhiteSpace($pattern)) { continue }
@@ -1328,6 +1341,9 @@ function Save-MbRecordingEvent {
         [Parameter(Mandatory = $true)][string]$EventsPath,
         [AllowNull()]$Target,
         [AllowNull()]$Window,
+        [AllowNull()]$AfterCapture = $null,
+        [double]$ClickX = -1,
+        [double]$ClickY = -1,
         [int]$MaxEdge = 2560,
         [long]$Quality = 94
     )
@@ -1336,6 +1352,12 @@ function Save-MbRecordingEvent {
     $fileName = ('event-{0:d3}.jpg' -f $Index)
     $saved = Save-MbBitmapRegion -Capture $Capture -Region $region -Path (Join-Path $EventsDirectory $fileName) `
         -MaxEdge $MaxEdge -Quality $Quality
+    $afterFileName = ''
+    if ($null -ne $AfterCapture) {
+        $afterFileName = ('event-{0:d3}-after.jpg' -f $Index)
+        [void](Save-MbBitmapRegion -Capture $AfterCapture -Region $saved -Path (Join-Path $EventsDirectory $afterFileName) `
+            -MaxEdge $MaxEdge -Quality $Quality)
+    }
     # 実際に切り出せた範囲で正規化する。画面の端では要求した範囲より狭くなる。
     $rect = ConvertTo-MbRegionRect -Region $saved -Target $Target
 
@@ -1347,15 +1369,53 @@ function Save-MbRecordingEvent {
         $targetName = ConvertTo-MbRecorderTargetName -Value $Target.name
         $targetType = [string]$Target.controlType
     }
+    $normalizedClickX = -1.0
+    $normalizedClickY = -1.0
+    if ($ClickX -ge 0 -and $ClickY -ge 0 -and [double]$saved.width -gt 0 -and [double]$saved.height -gt 0) {
+        $normalizedClickX = [Math]::Round([Math]::Min(1.0, [Math]::Max(0.0,
+            (($ClickX - [double]$saved.left) / [double]$saved.width))), 6)
+        $normalizedClickY = [Math]::Round([Math]::Min(1.0, [Math]::Max(0.0,
+            (($ClickY - [double]$saved.top) / [double]$saved.height))), 6)
+    }
+    if (($normalizedClickX -lt 0 -or $normalizedClickY -lt 0) -and $null -ne $rect) {
+        # キーそのものは読まない入力操作では、フォーカス要素の中心を操作点として扱う。
+        $normalizedClickX = [Math]::Round(([double]$rect.x1 + [double]$rect.x2) / 2.0, 6)
+        $normalizedClickY = [Math]::Round(([double]$rect.y1 + [double]$rect.y2) / 2.0, 6)
+    }
+    # 決定論的な検出は「正解」ではなく候補として保存する。クリック点は常に事実として残す。
+    $candidates = New-Object System.Collections.ArrayList
+    if ($null -ne $rect) {
+        [void]$candidates.Add([pscustomobject]@{
+            id = 'A'; source = $(if ($null -ne $Target -and $Target.PSObject.Properties.Name -contains 'provider') { [string]$Target.provider } else { 'UIA' })
+            name = $targetName; type = $targetType; rect = $rect
+        })
+    }
+    if ($normalizedClickX -ge 0 -and $normalizedClickY -ge 0) {
+        $halfWidth = [Math]::Min(0.04, 28.0 / [Math]::Max(1.0, [double]$saved.width))
+        $halfHeight = [Math]::Min(0.04, 18.0 / [Math]::Max(1.0, [double]$saved.height))
+        [void]$candidates.Add([pscustomobject]@{
+            id = [string][char](65 + $candidates.Count); source = 'click-point'; name = ''; type = 'click-point'
+            rect = [pscustomobject]@{
+                x1 = [Math]::Round([Math]::Max(0.0, $normalizedClickX - $halfWidth), 6)
+                y1 = [Math]::Round([Math]::Max(0.0, $normalizedClickY - $halfHeight), 6)
+                x2 = [Math]::Round([Math]::Min(1.0, $normalizedClickX + $halfWidth), 6)
+                y2 = [Math]::Round([Math]::Min(1.0, $normalizedClickY + $halfHeight), 6)
+            }
+        })
+    }
     $record = @{
         index       = $Index
         kind        = $Kind
         timeMs      = $ElapsedMs
         image       = $fileName
+        afterImage  = $afterFileName
         windowTitle = $windowTitle
         targetName  = $targetName
         targetType  = $targetType
         rect        = $rect
+        clickX      = $normalizedClickX
+        clickY      = $normalizedClickY
+        candidates  = @($candidates)
     }
     if ($null -ne $Target -and $Target.PSObject.Properties.Name -contains 'provider') {
         $record.targetSource = [string]$Target.provider
@@ -1377,6 +1437,7 @@ function Invoke-MbRecordingLoop {
         [AllowEmptyString()][string]$DomTargetPath = '',
         [AllowEmptyString()][string]$UiaTargetPath = '',
         [string[]]$IgnoreTitlePatterns = @(),
+        [int[]]$IgnoreProcessIds = @(),
         [int]$PollIntervalMs = 16,
         [int]$TypingIdleMs = 1200,
         [int]$MaxEvents = 300,
@@ -1405,15 +1466,14 @@ function Invoke-MbRecordingLoop {
     $lastTypingMs = 0
     $lastDomTarget = $null
     $lastDomWindowHandle = 0L
-    # Edgeはpointerdownだけ先に取得できても、直後の画面遷移がスクリーンショットより
-    # 速いことがある。専用Edgeだけ直前の安定画面を保持し、画像・タイトル・DOMを
-    # 同じ時点へ揃える。デスクトップ記録は従来どおりクリック時だけ撮影する。
+    # クリック後に対象が消えるのはWebだけではない。通常のEdge、エクスプローラー、
+    # 業務アプリを同じ方式で扱うため、常に直前の安定画面を保持する。
     $preClickCapture = $null
     $preClickWindow = $null
     $preClickCaptureAtMs = -1000
     $preClickCaptureAttemptAtMs = -1000
     $preClickCaptureIntervalMs = 80
-    $preClickCaptureMaxAgeMs = 180
+    $preClickCaptureMaxAgeMs = 450
     $pendingLeftClick = $false
     $pendingRightClick = $false
 
@@ -1453,7 +1513,7 @@ function Invoke-MbRecordingLoop {
                 # 残すか隠すかは、取り込み後の画像編集（黒塗り）で利用者が決める。
                 try {
                     $candidateWindow = Get-MbForegroundWindowInfo
-                    if (-not (Test-MbIgnoredWindow -Window $candidateWindow -IgnoreTitlePatterns $IgnoreTitlePatterns)) {
+                    if (-not (Test-MbIgnoredWindow -Window $candidateWindow -IgnoreTitlePatterns $IgnoreTitlePatterns -IgnoreProcessIds $IgnoreProcessIds)) {
                         $typingCapture = Copy-MbScreenBitmap
                         $typingCaptureAtMs = [int]$watch.ElapsedMilliseconds
                         $typingWindow = $candidateWindow
@@ -1470,18 +1530,6 @@ function Invoke-MbRecordingLoop {
                     $typingWindow = $null
                     $typingField = $null
                 }
-            } elseif ($typingPressed -and (([int]$watch.ElapsedMilliseconds - $typingCaptureAtMs) -ge 120)) {
-                # クリックで画面遷移する直前にも、入力済みの表示がなるべく残るよう更新する。
-                $replacementCapture = $null
-                try {
-                    $replacementCapture = Copy-MbScreenBitmap
-                    if ($null -ne $typingCapture) { try { $typingCapture.bitmap.Dispose() } catch { } }
-                    $typingCapture = $replacementCapture
-                    $replacementCapture = $null
-                    $typingCaptureAtMs = [int]$watch.ElapsedMilliseconds
-                } catch {
-                    if ($null -ne $replacementCapture) { try { $replacementCapture.bitmap.Dispose() } catch { } }
-                }
             }
             $lastTypingMs = [int]$watch.ElapsedMilliseconds
         }
@@ -1490,31 +1538,22 @@ function Invoke-MbRecordingLoop {
         $typingFinished = $typingActive -and ($clicked -or (([int]$watch.ElapsedMilliseconds - $lastTypingMs) -ge $TypingIdleMs))
         if ($typingFinished) {
             $typingActive = $false
+            $typingAfterCapture = $null
             try {
-                # 待機で入力が完了した場合は、確定後の文字が見える最新画面へ更新する。
-                # クリックで完了した場合は画面遷移後を撮らないよう、最後の入力時点を使う。
-                if (-not $clicked -and $null -ne $typingCapture) {
-                    $replacementCapture = $null
-                    try {
-                        $replacementCapture = Copy-MbScreenBitmap
-                        $typingCapture.bitmap.Dispose()
-                        $typingCapture = $replacementCapture
-                        $replacementCapture = $null
-                    } catch {
-                        if ($null -ne $replacementCapture) { try { $replacementCapture.bitmap.Dispose() } catch { } }
-                    }
-                }
+                # 最初のキー入力直前をbefore、入力完了時をafterとして別々に保持する。
+                try { $typingAfterCapture = Copy-MbScreenBitmap } catch { $typingAfterCapture = $null }
                 if ($null -ne $typingCapture -and $index -lt $MaxEvents) {
                     $index++
                     $record = Save-MbRecordingEvent -Capture $typingCapture -Index $index -ElapsedMs ([int]$watch.ElapsedMilliseconds) `
                         -Kind 'input' -EventsDirectory $EventsDirectory -EventsPath $EventsPath -Target $typingField `
-                        -Window $typingWindow
+                        -Window $typingWindow -AfterCapture $typingAfterCapture
                     $lastTarget = [string]$record.targetName
                 }
             } catch {
                 # 1件取り損ねても記録は続ける。
             } finally {
                 if ($null -ne $typingCapture) { try { $typingCapture.bitmap.Dispose() } catch { } }
+                if ($null -ne $typingAfterCapture) { try { $typingAfterCapture.bitmap.Dispose() } catch { } }
             }
             $typingField = $null
             $typingWindow = $null
@@ -1524,6 +1563,7 @@ function Invoke-MbRecordingLoop {
 
         if ($clicked -and $index -lt $MaxEvents) {
             $capture = $null
+            $afterCapture = $null
             try {
                 $point = New-Object 'MbRecorderNative+POINT'
                 [void][MbRecorderNative]::GetCursorPos([ref]$point)
@@ -1563,7 +1603,7 @@ function Invoke-MbRecordingLoop {
                     $preClickCaptureAtMs = -1000
                     $capture = Copy-MbScreenBitmap
                 }
-                if (-not (Test-MbIgnoredWindow -Window $window -IgnoreTitlePatterns $IgnoreTitlePatterns)) {
+                if (-not (Test-MbIgnoredWindow -Window $window -IgnoreTitlePatterns $IgnoreTitlePatterns -IgnoreProcessIds $IgnoreProcessIds)) {
                     $target = $bufferedDomTarget
                     if (-not [string]::IsNullOrWhiteSpace($DomTargetPath)) {
                         # 画面はすでに押下直前で確保済み。Edgeからpointerdown通知が届くまで
@@ -1609,14 +1649,20 @@ function Invoke-MbRecordingLoop {
                     }
                     $index++
                     $clickKind = if ($rightClicked) { 'right-click' } else { 'click' }
+                    # クリック結果が現れるまで短く待った同一範囲も証跡として残す。
+                    # 対象矩形の判断には使わず、Copilotが遷移や状態変化を読むためだけに使う。
+                    Start-Sleep -Milliseconds 180
+                    try { $afterCapture = Copy-MbScreenBitmap } catch { $afterCapture = $null }
                     $record = Save-MbRecordingEvent -Capture $capture -Index $index -ElapsedMs ([int]$watch.ElapsedMilliseconds) `
-                        -Kind $clickKind -EventsDirectory $EventsDirectory -EventsPath $EventsPath -Target $target -Window $window
+                        -Kind $clickKind -EventsDirectory $EventsDirectory -EventsPath $EventsPath -Target $target -Window $window `
+                        -AfterCapture $afterCapture -ClickX ([double]$point.X) -ClickY ([double]$point.Y)
                     $lastTarget = [string]$record.targetName
                 }
             } catch {
                 # 応答しないアプリを押した場合など。記録は続ける。
             } finally {
                 if ($null -ne $capture) { try { $capture.bitmap.Dispose() } catch { } }
+                if ($null -ne $afterCapture) { try { $afterCapture.bitmap.Dispose() } catch { } }
             }
         }
 
@@ -1624,7 +1670,6 @@ function Invoke-MbRecordingLoop {
         # 押下が無い巡回だけで低頻度に更新し、撮影中にタイトル／前面ウィンドウが
         # 変わった不安定なフレームは保持しない。
         if (-not $clicked -and -not $leftDown -and -not $rightDown -and
-            -not [string]::IsNullOrWhiteSpace($DomTargetPath) -and
             (([int]$watch.ElapsedMilliseconds - $preClickCaptureAttemptAtMs) -ge $preClickCaptureIntervalMs)) {
             $replacementCapture = $null
             try {
@@ -1645,7 +1690,7 @@ function Invoke-MbRecordingLoop {
                     [string]$windowBeforeCapture.title -eq [string]$windowAfterCapture.title -and
                     -not $pendingLeftClick -and -not $pendingRightClick
                 if ($stableWindow -and
-                    -not (Test-MbIgnoredWindow -Window $windowBeforeCapture -IgnoreTitlePatterns $IgnoreTitlePatterns)) {
+                    -not (Test-MbIgnoredWindow -Window $windowBeforeCapture -IgnoreTitlePatterns $IgnoreTitlePatterns -IgnoreProcessIds $IgnoreProcessIds)) {
                     if ($null -ne $preClickCapture) { try { $preClickCapture.bitmap.Dispose() } catch { } }
                     $preClickCapture = $replacementCapture
                     $replacementCapture = $null
@@ -1669,16 +1714,19 @@ function Invoke-MbRecordingLoop {
 
     # 停止要求が入力の途中で届いても、保持していた入力画面を最後の1手順として残す。
     if ($typingActive -and $null -ne $typingCapture -and $index -lt $MaxEvents) {
+        $typingAfterCapture = $null
         try {
+            try { $typingAfterCapture = Copy-MbScreenBitmap } catch { $typingAfterCapture = $null }
             $index++
             $record = Save-MbRecordingEvent -Capture $typingCapture -Index $index -ElapsedMs ([int]$watch.ElapsedMilliseconds) `
                 -Kind 'input' -EventsDirectory $EventsDirectory -EventsPath $EventsPath -Target $typingField `
-                -Window $typingWindow
+                -Window $typingWindow -AfterCapture $typingAfterCapture
             $lastTarget = [string]$record.targetName
         } catch {
             # 最後の1件に失敗しても、それまでの記録は利用できる。
         } finally {
             try { $typingCapture.bitmap.Dispose() } catch { }
+            if ($null -ne $typingAfterCapture) { try { $typingAfterCapture.bitmap.Dispose() } catch { } }
             $typingCapture = $null
         }
     } elseif ($null -ne $typingCapture) {

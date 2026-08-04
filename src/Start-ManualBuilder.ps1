@@ -74,9 +74,7 @@ Initialize-MbCopilotServer -JobsRoot $script:CopilotJobsRoot -ScriptRoot $PSScri
     -ProfileRoot $script:CopilotProfileRoot -ConfigPath $script:CopilotConfigPath
 # 操作記録。記録した画面はジョブ配下に置き、取り込んだ時点でプロジェクトへ移る。
 $script:RecordingJobsRoot = Join-Path $DataRoot 'recording-jobs'
-$script:RecordingEdgeProfileRoot = Join-Path $DataRoot 'recorder-edge-profile'
-Initialize-MbRecorderServer -JobsRoot $script:RecordingJobsRoot -ScriptRoot $PSScriptRoot `
-    -EdgeProfileRoot $script:RecordingEdgeProfileRoot
+Initialize-MbRecorderServer -JobsRoot $script:RecordingJobsRoot -ScriptRoot $PSScriptRoot
 $script:ImageReplacementHistory = @{}
 $script:HtmlExportResult = $null
 $script:ProjectHomeVisible = -not $usesExplicitProjectPath
@@ -485,6 +483,9 @@ function Start-MbExcelExportJob {
     }
 
     $project = Get-MbProject -Path $ProjectPath
+    if ((Get-MbCopilotStepListFromProject -Project $project).pendingOperations -gt 0) {
+        throw 'Copilotの解析が終わっていない記録操作があります。［Copilotで記録した操作を解析］で確認してからExcelを作成してください。'
+    }
     $totalSteps = 0
     foreach ($sheet in @($project.sheets)) { $totalSteps += @($sheet.steps).Count }
     if ($totalSteps -lt 1) { throw 'Excelへ出力する手順を1件以上追加してください。' }
@@ -695,6 +696,9 @@ function Start-MbWordExportJob {
     $excelStatus = Read-MbExcelExportStatus
     if ([string]$excelStatus.state -in @('queued', 'running', 'finalizing')) { throw 'Excel作成中です。完了または中止してからWordを作成してください。' }
     $project = Get-MbProject -Path $ProjectPath
+    if ((Get-MbCopilotStepListFromProject -Project $project).pendingOperations -gt 0) {
+        throw 'Copilotの解析が終わっていない記録操作があります。［Copilotで記録した操作を解析］で確認してからWordを作成してください。'
+    }
     $totalSteps = 0
     foreach ($sheet in @($project.sheets)) { $totalSteps += @($sheet.steps).Count }
     if ($totalSteps -lt 1) { throw 'Wordへ出力する手順を1件以上追加してください。' }
@@ -1195,9 +1199,11 @@ function Invoke-MbRoute {
             $form = Read-MbForm -Request $request
             # 音声はマイクを入れ、Microsoftのオンライン音声認識へ送る。既定では行わない。
             $withNarration = ([string](Get-MbFormValue -Form $form -Name 'withNarration')) -match '^(?i:true|1|on|yes)$'
-            $mode = ([string](Get-MbFormValue -Form $form -Name 'mode')).Trim().ToLowerInvariant()
-            if ($mode -notin @('edge', 'desktop')) { $mode = 'edge' }
-            $status = Start-MbRecordingJob -WithNarration:$withNarration -Mode $mode
+            # 起動中のCopilot制御用Edgeはマニュアル化する操作ではないため、
+            # 専用プロファイルのプロセスと識別用タイトルを記録対象から外す。
+            $exclusions = Get-MbCopilotRecorderExclusions
+            $status = Start-MbRecordingJob -WithNarration:$withNarration `
+                -IgnoreTitlePatterns @($exclusions.titlePatterns) -IgnoreProcessIds @($exclusions.processIds)
             Write-MbLog '操作の記録を開始しました。' 'OK'
             Write-MbResponse $Context ($status | ConvertTo-Json -Depth 6 -Compress) 200 'application/json; charset=utf-8'
         } catch {
@@ -1254,7 +1260,7 @@ function Invoke-MbRoute {
             $form = Read-MbForm -Request $request
             $includeWritten = ([string](Get-MbFormValue -Form $form -Name 'includeWritten')) -match '^(?i:true|1|on|yes)$'
             $mode = [string](Get-MbFormValue -Form $form -Name 'mode')
-            if ($mode -notin @('draft', 'review')) { $mode = 'draft' }
+            if ($mode -notin @('draft', 'review', 'operation')) { $mode = 'draft' }
             $status = Start-MbCopilotDraftJob -ProjectPath $ProjectPath -IncludeWritten:$includeWritten -Mode $mode
             Write-MbLog 'Copilotへ手順の下書きを依頼しました。' 'OK'
             Write-MbResponse $Context ($status | ConvertTo-Json -Depth 8 -Compress) 200 'application/json; charset=utf-8'
@@ -1298,6 +1304,22 @@ function Invoke-MbRoute {
     if ($path -eq '/api/copilot/draft/discard') {
         Remove-MbCopilotDraftJob
         Write-MbResponse $Context '{"status":"ok"}' 200 'application/json; charset=utf-8'
+        return
+    }
+
+    if ($path -eq '/api/copilot/runtime/status') {
+        $status = Read-MbCopilotRuntimeStatus
+        Write-MbResponse $Context ($status | ConvertTo-Json -Depth 6 -Compress) 200 'application/json; charset=utf-8'
+        return
+    }
+
+    if ($path -eq '/api/copilot/runtime/start') {
+        try {
+            $status = Start-MbCopilotWarmup -Force
+            Write-MbResponse $Context ($status | ConvertTo-Json -Depth 6 -Compress) 200 'application/json; charset=utf-8'
+        } catch {
+            Write-MbResponse $Context (([pscustomobject]@{ message = [string]$_.Exception.Message } | ConvertTo-Json -Compress)) 400 'application/json; charset=utf-8'
+        }
         return
     }
 
@@ -1471,6 +1493,9 @@ function Invoke-MbRoute {
         try {
             if (Test-MbOfficeExportActive) { throw 'Office出力中です。完了または中止してからHTMLを作成してください。' }
             $project = Get-MbProject -Path $ProjectPath
+            if ((Get-MbCopilotStepListFromProject -Project $project).pendingOperations -gt 0) {
+                throw 'Copilotの解析が終わっていない記録操作があります。［Copilotで記録した操作を解析］で確認してからHTMLを作成してください。'
+            }
             [void](Save-MbProject -Project $project -Path $ProjectPath)
             $outputDirectory = Get-MbExcelOutputDirectory
             if (-not (Test-Path -LiteralPath $outputDirectory)) { [void](New-Item -ItemType Directory -Path $outputDirectory -Force) }
@@ -2043,6 +2068,16 @@ try {
     Write-Host ''
 
     if (-not $NoBrowser) { Start-Process $url }
+    # ManualBuilderの表示を待たせず、Copilot用Edgeを通常ウィンドウで先に準備する。
+    # サインイン切れやUI停止は利用者がその画面で確認できる。
+    if (-not $NoBrowser) {
+        try {
+            [void](Start-MbCopilotWarmup)
+            Write-MbLog 'Copilot画面のバックグラウンド準備を開始しました。' 'INFO'
+        } catch {
+            Write-MbLog ('Copilot画面の準備を開始できませんでした: ' + $_.Exception.Message) 'WARN'
+        }
+    }
 
     while ($script:Running -and $listener.IsListening) {
         $context = $null
