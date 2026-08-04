@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const appVersion = '0.32.10';
+  const appVersion = '0.32.11';
   // 番号注釈はSVG属性で指定するためCSS変数を参照できない。
   // 編集画面とExcel・Word出力（New-MbAnnotatedImage）で同じ見た目にするため、基準フォントを揃える。
   const ANNOTATION_NUMBER_FONT = '"BIZ UDPGothic", "BIZ UDPゴシック", "BIZ UDGothic", "BIZ UDゴシック", Meiryo, "Yu Gothic UI", "MS Pゴシック", sans-serif';
@@ -347,6 +347,31 @@
     if (options.focusDescription) active.querySelector('textarea[name="description"]')?.focus();
   };
 
+  const selectedStepIds = new Set();
+
+  function updateStepBulkActions() {
+    document.querySelectorAll('[data-step-nav-item]').forEach((item) => {
+      const selected = selectedStepIds.has(item.dataset.stepId || '');
+      item.classList.toggle('step-nav__item--selected', selected);
+      const checkbox = item.querySelector('[data-step-select]');
+      if (checkbox) checkbox.checked = selected;
+    });
+    const actions = document.querySelector('[data-step-bulk-actions]');
+    const count = selectedStepIds.size;
+    if (!actions) return;
+    actions.hidden = count === 0;
+    const label = actions.querySelector('[data-step-selection-count]');
+    if (label) label.textContent = `${count}件選択`;
+    const target = actions.querySelector('[data-step-bulk-target]');
+    const move = actions.querySelector('[data-step-bulk-move]');
+    if (move) move.disabled = count === 0 || !target?.value;
+  }
+
+  const clearStepSelection = () => {
+    selectedStepIds.clear();
+    updateStepBulkActions();
+  };
+
   const rebuildStepNavigation = () => {
     const list = document.getElementById('step-nav-list');
     if (!list) return;
@@ -374,6 +399,12 @@
       drag.title = 'ドラッグ、または ↑↓ キーで並べ替え';
       drag.setAttribute('aria-label', `手順 ${index + 1} の並べ替え。ドラッグするか、↑↓ キーで移動`);
       drag.textContent = '⠿';
+      const select = document.createElement('input');
+      select.type = 'checkbox';
+      select.className = 'step-nav__select';
+      select.dataset.stepSelect = '';
+      select.checked = selectedStepIds.has(card.dataset.stepId || '');
+      select.setAttribute('aria-label', `手順 ${index + 1} を選択`);
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'step-nav__main';
@@ -404,13 +435,16 @@
       remove.setAttribute('aria-label', `手順 ${index + 1} を削除`);
       remove.textContent = '×';
       actions.append(remove);
-      item.append(drag, button, actions);
+      item.append(drag, select, button, actions);
       fragment.appendChild(item);
     });
     list.replaceChildren(fragment);
     const badge = document.querySelector('.step-nav__heading .count-badge');
     if (badge) badge.textContent = String(stepCards().length);
+    const existingIds = new Set(stepCards().map((card) => card.dataset.stepId));
+    [...selectedStepIds].forEach((stepId) => { if (!existingIds.has(stepId)) selectedStepIds.delete(stepId); });
     setActiveStep(activeId, { scroll: false });
+    updateStepBulkActions();
   };
 
   const initializeWorkspaceView = (activeStepId = '') => {
@@ -506,6 +540,52 @@
     } catch (error) {
       saveStatus('error', '手順を移動できません');
       showToast(error?.message || '手順を別シートへ移動できませんでした。');
+    }
+  };
+
+  const runBulkStepAction = async (action) => {
+    const stepIds = [...document.querySelectorAll('[data-step-nav-item]')]
+      .map((item) => item.dataset.stepId || '')
+      .filter((stepId) => selectedStepIds.has(stepId));
+    if (!stepIds.length) return;
+    const actions = document.querySelector('[data-step-bulk-actions]');
+    const target = actions?.querySelector('[data-step-bulk-target]');
+    const targetSheetId = target?.value || '';
+    const targetSheetName = target?.selectedOptions?.[0]?.textContent?.trim() || '移動先シート';
+    if (action === 'move' && !targetSheetId) {
+      showToast('移動先のシートを選んでください。');
+      return;
+    }
+    if (action === 'delete' && !window.confirm(`選択した${stepIds.length}件の手順を削除しますか？`)) return;
+
+    actions?.querySelectorAll('button, select').forEach((control) => { control.disabled = true; });
+    saveStatus('saving', action === 'move' ? '手順をまとめて移動中…' : '手順をまとめて削除中…');
+    try {
+      const body = new URLSearchParams({ stepIds: stepIds.join(',') });
+      if (action === 'move') body.set('targetSheetId', targetSheetId);
+      const response = await fetch(action === 'move' ? '/api/steps/move-many' : '/api/steps/delete-many', {
+        method: 'POST',
+        headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }),
+        body
+      });
+      const html = await response.text();
+      if (!response.ok) throw new Error(html || `HTTP ${response.status}`);
+      const workspace = document.getElementById('workspace');
+      if (!workspace) throw new Error('編集画面を更新できません。');
+      workspace.outerHTML = html;
+      const nextWorkspace = document.getElementById('workspace');
+      if (nextWorkspace && window.htmx?.process) window.htmx.process(nextWorkspace);
+      selectedStepIds.clear();
+      initializeWorkspaceView(action === 'move' ? stepIds[0] : '');
+      sendHeartbeat();
+      showToast(action === 'move'
+        ? `${stepIds.length}件を「${targetSheetName}」へ移動しました。`
+        : `${stepIds.length}件の手順を削除しました。`, 'success');
+    } catch (error) {
+      actions?.querySelectorAll('button, select').forEach((control) => { control.disabled = false; });
+      updateStepBulkActions();
+      showToast(error?.message || '選択した手順を処理できませんでした。');
+      saveStatus('error', 'まとめて処理できません');
     }
   };
 
@@ -2226,6 +2306,19 @@
       return;
     }
 
+    if (event.target.closest('[data-step-selection-clear]')) {
+      clearStepSelection();
+      return;
+    }
+    if (event.target.closest('[data-step-bulk-move]')) {
+      void runBulkStepAction('move');
+      return;
+    }
+    if (event.target.closest('[data-step-bulk-delete]')) {
+      void runBulkStepAction('delete');
+      return;
+    }
+
     const deleteButton = event.target.closest('[data-step-nav-delete]');
     if (deleteButton) {
       const navItem = deleteButton.closest('[data-step-nav-item]');
@@ -2258,6 +2351,20 @@
   });
 
   document.body.addEventListener('change', (event) => {
+    if (event.target.matches('[data-step-select]')) {
+      const item = event.target.closest('[data-step-nav-item]');
+      const stepId = item?.dataset.stepId || '';
+      if (stepId) {
+        if (event.target.checked) selectedStepIds.add(stepId);
+        else selectedStepIds.delete(stepId);
+      }
+      updateStepBulkActions();
+      return;
+    }
+    if (event.target.matches('[data-step-bulk-target]')) {
+      updateStepBulkActions();
+      return;
+    }
     if (event.target.id === 'project-package-input') {
       const file = event.target.files?.[0];
       const button = document.querySelector('[data-import-project-package]');
