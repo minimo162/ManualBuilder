@@ -56,7 +56,7 @@ function Render-MbStepNavigation {
     $steps = @($Sheet.steps)
     $sb = New-Object System.Text.StringBuilder
     [void]$sb.AppendLine('<nav class="step-nav" aria-label="選択中シートの手順">')
-    [void]$sb.AppendLine('<div class="step-nav__heading"><span>手順</span><span class="count-badge">' + $steps.Count + '</span></div>')
+    [void]$sb.AppendLine('<div class="step-nav__heading"><span>手順 <span class="count-badge">' + $steps.Count + '</span></span><button type="button" class="step-nav__select-mode" data-step-select-mode aria-pressed="false">複数選択</button></div>')
     [void]$sb.AppendLine('<div class="step-nav__guide" data-step-sort-guide aria-live="polite">⠿をドラッグ、または ↑↓ キーで並べ替え。別シートへはドラッグ</div>')
     [void]$sb.AppendLine('<div id="step-nav-list" class="step-nav__list">')
     for ($i = 0; $i -lt $steps.Count; $i++) {
@@ -91,7 +91,8 @@ function Render-MbStepNavigation {
     }
     [void]$sb.AppendLine('</div>')
     [void]$sb.AppendLine('<div class="step-nav__bulk" data-step-bulk-actions hidden>')
-    [void]$sb.AppendLine('<div class="step-nav__bulk-heading"><strong data-step-selection-count aria-live="polite">0件選択</strong><button type="button" data-step-selection-clear>選択解除</button></div>')
+    [void]$sb.AppendLine('<div class="step-nav__bulk-heading"><strong data-step-selection-count aria-live="polite">0件選択</strong><div><button type="button" data-step-selection-all>すべて選択</button><button type="button" data-step-selection-clear>解除</button></div></div>')
+    [void]$sb.AppendLine('<div class="step-nav__bulk-order" aria-label="選択した手順の一括並べ替え"><button type="button" data-step-bulk-order="top">先頭へ</button><button type="button" data-step-bulk-order="up">↑ 上へ</button><button type="button" data-step-bulk-order="down">↓ 下へ</button><button type="button" data-step-bulk-order="bottom">末尾へ</button></div>')
     [void]$sb.AppendLine('<select data-step-bulk-target aria-label="選択した手順の移動先"><option value="">移動先のシートを選択</option>')
     foreach ($targetSheet in @($Project.sheets | Where-Object { $_.id -ne $Sheet.id })) {
         [void]$sb.AppendLine('<option value="' + (ConvertTo-MbHtml $targetSheet.id) + '">' + (ConvertTo-MbHtml $targetSheet.name) + '</option>')
@@ -128,6 +129,9 @@ function ConvertTo-MbStepCardHtml {
     $description = ConvertTo-MbHtml $Step.description
     $note = ConvertTo-MbHtml $Step.note
     $stepId = ConvertTo-MbHtml $Step.id
+    $reviewRequired = $null -ne $Step.review -and [bool]$Step.review.required
+    $reviewAction = if ($reviewRequired) { [string]$Step.review.action } else { '' }
+    $reviewReason = if ($reviewRequired) { ConvertTo-MbHtml ([string]$Step.review.reason) } else { '' }
     $annotations = @($Step.annotations)
     # 注釈は必ずJSON配列で渡す。パイプへ流すと1件のときだけ配列でなくオブジェクトへ変換され、
     # 画面側の Array.isArray 判定で空扱いになり、注釈が消えたうえ画像編集の保存で失われる。
@@ -160,7 +164,14 @@ function ConvertTo-MbStepCardHtml {
     [void]$sb.AppendLine('<div class="step-card__bar">')
     [void]$sb.AppendLine('<span class="step-number">' + $Number + '</span>')
     [void]$sb.AppendLine('<span class="step-card__label">手順 ' + $Number + '</span>')
+    [void]$sb.AppendLine('<div class="step-card__actions" aria-label="この手順の操作"><button type="button" class="step-action-button" data-step-move="-1" title="1つ上へ" aria-label="手順 ' + $Number + ' を1つ上へ"' + $(if ($Number -le 1) { ' disabled' } else { '' }) + '>↑</button><button type="button" class="step-action-button" data-step-move="1" title="1つ下へ" aria-label="手順 ' + $Number + ' を1つ下へ"' + $(if ($Number -ge $Total) { ' disabled' } else { '' }) + '>↓</button><button type="button" class="step-delete-button" data-step-card-delete>削除</button></div>')
     [void]$sb.AppendLine('</div>')
+
+    if ($reviewRequired) {
+        $reviewTitle = if ($reviewAction -eq 'delete') { 'Copilotが不要な手順の可能性を示しています' } else { 'Copilotの判断に自信がない手順です' }
+        $reviewCopy = if ([string]::IsNullOrWhiteSpace($reviewReason)) { '内容と赤枠・番号を確認してください。' } else { $reviewReason }
+        [void]$sb.AppendLine('<div class="step-review-notice" data-step-review-notice data-review-action="' + (ConvertTo-MbHtml $reviewAction) + '"><div><strong>' + $reviewTitle + '</strong><span>' + $reviewCopy + '</span></div><button type="button" class="button button--secondary" data-step-review-resolve>確認済みにする</button></div>')
+    }
 
     [void]$sb.AppendLine('<div class="step-card__body">')
     [void]$sb.AppendLine('<section class="image-panel" aria-label="スクリーンショット">')
@@ -169,8 +180,8 @@ function ConvertTo-MbStepCardHtml {
         $imageUrl = '/images/' + $imageId + '?token=' + (ConvertTo-MbHtml $Token)
         $cropBadge = if ($isCropped) { '<span class="image-edit-button__badge crop-badge">切り抜き済み</span>' } else { '' }
         $undoButton = if ($CanUndoImageReplacement) { '<button type="button" class="image-secondary-button image-secondary-button--undo" data-undo-image-replace>元の画像へ戻す</button>' } else { '' }
-        $annotationBadge = if ($annotations.Count -gt 0) { '<span class="image-edit-button__badge">注釈 <span class="annotation-count">' + $annotations.Count + '</span></span>' } else { '' }
-        [void]$sb.AppendLine('<div class="step-image-frame"><button type="button" class="step-image-button" data-image-preview="' + $imageUrl + '" aria-label="手順 ' + $Number + ' のスクリーンショットを拡大"><span class="step-image-viewport"><img class="step-image" src="' + $imageUrl + '" alt="手順 ' + $Number + ' のスクリーンショット" loading="lazy"><svg class="step-annotation-overlay" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true"></svg></span></button><div class="image-edit-actions" aria-label="画像の操作"><button type="button" class="image-edit-button" data-open-annotation title="切り抜き・赤枠・矢印・番号・黒塗り"><span class="image-edit-button__icon" aria-hidden="true">✎</span><span class="image-edit-button__copy"><strong>画像を編集</strong></span>' + $annotationBadge + $cropBadge + '</button><div class="image-secondary-actions"><button type="button" class="image-secondary-button" data-replace-image>差し替え</button>' + $undoButton + '</div>' + $videoRow + '</div></div>')
+        $annotationBadge = '<span class="image-edit-button__badge annotation-badge">注釈 <span class="annotation-count">' + $annotations.Count + '</span></span>'
+        [void]$sb.AppendLine('<div class="step-image-frame"><button type="button" class="step-image-button" data-image-preview="' + $imageUrl + '" aria-label="手順 ' + $Number + ' のスクリーンショットを拡大"><span class="step-image-viewport"><img class="step-image" src="' + $imageUrl + '" alt="手順 ' + $Number + ' のスクリーンショット" loading="lazy"><svg class="step-annotation-overlay" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true"></svg></span></button><div class="image-edit-actions" aria-label="画像の操作"><button type="button" class="image-edit-button" data-open-annotation title="赤枠・番号・切り抜き・矢印・黒塗り"><span class="image-edit-button__icon" aria-hidden="true">＋</span><span class="image-edit-button__copy"><strong>赤枠・番号を追加</strong><span>切り抜き・矢印も編集</span></span>' + $annotationBadge + $cropBadge + '</button><div class="image-secondary-actions"><button type="button" class="image-secondary-button" data-replace-image>差し替え</button>' + $undoButton + '</div>' + $videoRow + '</div></div>')
         [void]$sb.AppendLine('<textarea class="step-annotations-data" hidden>' + (ConvertTo-MbHtml $annotationsJson) + '</textarea>')
         [void]$sb.AppendLine('<textarea class="step-crop-data" hidden>' + (ConvertTo-MbHtml $cropJson) + '</textarea>')
     } else {
@@ -250,7 +261,7 @@ function ConvertTo-MbProjectLibraryHtml {
     )
 
     $sb = New-Object System.Text.StringBuilder
-    [void]$sb.AppendLine('<div id="workspace" class="workspace project-library" data-app-version="0.36.1">')
+    [void]$sb.AppendLine('<div id="workspace" class="workspace project-library" data-app-version="0.36.4">')
     [void]$sb.AppendLine('<header class="topbar project-library__topbar"><button type="button" class="brand brand--home" data-project-home hx-post="/api/projects/home" hx-target="#workspace" hx-swap="outerHTML" title="マニュアル一覧" aria-label="マニュアル一覧" aria-current="page"><span class="brand__mark" aria-hidden="true">M</span><span>ManualBuilder</span></button><div class="project-library__topbar-title">マニュアル一覧</div><div></div><div class="topbar__actions"><details class="action-menu topbar-menu"><summary class="icon-button" title="その他" aria-label="その他の操作">…</summary><div class="action-menu__panel action-menu__panel--right"><button type="button" class="menu-command menu-command--danger" hx-post="/api/shutdown" hx-target="body" hx-swap="none" hx-confirm="ManualBuilderを終了しますか？">ManualBuilderを終了</button></div></details></div></header>')
     [void]$sb.AppendLine('<main class="project-library__main">')
     [void]$sb.AppendLine('<section class="project-library__intro"><div><p class="eyebrow">作成したマニュアル</p><h1>マニュアルを選ぶ</h1></div><div class="project-library__actions"><input id="project-package-input" type="file" accept=".zip,application/zip" hidden><button type="button" class="button button--ghost" data-import-project-package>ZIPを取り込む</button><form class="project-create" hx-post="/api/projects/create" hx-target="#workspace" hx-swap="outerHTML"><label><span class="sr-only">新しいマニュアルの名前</span><input type="text" name="title" maxlength="100" placeholder="新しいマニュアルの名前"></label><button type="submit" class="button button--primary">＋ 新規作成</button></form></div></section>')
@@ -288,7 +299,7 @@ function ConvertTo-MbProjectLibraryHtml {
         }
         [void]$sb.AppendLine('</div></details>')
     }
-    [void]$sb.AppendLine('<footer class="project-library__footer"><span>v0.36.1</span></footer></main></div>')
+    [void]$sb.AppendLine('<footer class="project-library__footer"><span>v0.36.4</span></footer></main></div>')
     return $sb.ToString()
 }
 
@@ -310,18 +321,43 @@ function ConvertTo-MbWorkspaceHtml {
     $steps = @($sheet.steps)
     $sb = New-Object System.Text.StringBuilder
 
-    [void]$sb.AppendLine('<div id="workspace" class="workspace" data-app-version="0.36.1" data-revision="' + [int]$Project.revision + '" data-capture-version="' + $CaptureVersion + '">')
+    # 出力は全シートを対象にするため、仕上げ状況も選択中シートだけではなく
+    # プロジェクト全体を基準にする。現在シートの入力値はブラウザー側で上書きする。
+    $finishItems = @(
+        foreach ($projectSheet in @($Project.sheets)) {
+            foreach ($projectStep in @($projectSheet.steps)) {
+                $hasFocusAnnotation = @($projectStep.annotations | Where-Object { $_.type -in @('rect', 'number') }).Count -gt 0
+                [ordered]@{
+                    sheetId = [string]$projectSheet.id
+                    sheetName = [string]$projectSheet.name
+                    stepId = [string]$projectStep.id
+                    missingText = [string]::IsNullOrWhiteSpace([string]$projectStep.description)
+                    missingImage = [string]::IsNullOrWhiteSpace([string]$projectStep.imageId)
+                    hasFocusAnnotation = $hasFocusAnnotation
+                    reviewRequired = [bool]$projectStep.review.required
+                    reviewAction = [string]$projectStep.review.action
+                    reviewReason = [string]$projectStep.review.reason
+                }
+            }
+        }
+    )
+    $finishJson = ConvertTo-MbHtml (ConvertTo-Json -InputObject @($finishItems) -Compress -Depth 5)
+    $projectStepCount = @($finishItems).Count
+
+    [void]$sb.AppendLine('<div id="workspace" class="workspace" data-app-version="0.36.4" data-revision="' + [int]$Project.revision + '" data-capture-version="' + $CaptureVersion + '">')
+    [void]$sb.AppendLine('<textarea hidden data-project-finish-data>' + $finishJson + '</textarea>')
     [void]$sb.AppendLine('<header class="topbar">')
     [void]$sb.AppendLine('<button type="button" class="brand brand--home" data-project-home hx-post="/api/projects/home" hx-target="#workspace" hx-swap="outerHTML" title="マニュアル一覧へ戻る" aria-label="マニュアル一覧へ戻る"><span class="brand__mark" aria-hidden="true">M</span><span>ManualBuilder</span></button>')
     [void]$sb.AppendLine('<label class="project-title editable-name name-field" data-editable-name title="マニュアル名を編集"><span class="sr-only">マニュアル名</span><input type="text" name="title" maxlength="100" value="' + $title + '" aria-label="マニュアル名。入力して変更" hx-post="/api/project/title" hx-trigger="input changed delay:700ms, change" hx-target="#save-status" hx-swap="outerHTML"></label>')
     [void]$sb.AppendLine('<div class="topbar__state">' + (ConvertTo-MbSaveStatusHtml) + (ConvertTo-MbWatchStatusHtml -State $CaptureState -Role $CaptureRole -Directory $CaptureDirectory) + '</div>')
     $topbarRecordAction = if ($steps.Count -gt 0) { '<button type="button" class="button button--primary topbar__main-action topbar__record-action" data-record-operations>操作を記録</button>' } else { '' }
     $topbarVideoAction = if ($steps.Count -gt 0) { '<button type="button" class="button button--secondary topbar__video-action" data-open-video-picker>録画を取り込む</button>' } else { '' }
-    [void]$sb.AppendLine('<div class="topbar__actions">' + $topbarRecordAction + $topbarVideoAction + '<details class="action-menu topbar-export"><summary class="button button--secondary" aria-label="手順書を出力">出力</summary><div class="action-menu__panel action-menu__panel--right"><button type="button" class="menu-command" data-export-excel>Excelで作成</button><button type="button" class="menu-command" data-export-word>Wordで作成</button><button type="button" class="menu-command" data-export-html>HTMLで作成</button></div></details><details class="action-menu topbar-menu"><summary class="icon-button" title="その他" aria-label="その他の操作">…</summary><div class="action-menu__panel action-menu__panel--right"><button type="button" class="menu-command" data-copilot-draft>Copilotで手順の文章を作る</button><button type="button" class="menu-command" data-copilot-review>Copilotで文章を整える</button><button type="button" class="menu-command menu-command--danger" hx-post="/api/shutdown" hx-target="body" hx-swap="none" hx-confirm="ManualBuilderを終了しますか？">ManualBuilderを終了</button></div></details></div>')
+    $topbarExportAction = if ($projectStepCount -gt 0) { '<button type="button" class="button button--secondary topbar-export" data-open-export-dialog>手順書を出力</button>' } else { '' }
+    [void]$sb.AppendLine('<div class="topbar__actions">' + $topbarRecordAction + $topbarVideoAction + $topbarExportAction + '<details class="action-menu topbar-menu"><summary class="icon-button" title="その他" aria-label="その他の操作">…</summary><div class="action-menu__panel action-menu__panel--right"><button type="button" class="menu-command" data-copilot-draft>Copilotで手順の文章を作る</button><button type="button" class="menu-command" data-copilot-review>Copilotで文章を整える</button><button type="button" class="menu-command menu-command--danger" hx-post="/api/shutdown" hx-target="body" hx-swap="none" hx-confirm="ManualBuilderを終了しますか？">ManualBuilderを終了</button></div></details></div>')
     [void]$sb.AppendLine('</header>')
 
     [void]$sb.AppendLine('<div class="app-layout">')
-    [void]$sb.AppendLine('<aside class="sidebar">' + (Render-MbSheetNavigation -Project $Project) + (Render-MbStepNavigation -Sheet $sheet -Project $Project) + '<div class="sidebar__footer"><span class="sidebar__version">v0.36.1</span></div></aside>')
+    [void]$sb.AppendLine('<aside class="sidebar">' + (Render-MbSheetNavigation -Project $Project) + (Render-MbStepNavigation -Sheet $sheet -Project $Project) + '<div class="sidebar__footer"><span class="sidebar__version">v0.36.4</span></div></aside>')
     [void]$sb.AppendLine('<main class="editor">')
     # 編集画面の見出しは入力欄なので、文書構造としての見出しが無い。読み上げの目次から
     # 何を編集中か分かるよう、画面には出さない h1 を置く。
@@ -330,7 +366,8 @@ function ConvertTo-MbWorkspaceHtml {
     [void]$sb.AppendLine('<div class="sheet-heading"><input type="hidden" name="sheetId" value="' + $sheetId + '"><label class="editable-name editable-name--sheet name-field" data-editable-name title="シート名を編集"><span class="sr-only">シート名</span><input class="sheet-name-input" type="text" name="name" maxlength="50" value="' + $sheetName + '" aria-label="シート名。入力して変更" hx-post="/api/sheets/rename" hx-trigger="input changed delay:700ms, change" hx-include="closest .sheet-heading" hx-target="#save-status" hx-swap="outerHTML"></label><span class="step-total">' + $steps.Count + ' 手順</span></div>')
     [void]$sb.AppendLine('<div class="editor__actions">')
     if ($steps.Count -gt 0) {
-        [void]$sb.AppendLine('<button type="button" class="button button--ghost editor-add-image" data-open-image-picker>＋ 画像</button>')
+        [void]$sb.AppendLine('<button type="button" class="button button--secondary editor-add-step" data-add-step-after>＋ 手順をこの後に追加</button>')
+        [void]$sb.AppendLine('<button type="button" class="button button--ghost editor-add-image" data-open-image-picker>＋ 画像から追加</button>')
     }
     [void]$sb.AppendLine('<details class="action-menu sheet-menu"><summary class="icon-button" title="シートメニュー" aria-label="シートのメニュー">…</summary><div class="action-menu__panel action-menu__panel--right"><button type="button" class="menu-command" hx-post="/api/steps/add" hx-vals=''{"sheetId":"' + $sheetId + '"}'' hx-target="#workspace" hx-swap="outerHTML">文字だけ追加</button>')
     if (@($Project.sheets).Count -le 1) {
@@ -340,6 +377,10 @@ function ConvertTo-MbWorkspaceHtml {
     }
     [void]$sb.AppendLine('</div></details></div>')
     [void]$sb.AppendLine('</div>')
+
+    if ($projectStepCount -gt 0) {
+        [void]$sb.AppendLine('<section class="finish-guide" data-finish-guide aria-labelledby="finish-guide-title"><div class="finish-guide__heading"><span class="finish-guide__mark" aria-hidden="true">✓</span><div><strong id="finish-guide-title">仕上げて出力</strong><span data-finish-summary>全シートの文章・画像・順番を確認します</span></div></div><div class="finish-guide__checks" aria-label="仕上げ状況"><button type="button" data-finish-check="text"><span>文章</span><strong data-finish-text>確認中</strong></button><button type="button" data-finish-check="image"><span>画像</span><strong data-finish-image>確認中</strong></button><button type="button" data-finish-check="annotation"><span>赤枠・番号</span><strong data-finish-annotation>確認中</strong></button><button type="button" data-finish-check="attention"><span>要確認</span><strong data-finish-attention>なし</strong></button><button type="button" data-step-select-mode-shortcut><span>順番・不要手順</span><strong>複数選択で整理</strong></button></div><button type="button" class="button button--primary finish-guide__export" data-open-export-dialog>確認して出力</button></section>')
+    }
 
     [void]$sb.AppendLine('<div class="editor-import-inputs"><input id="image-file-input" type="file" accept="image/png,image/jpeg,image/bmp" multiple hidden><input id="replacement-image-file-input" type="file" accept="image/png,image/jpeg,image/bmp" hidden><input id="video-file-input" type="file" accept="video/mp4,video/webm" hidden></div>')
     [void]$sb.AppendLine('<section class="steps" aria-label="手順一覧">')

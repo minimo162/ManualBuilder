@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const appVersion = '0.36.1';
+  const appVersion = '0.36.4';
   // 番号注釈はSVG属性で指定するためCSS変数を参照できない。
   // 編集画面とExcel・Word出力（New-MbAnnotatedImage）で同じ見た目にするため、基準フォントを揃える。
   const ANNOTATION_NUMBER_FONT = '"BIZ UDPGothic", "BIZ UDPゴシック", "BIZ UDGothic", "BIZ UDゴシック", Meiryo, "Yu Gothic UI", "MS Pゴシック", sans-serif';
@@ -348,6 +348,39 @@
   };
 
   const selectedStepIds = new Set();
+  const finishAttentionSteps = new Map();
+  let stepSelectionMode = false;
+  let lastSelectedStepId = '';
+
+  const loadFinishAttentionSteps = () => {
+    const source = document.querySelector('[data-project-finish-data]')?.value || '[]';
+    let items = [];
+    try { items = JSON.parse(source); } catch { items = []; }
+    finishAttentionSteps.clear();
+    items.filter((item) => item.reviewRequired).forEach((item) => {
+      finishAttentionSteps.set(item.stepId, {
+        sheetId: item.sheetId,
+        action: item.reviewAction || 'review',
+        reason: item.reviewReason || ''
+      });
+    });
+  };
+
+  const setStepSelectionMode = (enabled, options = {}) => {
+    stepSelectionMode = Boolean(enabled);
+    const nav = document.querySelector('.step-nav');
+    nav?.classList.toggle('step-nav--selecting', stepSelectionMode);
+    const button = nav?.querySelector('[data-step-select-mode]');
+    if (button) {
+      button.setAttribute('aria-pressed', String(stepSelectionMode));
+      button.textContent = stepSelectionMode ? '選択を終了' : '複数選択';
+    }
+    if (!stepSelectionMode && options.keepSelection !== true) {
+      selectedStepIds.clear();
+      lastSelectedStepId = '';
+    }
+    updateStepBulkActions();
+  };
 
   function updateStepBulkActions() {
     document.querySelectorAll('[data-step-nav-item]').forEach((item) => {
@@ -359,17 +392,192 @@
     const actions = document.querySelector('[data-step-bulk-actions]');
     const count = selectedStepIds.size;
     if (!actions) return;
-    actions.hidden = count === 0;
+    actions.hidden = !stepSelectionMode;
     const label = actions.querySelector('[data-step-selection-count]');
     if (label) label.textContent = `${count}件選択`;
     const target = actions.querySelector('[data-step-bulk-target]');
     const move = actions.querySelector('[data-step-bulk-move]');
     if (move) move.disabled = count === 0 || !target?.value;
+    actions.querySelectorAll('[data-step-bulk-order], [data-step-bulk-delete]')
+      .forEach((button) => { button.disabled = count === 0; });
   }
 
   const clearStepSelection = () => {
     selectedStepIds.clear();
+    lastSelectedStepId = '';
     updateStepBulkActions();
+  };
+
+  const selectAllSteps = () => {
+    document.querySelectorAll('[data-step-nav-item]').forEach((item) => {
+      const stepId = item.dataset.stepId || '';
+      if (stepId) selectedStepIds.add(stepId);
+    });
+    updateStepBulkActions();
+  };
+
+  const selectStepRange = (fromId, toId, selected) => {
+    const ids = [...document.querySelectorAll('[data-step-nav-item]')].map((item) => item.dataset.stepId || '');
+    const from = ids.indexOf(fromId);
+    const to = ids.indexOf(toId);
+    if (from < 0 || to < 0) return;
+    const start = Math.min(from, to);
+    const end = Math.max(from, to);
+    ids.slice(start, end + 1).forEach((stepId) => {
+      if (selected) selectedStepIds.add(stepId);
+      else selectedStepIds.delete(stepId);
+    });
+  };
+
+  const projectFinishItems = () => {
+    const source = document.querySelector('[data-project-finish-data]')?.value || '[]';
+    let items = [];
+    try { items = JSON.parse(source); } catch { items = []; }
+    const currentSheetId = selectedSheetId();
+    const currentSheetName = document.querySelector('.sheet-name-input')?.value || '';
+    const currentItems = stepCards().map((card) => ({
+      sheetId: currentSheetId,
+      sheetName: currentSheetName,
+      stepId: card.dataset.stepId || '',
+      missingText: !card.querySelector('textarea[name="description"]')?.value.trim(),
+      missingImage: !card.querySelector('.step-image'),
+      hasFocusAnnotation: readCardAnnotations(card).some((item) => ['rect', 'number'].includes(item.type)),
+      reviewRequired: Boolean(card.querySelector('[data-step-review-notice]')),
+      reviewAction: card.querySelector('[data-step-review-notice]')?.dataset.reviewAction || '',
+      reviewReason: card.querySelector('[data-step-review-notice] span')?.textContent?.trim() || ''
+    }));
+    return [...items.filter((item) => item.sheetId !== currentSheetId), ...currentItems];
+  };
+
+  const finishMetrics = () => {
+    const items = projectFinishItems();
+    const missingText = items.filter((item) => item.missingText);
+    const missingImage = items.filter((item) => item.missingImage);
+    const annotated = items.filter((item) => item.hasFocusAnnotation);
+    const attention = items.filter((item) => item.reviewRequired);
+    return { items, total: items.length, missingText, missingImage, annotated, attention };
+  };
+
+  const updateFinishGuide = () => {
+    const guide = document.querySelector('[data-finish-guide]');
+    if (!guide) return;
+    const metrics = finishMetrics();
+    const total = metrics.total;
+    const text = guide.querySelector('[data-finish-text]');
+    const image = guide.querySelector('[data-finish-image]');
+    const annotation = guide.querySelector('[data-finish-annotation]');
+    const attention = guide.querySelector('[data-finish-attention]');
+    const summary = guide.querySelector('[data-finish-summary]');
+    if (text) text.textContent = metrics.missingText.length ? `${metrics.missingText.length}件 未入力` : `${total}件 完了`;
+    if (image) image.textContent = metrics.missingImage.length ? `${metrics.missingImage.length}件 なし` : `${total}件 あり`;
+    if (annotation) annotation.textContent = `${metrics.annotated.length}/${total}件`;
+    if (attention) attention.textContent = metrics.attention.length ? `${metrics.attention.length}件 確認` : 'なし';
+    guide.querySelector('[data-finish-check="text"]')?.classList.toggle('finish-guide__check--warn', metrics.missingText.length > 0);
+    guide.querySelector('[data-finish-check="image"]')?.classList.toggle('finish-guide__check--warn', metrics.missingImage.length > 0);
+    guide.querySelector('[data-finish-check="attention"]')?.classList.toggle('finish-guide__check--warn', metrics.attention.length > 0);
+    if (summary) {
+      const issueCount = metrics.missingText.length + metrics.missingImage.length + metrics.attention.length;
+      summary.textContent = issueCount
+        ? `出力前に ${issueCount} 箇所を確認できます`
+        : '文章と画像が揃いました。順番と赤枠を確認して出力できます';
+    }
+  };
+
+  const selectSheetForFinishTarget = async (target) => {
+    if (!target?.sheetId || target.sheetId === selectedSheetId()) return;
+    rememberScroll();
+    const response = await fetch('/api/sheets/select', {
+      method: 'POST',
+      headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }),
+      body: new URLSearchParams({ sheetId: target.sheetId })
+    });
+    const html = await response.text();
+    if (!response.ok) throw new Error(html || `HTTP ${response.status}`);
+    const workspace = document.getElementById('workspace');
+    if (!workspace) throw new Error('編集画面を更新できません。');
+    workspace.outerHTML = html;
+    const nextWorkspace = document.getElementById('workspace');
+    if (nextWorkspace) window.htmx?.process(nextWorkspace);
+    initializeWorkspaceView(target.stepId);
+    sendHeartbeat();
+  };
+
+  const selectCopilotDeleteCandidatesOnCurrentSheet = () => {
+    const currentSheetId = selectedSheetId();
+    const visibleIds = new Set(stepCards().map((card) => card.dataset.stepId || ''));
+    selectedStepIds.clear();
+    lastSelectedStepId = '';
+    finishAttentionSteps.forEach((detail, stepId) => {
+      if (detail.action === 'delete' && detail.sheetId === currentSheetId && visibleIds.has(stepId)) {
+        selectedStepIds.add(stepId);
+      }
+    });
+    if (selectedStepIds.size) setStepSelectionMode(true, { keepSelection: true });
+    else updateStepBulkActions();
+  };
+
+  const focusFinishTarget = async (kind) => {
+    const metrics = finishMetrics();
+    const targets = kind === 'text'
+      ? metrics.missingText
+      : kind === 'image'
+        ? metrics.missingImage
+        : kind === 'attention'
+          ? metrics.attention
+          : metrics.items.filter((item) => !item.missingImage && !item.hasFocusAnnotation);
+    if (!targets.length) {
+      showToast(kind === 'annotation' ? 'すべての画像付き手順に注釈があります。' : '該当する未完了手順はありません。', 'info');
+      return;
+    }
+    const currentId = document.querySelector('.step-card--active')?.dataset.stepId || '';
+    const currentIndex = targets.findIndex((item) => item.stepId === currentId);
+    const next = targets[(currentIndex + 1) % targets.length];
+    try {
+      await selectSheetForFinishTarget(next);
+      const card = stepCards().find((item) => item.dataset.stepId === next.stepId);
+      if (!card) throw new Error('確認する手順を表示できませんでした。');
+      setActiveStep(next.stepId);
+      if (kind === 'text') card.querySelector('textarea[name="description"]')?.focus();
+      else if (kind === 'image') card.querySelector('[data-add-image-to-step]')?.focus();
+      else if (kind === 'annotation') window.setTimeout(() => openAnnotationEditor(card), 180);
+      else if (kind === 'attention') {
+        const detail = finishAttentionSteps.get(next.stepId);
+        if (detail?.action === 'delete') {
+          selectCopilotDeleteCandidatesOnCurrentSheet();
+          showToast('Copilotの不要候補を選択しました。内容を確認してから「まとめて削除」を押してください。', 'info');
+        } else {
+          card.querySelector('[data-step-review-resolve]')?.focus();
+          showToast('内容と赤枠・番号を確認し、問題なければ「確認済みにする」を押してください。', 'info');
+        }
+      }
+    } catch (error) {
+      showToast(error?.message || '確認する手順へ移動できませんでした。');
+    }
+  };
+
+  const resolveStepReview = async (card, button) => {
+    if (!card?.dataset.stepId) return;
+    button.disabled = true;
+    try {
+      await flushPendingStructuralSaves({ waitForText: true });
+      const response = await fetch('/api/steps/review/resolve', {
+        method: 'POST',
+        headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }),
+        body: new URLSearchParams({ stepId: card.dataset.stepId })
+      });
+      const html = await response.text();
+      if (!response.ok) throw new Error(html || `HTTP ${response.status}`);
+      const workspace = document.getElementById('workspace');
+      if (!workspace) throw new Error('編集画面を更新できません。');
+      workspace.outerHTML = html;
+      const nextWorkspace = document.getElementById('workspace');
+      if (nextWorkspace) window.htmx?.process(nextWorkspace);
+      initializeWorkspaceView(card.dataset.stepId);
+      showToast('確認済みにしました。', 'success');
+    } catch (error) {
+      button.disabled = false;
+      showToast(error?.message || '確認済みにできませんでした。');
+    }
   };
 
   const rebuildStepNavigation = () => {
@@ -389,6 +597,7 @@
       const statusLabel = status === 'complete' ? '入力済み' : status === 'incomplete' ? '説明未入力' : '画像なし';
       const item = document.createElement('div');
       item.className = `step-nav__item step-nav__item--${status}`;
+      if (finishAttentionSteps.has(card.dataset.stepId || '')) item.classList.add('step-nav__item--attention');
       item.dataset.stepNavItem = '';
       item.dataset.stepId = card.dataset.stepId;
       const drag = document.createElement('button');
@@ -448,10 +657,13 @@
   };
 
   const initializeWorkspaceView = (activeStepId = '') => {
+    loadFinishAttentionSteps();
     rebuildStepNavigation();
     const remembered = activeStepId || sessionStorage.getItem(activeStepKey());
     setActiveStep(remembered, { scroll: false });
     renderAllCardAnnotations();
+    setStepSelectionMode(selectedStepIds.size > 0, { keepSelection: true });
+    updateFinishGuide();
   };
 
   const stepCards = () => [...document.querySelectorAll('.steps > .step-card')];
@@ -464,12 +676,28 @@
       const labelElement = card.querySelector('.step-card__label');
       if (numberElement) numberElement.textContent = String(number);
       if (labelElement) labelElement.textContent = `手順 ${number}`;
+      const moveUp = card.querySelector('[data-step-move="-1"]');
+      const moveDown = card.querySelector('[data-step-move="1"]');
+      if (moveUp) {
+        moveUp.disabled = index === 0;
+        moveUp.setAttribute('aria-label', `手順 ${number} を1つ上へ`);
+      }
+      if (moveDown) {
+        moveDown.disabled = index === cards.length - 1;
+        moveDown.setAttribute('aria-label', `手順 ${number} を1つ下へ`);
+      }
+      card.querySelector('[data-step-card-delete]')?.setAttribute('aria-label', `手順 ${number} を削除`);
+      const image = card.querySelector('.step-image');
+      if (image) image.alt = `手順 ${number} のスクリーンショット`;
+      card.querySelector('[data-image-preview]')?.setAttribute('aria-label', `手順 ${number} のスクリーンショットを拡大`);
     });
     updateStepCounts(cards.length);
     rebuildStepNavigation();
+    updateFinishGuide();
   };
 
   let reorderQueue = Promise.resolve();
+  let lastReorderError = null;
   const queueStepOrderSave = () => {
     const sheetId = selectedSheetId();
     const orderedIds = stepCards().map((card) => card.dataset.stepId).filter(Boolean);
@@ -477,6 +705,7 @@
 
     saveStatus('saving', '並べ替えを保存中…');
     reorderQueue = reorderQueue.then(async () => {
+      lastReorderError = null;
       const body = new URLSearchParams({ sheetId, orderedIds: orderedIds.join(',') });
       const response = await fetch('/api/steps/reorder', {
         method: 'POST',
@@ -487,13 +716,74 @@
       const current = document.getElementById('save-status');
       if (current) current.outerHTML = await response.text();
       showToast('手順の順序を変更しました。', 'success');
-    }).catch(() => {
+    }).catch((error) => {
+      lastReorderError = error || new Error('手順の並べ替えを保存できませんでした。');
       saveStatus('error', '並べ替えを保存できません');
       showToast('手順の並べ替えを保存できませんでした。画面を再読込して順序を確認してください。');
     });
   };
 
+  const applyStepCardOrder = (orderedCards, activeId = '') => {
+    const container = document.querySelector('.steps');
+    if (!container || orderedCards.length < 1) return;
+    orderedCards.forEach((card) => container.appendChild(card));
+    refreshStepControls();
+    setActiveStep(activeId || orderedCards[0].dataset.stepId, { scroll: false });
+    queueStepOrderSave();
+  };
+
+  const moveSingleStep = (card, offset) => {
+    const cards = stepCards();
+    const index = cards.indexOf(card);
+    const nextIndex = index + offset;
+    if (index < 0 || nextIndex < 0 || nextIndex >= cards.length) return;
+    [cards[index], cards[nextIndex]] = [cards[nextIndex], cards[index]];
+    applyStepCardOrder(cards, card.dataset.stepId);
+  };
+
+  const reorderSelectedSteps = (action) => {
+    if (!selectedStepIds.size) return;
+    const cards = stepCards();
+    let ordered = [...cards];
+    const isSelected = (card) => selectedStepIds.has(card.dataset.stepId || '');
+    if (action === 'top') {
+      ordered = [...cards.filter(isSelected), ...cards.filter((card) => !isSelected(card))];
+    } else if (action === 'bottom') {
+      ordered = [...cards.filter((card) => !isSelected(card)), ...cards.filter(isSelected)];
+    } else if (action === 'up') {
+      for (let index = 1; index < ordered.length; index += 1) {
+        if (isSelected(ordered[index]) && !isSelected(ordered[index - 1])) {
+          [ordered[index - 1], ordered[index]] = [ordered[index], ordered[index - 1]];
+        }
+      }
+    } else if (action === 'down') {
+      for (let index = ordered.length - 2; index >= 0; index -= 1) {
+        if (isSelected(ordered[index]) && !isSelected(ordered[index + 1])) {
+          [ordered[index], ordered[index + 1]] = [ordered[index + 1], ordered[index]];
+        }
+      }
+    }
+    const before = cards.map((card) => card.dataset.stepId).join(',');
+    const after = ordered.map((card) => card.dataset.stepId).join(',');
+    if (before === after) {
+      showToast('選択した手順はこれ以上移動できません。', 'info');
+      return;
+    }
+    const activeId = cards.find(isSelected)?.dataset.stepId || '';
+    applyStepCardOrder(ordered, activeId);
+  };
+
   let sheetReorderQueue = Promise.resolve();
+  let lastSheetReorderError = null;
+  const pendingStepSaveRequests = new Set();
+  const htmxRequestIdentity = (event) => event.detail?.xhr || event.detail?.requestConfig || event.detail;
+  const waitForPendingStepSaves = async () => {
+    const startedAt = Date.now();
+    while (pendingStepSaveRequests.size > 0) {
+      if ((Date.now() - startedAt) > 15000) throw new Error('文章の保存に時間がかかっています。保存済み表示を確認して、もう一度お試しください。');
+      await new Promise((resolve) => window.setTimeout(resolve, 25));
+    }
+  };
   const queueSheetOrderSave = () => {
     const orderedIds = [...document.querySelectorAll('[data-sheet-nav-item]')]
       .map((item) => item.dataset.sheetId)
@@ -502,6 +792,7 @@
 
     saveStatus('saving', 'シート順を保存中…');
     sheetReorderQueue = sheetReorderQueue.then(async () => {
+      lastSheetReorderError = null;
       const body = new URLSearchParams({ orderedIds: orderedIds.join(',') });
       const response = await fetch('/api/sheets/reorder', {
         method: 'POST',
@@ -511,16 +802,27 @@
       if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
       const current = document.getElementById('save-status');
       if (current) current.outerHTML = await response.text();
-    }).catch(() => {
+    }).catch((error) => {
+      lastSheetReorderError = error || new Error('シートの並べ替えを保存できませんでした。');
       saveStatus('error', 'シート順を保存できません');
       showToast('シートの並べ替えを保存できませんでした。画面を再読込して順序を確認してください。');
     });
+  };
+
+  const flushPendingStructuralSaves = async ({ waitForText = false } = {}) => {
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    if (waitForText) await new Promise((resolve) => window.setTimeout(resolve, 800));
+    await waitForPendingStepSaves();
+    await Promise.all([reorderQueue, sheetReorderQueue]);
+    const error = lastReorderError || lastSheetReorderError;
+    if (error) throw error;
   };
 
   const moveStepToSheet = async (stepId, targetSheetId, targetSheetName = '') => {
     if (!stepId || !targetSheetId || targetSheetId === selectedSheetId()) return;
     saveStatus('saving', '手順を移動中…');
     try {
+      await flushPendingStructuralSaves({ waitForText: true });
       const body = new URLSearchParams({ stepId, targetSheetId });
       const response = await fetch('/api/steps/move', {
         method: 'POST',
@@ -561,6 +863,7 @@
     actions?.querySelectorAll('button, select').forEach((control) => { control.disabled = true; });
     saveStatus('saving', action === 'move' ? '手順をまとめて移動中…' : '手順をまとめて削除中…');
     try {
+      await flushPendingStructuralSaves({ waitForText: true });
       const body = new URLSearchParams({ stepIds: stepIds.join(',') });
       if (action === 'move') body.set('targetSheetId', targetSheetId);
       const response = await fetch(action === 'move' ? '/api/steps/move-many' : '/api/steps/delete-many', {
@@ -575,6 +878,11 @@
       workspace.outerHTML = html;
       const nextWorkspace = document.getElementById('workspace');
       if (nextWorkspace && window.htmx?.process) window.htmx.process(nextWorkspace);
+      if (action === 'delete') stepIds.forEach((stepId) => finishAttentionSteps.delete(stepId));
+      else stepIds.forEach((stepId) => {
+        const detail = finishAttentionSteps.get(stepId);
+        if (detail) finishAttentionSteps.set(stepId, { ...detail, sheetId: targetSheetId });
+      });
       selectedStepIds.clear();
       initializeWorkspaceView(action === 'move' ? stepIds[0] : '');
       sendHeartbeat();
@@ -734,6 +1042,12 @@
     if (redo) redo.disabled = annotationEditor.historyIndex >= annotationEditor.history.length - 1;
     if (remove) remove.disabled = !annotationEditor.selectedId;
     if (resetCrop) resetCrop.disabled = isFullCrop(annotationEditor.crop);
+    const imageCards = stepCards().filter((card) => card.querySelector('.step-image'));
+    const cardIndex = imageCards.indexOf(annotationEditor.card);
+    const previous = dialog.querySelector('[data-annotation-step="-1"]');
+    const next = dialog.querySelector('[data-annotation-step="1"]');
+    if (previous) previous.disabled = cardIndex <= 0;
+    if (next) next.disabled = cardIndex < 0 || cardIndex >= imageCards.length - 1;
 
     const numberInput = dialog.querySelector('[data-annotation-number]');
     const numberHint = dialog.querySelector('[data-annotation-number-hint]');
@@ -844,6 +1158,7 @@
       cropBadge?.remove();
     }
     renderCardAnnotations(card);
+    updateFinishGuide();
   };
 
   const saveImageEdits = () => {
@@ -898,12 +1213,23 @@
     if (saved) annotationEditor.dialog?.close();
   };
 
+  const openAdjacentAnnotationEditor = async (offset) => {
+    const imageCards = stepCards().filter((card) => card.querySelector('.step-image'));
+    const currentIndex = imageCards.indexOf(annotationEditor.card);
+    const target = imageCards[currentIndex + offset];
+    if (!target) return;
+    window.clearTimeout(annotationEditor.saveTimer);
+    if (!await saveImageEdits()) return;
+    setActiveStep(target.dataset.stepId, { scroll: false });
+    openAnnotationEditor(target);
+  };
+
   const ensureAnnotationEditor = () => {
     if (annotationEditor.dialog) return annotationEditor.dialog;
     const dialog = document.createElement('dialog');
     dialog.className = 'annotation-editor';
     dialog.setAttribute('aria-label', '画像を編集');
-    dialog.innerHTML = '<header class="annotation-editor__header"><div><strong>画像を編集</strong><span>ツールを選んで画像上をドラッグします。作成した注釈はそのまま移動・サイズ変更できます。</span></div><button type="button" class="button button--primary annotation-editor__done" data-annotation-close>完了</button></header><div class="annotation-editor__toolbar" role="toolbar" aria-label="画像編集ツール"><div class="annotation-editor__tool-group"><span>基本</span><button type="button" data-annotation-tool="select">選択・移動</button><button type="button" data-annotation-tool="crop">切り抜き</button></div><div class="annotation-editor__tool-group"><span>注釈</span><button type="button" data-annotation-tool="rect">赤枠</button><button type="button" data-annotation-tool="arrow">赤矢印</button><button type="button" data-annotation-tool="number">番号</button><button type="button" data-annotation-tool="blackout">黒塗り</button></div><div class="annotation-editor__tool-group"><span>番号の値</span><div class="annotation-number-field"><input type="number" inputmode="numeric" min="1" max="99" step="1" data-annotation-number aria-label="選択した番号注釈の値" title="番号注釈を選ぶと1〜99へ変更できます" disabled><span class="annotation-number-field__hint" data-annotation-number-hint>番号を選ぶ</span></div></div><div class="annotation-editor__tool-group annotation-editor__tool-group--commands"><span>編集</span><button type="button" data-annotation-undo title="元に戻す">↶ 戻す</button><button type="button" data-annotation-redo title="やり直す">↷ やり直す</button><button type="button" data-annotation-remove>選択を削除</button><button type="button" data-crop-reset>切り抜きを戻す</button><button type="button" data-annotation-clear>注釈をすべて削除</button></div></div><div class="annotation-editor__canvas"><div class="annotation-editor__stage"><img alt="編集対象のスクリーンショット"><svg class="annotation-editor__svg" viewBox="0 0 1000 1000" preserveAspectRatio="none"></svg></div></div><footer class="annotation-editor__footer"><span data-image-edit-status class="annotation-editor__save-status annotation-editor__save-status--saved">自動保存済み</span><span>黒塗りと切り抜きは元画像を変更しません。機密情報の完全削除機能ではありません。</span></footer>';
+    dialog.innerHTML = '<header class="annotation-editor__header"><div><strong>画像を編集</strong><span>ツールを選んで画像上をドラッグします。作成した注釈はそのまま移動・サイズ変更できます。</span></div><button type="button" class="button button--primary annotation-editor__done" data-annotation-close>完了</button></header><div class="annotation-editor__toolbar" role="toolbar" aria-label="画像編集ツール"><div class="annotation-editor__tool-group"><span>基本</span><button type="button" data-annotation-tool="select">選択・移動</button><button type="button" data-annotation-tool="crop">切り抜き</button></div><div class="annotation-editor__tool-group"><span>注釈</span><button type="button" data-annotation-tool="rect">赤枠</button><button type="button" data-annotation-tool="arrow">赤矢印</button><button type="button" data-annotation-tool="number">番号</button><button type="button" data-annotation-tool="blackout">黒塗り</button></div><div class="annotation-editor__tool-group"><span>番号の値</span><div class="annotation-number-field"><input type="number" inputmode="numeric" min="1" max="99" step="1" data-annotation-number aria-label="選択した番号注釈の値" title="番号注釈を選ぶと1〜99へ変更できます" disabled><span class="annotation-number-field__hint" data-annotation-number-hint>番号を選ぶ</span></div></div><div class="annotation-editor__tool-group annotation-editor__tool-group--commands"><span>編集</span><button type="button" data-annotation-undo title="元に戻す">↶ 戻す</button><button type="button" data-annotation-redo title="やり直す">↷ やり直す</button><button type="button" data-annotation-remove>選択を削除</button><button type="button" data-crop-reset>切り抜きを戻す</button><button type="button" data-annotation-clear>注釈をすべて削除</button></div></div><div class="annotation-editor__canvas"><div class="annotation-editor__stage"><img alt="編集対象のスクリーンショット"><svg class="annotation-editor__svg" viewBox="0 0 1000 1000" preserveAspectRatio="none"></svg></div></div><footer class="annotation-editor__footer"><span data-image-edit-status class="annotation-editor__save-status annotation-editor__save-status--saved">自動保存済み</span><span>黒塗りと切り抜きは元画像を変更しません。機密情報の完全削除機能ではありません。</span><div class="annotation-editor__step-nav"><button type="button" data-annotation-step="-1">← 前の画像</button><button type="button" data-annotation-step="1">次の画像 →</button></div></footer>';
     document.body.appendChild(dialog);
     annotationEditor.dialog = dialog;
 
@@ -913,6 +1239,8 @@
       if (event.target.closest('[data-annotation-undo]')) { restoreAnnotationHistory(-1); return; }
       if (event.target.closest('[data-annotation-redo]')) { restoreAnnotationHistory(1); return; }
       if (event.target.closest('[data-annotation-remove]')) { removeSelectedAnnotation(); return; }
+      const stepMove = event.target.closest('[data-annotation-step]');
+      if (stepMove) { void openAdjacentAnnotationEditor(Number(stepMove.dataset.annotationStep)); return; }
       if (event.target.closest('[data-crop-reset]')) {
         annotationEditor.crop = fullCrop();
         pushAnnotationHistory();
@@ -1127,7 +1455,7 @@
     editorImage.alt = image.alt;
     setAnnotationTool('select');
     setImageEditStatus('saved', '自動保存済み');
-    dialog.showModal();
+    if (!dialog.open) dialog.showModal();
     window.requestAnimationFrame(renderAnnotationEditor);
   };
 
@@ -1244,6 +1572,7 @@
       undoButton?.remove();
     }
     window.requestAnimationFrame(() => renderCardAnnotations(card));
+    updateFinishGuide();
   };
 
   const refreshWorkspace = async (activeStepId = '') => {
@@ -1257,6 +1586,40 @@
     if (!ensureCurrentAssets()) return;
     initializeWorkspaceView(activeStepId);
     sendHeartbeat();
+  };
+
+  const addStepAfterActive = async (button) => {
+    const sheetId = selectedSheetId();
+    if (!sheetId) return;
+    button.disabled = true;
+    saveStatus('saving', '手順を追加中…');
+    try {
+      await flushPendingStructuralSaves({ waitForText: true });
+      const currentIds = new Set(stepCards().map((card) => card.dataset.stepId || ''));
+      const afterStepId = document.querySelector('.step-card--active')?.dataset.stepId || '';
+      const body = new URLSearchParams({ sheetId, afterStepId });
+      const response = await fetch('/api/steps/add', {
+        method: 'POST',
+        headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }),
+        body
+      });
+      const html = await response.text();
+      if (!response.ok) throw new Error(html || `HTTP ${response.status}`);
+      const workspace = document.getElementById('workspace');
+      if (!workspace) throw new Error('編集画面を更新できません。');
+      workspace.outerHTML = html;
+      const nextWorkspace = document.getElementById('workspace');
+      if (nextWorkspace && window.htmx?.process) window.htmx.process(nextWorkspace);
+      const added = stepCards().find((card) => !currentIds.has(card.dataset.stepId || ''));
+      initializeWorkspaceView(added?.dataset.stepId || afterStepId);
+      added?.querySelector('input[name="title"]')?.focus();
+      sendHeartbeat();
+      showToast('現在の手順の直後に新しい手順を追加しました。', 'success');
+    } catch (error) {
+      button.disabled = false;
+      saveStatus('error', '手順を追加できません');
+      showToast(error?.message || '手順を追加できませんでした。');
+    }
   };
 
   const replaceStepImage = async (file, stepId, source = 'file') => {
@@ -1918,9 +2281,8 @@
     const dialog = ensureExcelExportDialog();
     updateExcelExportDialog({ state: 'queued', message: '編集内容を保存しています', percent: 0, currentStep: 0, totalSteps: 0 });
     if (!dialog.open) dialog.showModal();
-    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
-    await new Promise((resolve) => window.setTimeout(resolve, 800));
     try {
+      await flushPendingStructuralSaves({ waitForText: true });
       const status = await excelExportRequest('/api/export/excel/start', new URLSearchParams());
       updateExcelExportDialog(status);
     } catch (error) {
@@ -2059,9 +2421,10 @@
     const dialog = ensureWordExportDialog();
     updateWordExportDialog({ state: 'queued', message: '編集内容を保存しています', percent: 0, currentStep: 0, totalSteps: 0 });
     if (!dialog.open) dialog.showModal();
-    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
-    await new Promise((resolve) => window.setTimeout(resolve, 500));
-    try { updateWordExportDialog(await wordExportRequest('/api/export/word/start', new URLSearchParams())); }
+    try {
+      await flushPendingStructuralSaves({ waitForText: true });
+      updateWordExportDialog(await wordExportRequest('/api/export/word/start', new URLSearchParams()));
+    }
     catch (error) { updateWordExportDialog({ state: 'failed', message: error.message || 'Wordファイルを作成できませんでした', errorCode: error.code, percent: 0 }); }
   };
 
@@ -2174,8 +2537,8 @@
     const dialog = ensureHtmlExportDialog();
     updateHtmlExportDialog('running');
     if (!dialog.open) dialog.showModal();
-    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     try {
+      await flushPendingStructuralSaves({ waitForText: true });
       const response = await fetch('/api/export/html', {
         method: 'POST',
         headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }),
@@ -2195,6 +2558,67 @@
     } catch (error) {
       updateHtmlExportDialog('failed', { message: error.message || 'HTMLマニュアルを作成できませんでした' });
     }
+  };
+
+  let outputReviewDialog = null;
+  const ensureOutputReviewDialog = () => {
+    if (outputReviewDialog) return outputReviewDialog;
+    const dialog = document.createElement('dialog');
+    dialog.className = 'output-review-dialog';
+    dialog.setAttribute('aria-label', '仕上げを確認して手順書を出力');
+    dialog.innerHTML = '<header class="output-review-dialog__header"><div><strong>仕上げを確認して出力</strong><span>全シートの編集内容と順番が、そのまま手順書になります</span></div><button type="button" class="output-review-dialog__close" data-output-close aria-label="閉じる">×</button></header>'
+      + '<div class="output-review-dialog__content"><section class="output-review-dialog__summary" aria-label="最終確認"><div><span>全手順</span><strong data-output-total>0件</strong></div><button type="button" data-output-fix="text"><span>説明なし</span><strong data-output-missing-text>0件</strong></button><button type="button" data-output-fix="image"><span>画像なし</span><strong data-output-missing-image>0件</strong></button><div><span>赤枠・番号あり</span><strong data-output-annotated>0件</strong></div><button type="button" data-output-fix="attention"><span>Copilot後の要確認</span><strong data-output-attention>0件</strong></button></section><p class="output-review-dialog__note" data-output-note></p>'
+      + '<section class="output-review-dialog__formats" aria-label="出力形式"><button type="button" class="output-format output-format--recommended" data-output-format="excel"><span class="output-format__badge">おすすめ</span><strong>Excelで作成</strong><span>横長で、手順を一覧しやすい形式</span></button><button type="button" class="output-format" data-output-format="word"><strong>Wordで作成</strong><span>印刷しやすい縦型の文書</span></button><button type="button" class="output-format" data-output-format="html"><strong>HTMLで作成</strong><span>ブラウザーで閲覧・共有する形式</span></button></section></div>'
+      + '<footer class="output-review-dialog__footer"><span>説明や画像がなくても、意図した内容なら出力できます。</span><button type="button" class="button button--ghost" data-output-close>編集に戻る</button></footer>';
+    dialog.querySelectorAll('[data-output-close]').forEach((button) => button.addEventListener('click', () => dialog.close()));
+    dialog.addEventListener('click', (event) => {
+      const fix = event.target.closest('[data-output-fix]');
+      if (fix && !fix.disabled) {
+        dialog.close();
+        void focusFinishTarget(fix.dataset.outputFix);
+        return;
+      }
+      const format = event.target.closest('[data-output-format]');
+      if (!format) return;
+      dialog.close();
+      if (format.dataset.outputFormat === 'excel') startExcelExport();
+      else if (format.dataset.outputFormat === 'word') startWordExport();
+      else startHtmlExport();
+    });
+    dialog.addEventListener('cancel', (event) => {
+      event.preventDefault();
+      dialog.close();
+    });
+    document.body.appendChild(dialog);
+    outputReviewDialog = dialog;
+    return dialog;
+  };
+
+  const openOutputReviewDialog = async () => {
+    try {
+      await flushPendingStructuralSaves({ waitForText: true });
+    } catch (error) {
+      showToast(error?.message || '編集内容を保存できないため、出力確認を開けませんでした。');
+      return;
+    }
+    const dialog = ensureOutputReviewDialog();
+    const metrics = finishMetrics();
+    dialog.querySelector('[data-output-total]').textContent = `${metrics.total}件`;
+    dialog.querySelector('[data-output-missing-text]').textContent = `${metrics.missingText.length}件`;
+    dialog.querySelector('[data-output-missing-image]').textContent = `${metrics.missingImage.length}件`;
+    dialog.querySelector('[data-output-annotated]').textContent = `${metrics.annotated.length}件`;
+    dialog.querySelector('[data-output-attention]').textContent = `${metrics.attention.length}件`;
+    const textFix = dialog.querySelector('[data-output-fix="text"]');
+    const imageFix = dialog.querySelector('[data-output-fix="image"]');
+    const attentionFix = dialog.querySelector('[data-output-fix="attention"]');
+    textFix.disabled = metrics.missingText.length === 0;
+    imageFix.disabled = metrics.missingImage.length === 0;
+    attentionFix.disabled = metrics.attention.length === 0;
+    const issues = metrics.missingText.length + metrics.missingImage.length + metrics.attention.length;
+    dialog.querySelector('[data-output-note]').textContent = issues
+      ? `${issues}箇所に未入力があります。件数を押すと該当手順を直せます。意図した空欄ならそのまま形式を選べます。`
+      : '文章と画像が揃っています。順番と赤枠・番号を確認したら、形式を選んでください。';
+    if (!dialog.open) dialog.showModal();
   };
 
   document.body.addEventListener('htmx:configRequest', (event) => {
@@ -2270,6 +2694,11 @@
       openRecorderDialog();
       return;
     }
+    const addStepButton = event.target.closest('[data-add-step-after]');
+    if (addStepButton) {
+      void addStepAfterActive(addStepButton);
+      return;
+    }
     const copilotDraftButton = event.target.closest('[data-copilot-draft]');
     if (copilotDraftButton) {
       const menu = copilotDraftButton.closest('details');
@@ -2282,6 +2711,10 @@
       const menu = copilotReviewButton.closest('details');
       if (menu) menu.open = false;
       openCopilotDialog('review');
+      return;
+    }
+    if (event.target.closest('[data-open-export-dialog]')) {
+      void openOutputReviewDialog();
       return;
     }
     const htmlExportButton = event.target.closest('[data-export-html]');
@@ -2319,6 +2752,33 @@
   });
 
   document.body.addEventListener('click', (event) => {
+    const reviewResolveButton = event.target.closest('[data-step-review-resolve]');
+    if (reviewResolveButton) {
+      void resolveStepReview(reviewResolveButton.closest('.step-card'), reviewResolveButton);
+      return;
+    }
+    const finishCheck = event.target.closest('[data-finish-check]');
+    if (finishCheck) {
+      void focusFinishTarget(finishCheck.dataset.finishCheck);
+      return;
+    }
+    const selectionModeButton = event.target.closest('[data-step-select-mode], [data-step-select-mode-shortcut]');
+    if (selectionModeButton) {
+      setStepSelectionMode(!stepSelectionMode);
+      if (stepSelectionMode) document.querySelector('.step-nav')?.scrollIntoView({ block: 'nearest' });
+      return;
+    }
+    const stepSelect = event.target.closest('[data-step-select]');
+    if (stepSelect) {
+      const item = stepSelect.closest('[data-step-nav-item]');
+      const stepId = item?.dataset.stepId || '';
+      if (event.shiftKey && lastSelectedStepId && stepId) {
+        selectStepRange(lastSelectedStepId, stepId, stepSelect.checked);
+      }
+      if (stepId) lastSelectedStepId = stepId;
+      window.queueMicrotask(updateStepBulkActions);
+      return;
+    }
     const replaceButton = event.target.closest('[data-replace-image], [data-add-image-to-step]');
     if (replaceButton) {
       const card = replaceButton.closest('.step-card');
@@ -2379,6 +2839,15 @@
       clearStepSelection();
       return;
     }
+    if (event.target.closest('[data-step-selection-all]')) {
+      selectAllSteps();
+      return;
+    }
+    const bulkOrderButton = event.target.closest('[data-step-bulk-order]');
+    if (bulkOrderButton) {
+      reorderSelectedSteps(bulkOrderButton.dataset.stepBulkOrder);
+      return;
+    }
     if (event.target.closest('[data-step-bulk-move]')) {
       void runBulkStepAction('move');
       return;
@@ -2388,32 +2857,46 @@
       return;
     }
 
-    const deleteButton = event.target.closest('[data-step-nav-delete]');
+    const moveButton = event.target.closest('[data-step-move]');
+    if (moveButton) {
+      const card = moveButton.closest('.step-card');
+      if (card) moveSingleStep(card, Number(moveButton.dataset.stepMove));
+      return;
+    }
+
+    const deleteButton = event.target.closest('[data-step-nav-delete], [data-step-card-delete]');
     if (deleteButton) {
       const navItem = deleteButton.closest('[data-step-nav-item]');
-      const card = stepCards().find((item) => item.dataset.stepId === navItem?.dataset.stepId);
+      const card = deleteButton.closest('.step-card')
+        || stepCards().find((item) => item.dataset.stepId === navItem?.dataset.stepId);
       if (!card || !window.confirm('この手順を削除しますか？')) return;
       deleteButton.disabled = true;
       saveStatus('saving', '削除中…');
-      const body = new URLSearchParams({ stepId: card.dataset.stepId || '' });
-      fetch('/api/steps/delete', {
-        method: 'POST',
-        headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }),
-        body
-      }).then(async (response) => {
-        if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
-        const current = document.getElementById('save-status');
-        if (current) current.outerHTML = await response.text();
-        card.remove();
-        refreshStepControls();
-        if (!stepCards().length) {
-          window.htmx?.ajax('GET', '/ui/workspace', { target: '#workspace', swap: 'outerHTML' });
+      void (async () => {
+        try {
+          await flushPendingStructuralSaves({ waitForText: true });
+          const stepId = card.dataset.stepId || '';
+          const response = await fetch('/api/steps/delete', {
+            method: 'POST',
+            headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }),
+            body: new URLSearchParams({ stepId })
+          });
+          if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+          const current = document.getElementById('save-status');
+          if (current) current.outerHTML = await response.text();
+          selectedStepIds.delete(stepId);
+          finishAttentionSteps.delete(stepId);
+          card.remove();
+          refreshStepControls();
+          if (!stepCards().length) {
+            window.htmx?.ajax('GET', '/ui/workspace', { target: '#workspace', swap: 'outerHTML' });
+          }
+        } catch {
+          deleteButton.disabled = false;
+          saveStatus('error', '削除できません');
+          showToast('手順を削除できませんでした。入力内容は画面に残っています。');
         }
-      }).catch(() => {
-        deleteButton.disabled = false;
-        saveStatus('error', '削除できません');
-        showToast('手順を削除できませんでした。入力内容は画面に残っています。');
-      });
+      })();
       return;
     }
 
@@ -2482,10 +2965,20 @@
   let stepNavigationRebuildTimer = 0;
   document.body.addEventListener('input', (event) => {
     if (!event.target.matches('.step-card input[name="title"], .step-card textarea[name="description"]')) return;
+    const card = event.target.closest('.step-card');
+    if (card) setActiveStep(card.dataset.stepId, { scroll: false });
     // 打鍵ごとに左アウトライン全体を作り直すと、手順数が多いマニュアルで入力が引っかかる。
     // 入力が一段落してからまとめて更新する。
     window.clearTimeout(stepNavigationRebuildTimer);
+    updateFinishGuide();
     stepNavigationRebuildTimer = window.setTimeout(rebuildStepNavigation, 200);
+  });
+
+  document.body.addEventListener('focusin', (event) => {
+    const card = event.target.closest?.('.step-card');
+    if (card && !card.classList.contains('step-card--active')) {
+      setActiveStep(card.dataset.stepId, { scroll: false });
+    }
   });
 
   document.body.addEventListener('input', (event) => {
@@ -2919,6 +3412,7 @@
     if (path === '/api/project/title' || path === '/api/sheets/rename' || path === '/api/steps/update') {
       saveStatus('saving', '保存中…');
     }
+    if (path === '/api/steps/update') pendingStepSaveRequests.add(htmxRequestIdentity(event));
   });
 
   document.body.addEventListener('htmx:afterSwap', (event) => {
@@ -2943,6 +3437,7 @@
 
   document.body.addEventListener('htmx:afterRequest', (event) => {
     const path = requestPath(event);
+    if (path === '/api/steps/update') pendingStepSaveRequests.delete(htmxRequestIdentity(event));
     if (path === '/api/shutdown' && event.detail.successful) {
       document.body.innerHTML = '<main class="shutdown-screen"><div class="shutdown-screen__mark">M</div><h1>ManualBuilderを終了しました</h1><p>このタブは閉じてかまいません。</p></main>';
       return;
@@ -2953,7 +3448,8 @@
     }
   });
 
-  document.body.addEventListener('htmx:sendError', () => {
+  document.body.addEventListener('htmx:sendError', (event) => {
+    if (requestPath(event) === '/api/steps/update') pendingStepSaveRequests.delete(htmxRequestIdentity(event));
     saveStatus('error', 'サーバーへ接続できません');
     showToast('ManualBuilderとの接続が切れました。アプリが起動中か確認してください。');
   });
@@ -3390,8 +3886,8 @@
         : '';
       // 自信がない下書きと不要判定は、既定では採用しない。取りこぼしより誤採用を避ける。
       const checked = (review || (!uncertain && !visualUncertain && !dropped)) ? ' checked' : '';
-      return `<article class="copilot-draft" data-copilot-draft-item data-step-id="${escapeHtml(draft.id)}" data-target-candidate-id="${escapeHtml(draft.targetCandidateId || '')}" data-zoom="${escapeHtml(draft.zoom || 'keep')}">
-<label class="copilot-draft__accept"><input type="checkbox" data-copilot-accept${checked}><span>採用する</span></label>
+      return `<article class="copilot-draft" data-copilot-draft-item data-step-id="${escapeHtml(draft.id)}" data-sheet-id="${escapeHtml(draft.sheetId || '')}" data-target-candidate-id="${escapeHtml(draft.targetCandidateId || '')}" data-zoom="${escapeHtml(draft.zoom || 'keep')}" data-dropped="${dropped ? 'true' : 'false'}" data-uncertain="${uncertain ? 'true' : 'false'}" data-visual-uncertain="${visualUncertain ? 'true' : 'false'}">
+<label class="copilot-draft__accept"><input type="checkbox" data-copilot-accept${checked}><span>文章と赤枠を反映</span></label>
 <div class="copilot-draft__body">
 ${visual}
 <div class="copilot-draft__flags">${flags.join('')}</div>
@@ -3418,8 +3914,28 @@ ${review ? current + reason : reason + current}
         targetCandidateId: item.dataset.targetCandidateId || '',
         zoom: item.dataset.zoom || 'keep'
       }));
-    if (accept.length === 0) {
-      showToast('採用する手順を1件以上選んでください。');
+    const suggestedDeletes = items
+      .filter((item) => item.dataset.dropped === 'true' && !item.querySelector('[data-copilot-accept]').checked)
+      .map((item) => ({
+        stepId: item.dataset.stepId,
+        sheetId: item.dataset.sheetId,
+        action: 'delete',
+        reason: item.querySelector('.copilot-draft__reason')?.textContent?.trim() || '不要な手順の可能性があります。'
+      }))
+      .filter((item) => item.stepId && item.sheetId);
+    const suggestedReviews = items
+      .filter((item) => item.dataset.dropped !== 'true'
+        && !item.querySelector('[data-copilot-accept]').checked
+        && (item.dataset.uncertain === 'true' || item.dataset.visualUncertain === 'true'))
+      .map((item) => ({
+        stepId: item.dataset.stepId,
+        sheetId: item.dataset.sheetId,
+        action: 'review',
+        reason: item.querySelector('.copilot-draft__reason')?.textContent?.trim() || '文章または赤枠・番号を確認してください。'
+      }))
+      .filter((item) => item.stepId && item.sheetId);
+    if (accept.length === 0 && suggestedDeletes.length === 0 && suggestedReviews.length === 0) {
+      showToast('反映する手順を1件以上選んでください。');
       return;
     }
     copilotDraft.busy = true;
@@ -3428,17 +3944,35 @@ ${review ? current + reason : reason + current}
       const response = await fetch('/api/copilot/draft/apply', {
         method: 'POST',
         headers: sessionHeaders({ 'Content-Type': 'application/json; charset=UTF-8' }),
-        body: JSON.stringify({ accept })
+        body: JSON.stringify({
+          accept,
+          attention: [...suggestedDeletes, ...suggestedReviews].map((item) => ({
+            id: item.stepId,
+            action: item.action,
+            reason: item.reason
+          }))
+        })
       });
       if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
       const result = await response.json();
       // 採用ずみなので、閉じるときに破棄を送らないようにしてから閉じる。
       copilotDraft.drafts = [];
       copilotDraft.dialog.close();
+      selectedStepIds.clear();
+      lastSelectedStepId = '';
       await refreshWorkspace();
-      showToast(copilotDraft.mode === 'review'
-        ? `${result.applied} 件の手順の文章を整えました。`
-        : `${result.applied} 件の手順に文章を入れました。`, 'info');
+      const firstAttention = suggestedDeletes[0] || suggestedReviews[0];
+      if (firstAttention) {
+        await selectSheetForFinishTarget(firstAttention);
+        setActiveStep(firstAttention.stepId, { scroll: false });
+        if (suggestedDeletes.length) selectCopilotDeleteCandidatesOnCurrentSheet();
+        updateFinishGuide();
+        showToast(`${result.applied}件を反映しました。不要候補${suggestedDeletes.length}件、判断に自信がない候補${suggestedReviews.length}件を「要確認」に残しました。シートをまたぐ候補も1件ずつ確認できます。`, 'info');
+      } else {
+        showToast(copilotDraft.mode === 'review'
+          ? `${result.applied}件を反映しました。仕上げ状況を確認して出力できます。`
+          : `${result.applied}件を反映しました。次は文章・画像・順番を仕上げてください。`, 'info');
+      }
     } catch (error) {
       showToast(error.message || '下書きを反映できませんでした。');
     } finally {
@@ -3553,8 +4087,18 @@ ${review ? current + reason : reason + current}
     document.body.appendChild(dialog);
     copilotDraft.dialog = dialog;
 
+    const requestCopilotClose = () => {
+      if (copilotDraft.busy) return;
+      if (copilotDraft.drafts.length > 0
+        && !window.confirm('Copilotの提案と、この画面で編集した内容を破棄して閉じますか？')) return;
+      dialog.close();
+    };
     dialog.querySelectorAll('[data-copilot-close]').forEach((button) => {
-      button.addEventListener('click', () => dialog.close());
+      button.addEventListener('click', requestCopilotClose);
+    });
+    dialog.addEventListener('cancel', (event) => {
+      event.preventDefault();
+      requestCopilotClose();
     });
     dialog.querySelector('[data-copilot-start]').addEventListener('click', () => startCopilotDraft());
     dialog.querySelector('[data-copilot-apply]').addEventListener('click', () => applyCopilotDrafts());
@@ -3606,7 +4150,7 @@ ${review ? current + reason : reason + current}
       ? '手順の文章だけをMicrosoft 365 Copilotへ渡します。画像は渡しません。'
       : '画像は普段お使いのMicrosoft 365 Copilotへ添付されます。会社の規程で扱えない画面が含まれていないか確かめてください。';
     dialog.querySelector('[data-copilot-start]').textContent = review ? '文章を確認する' : '下書きを作る';
-    dialog.querySelector('[data-copilot-apply]').textContent = review ? '選んだ修正を反映する' : '選んだ手順に入れる';
+    dialog.querySelector('[data-copilot-apply]').textContent = review ? '選んだ修正を反映して仕上げへ' : '反映して仕上げへ';
     // 校正では対象の絞り込みが要らない。文章のある手順がすべて対象。
     dialog.querySelector('[data-copilot-include-written]').closest('label').hidden = review;
 

@@ -322,6 +322,16 @@ $appliedStep = Get-MbStepById -Project $project -StepId $applyTarget
 Add-Result ($applied -eq 1) '採用した件数を返す'
 Add-Result ([string]$appliedStep.title -eq '申請の作成') '採用した手順名が入る'
 
+$attentionTarget = $stepIds[2]
+$attentionSelection = '{"accept":[],"attention":[{"id":"' + $attentionTarget + '","action":"review","reason":"赤枠を特定できませんでした。"}]}'
+[void](Set-MbCopilotDraftSelection -Project $project -SelectionJson $attentionSelection)
+$attentionStep = Get-MbStepById -Project $project -StepId $attentionTarget
+Add-Result ([bool]$attentionStep.review.required -and [string]$attentionStep.review.action -eq 'review') 'Copilotの自信なし候補を要確認として保存する'
+Add-Result ([string]$attentionStep.review.reason -eq '赤枠を特定できませんでした。') '要確認の理由を保存する'
+$resolveByAccepting = '{"accept":[{"id":"' + $attentionTarget + '","title":"","description":"","note":""}],"attention":[]}'
+[void](Set-MbCopilotDraftSelection -Project $project -SelectionJson $resolveByAccepting)
+Add-Result (-not [bool]$attentionStep.review.required) '採用した候補は要確認を解除する'
+
 # 空文字は「変えない」の意味。既に書いた文章を消してはいけない。
 $keepSelection = '{"accept":[{"id":"' + $applyTarget + '","title":"","description":"","note":""}]}'
 [void](Set-MbCopilotDraftSelection -Project $project -SelectionJson $keepSelection)
@@ -381,12 +391,14 @@ try {
     $legacy = New-MbProject
     $legacyStep = Add-MbStep -Project $legacy -SheetId $legacy.sheets[0].id
     $legacyStep.PSObject.Properties.Remove('capture')
+    $legacyStep.PSObject.Properties.Remove('review')
     [void](Save-MbProject -Project $legacy -Path $legacyPath)
     $reloaded = Get-MbProject -Path $legacyPath
     $repaired = Get-MbStepById -Project $reloaded -StepId ([string]$legacyStep.id)
     Add-Result ($null -ne $repaired) '古いプロジェクトを読み直せる'
     Add-Result ($repaired.PSObject.Properties.Name -contains 'capture') '古い手順にも capture が補われる'
     Add-Result ([int]$repaired.capture.videoTimeMs -eq 0) '補われた capture が既定値になる'
+    Add-Result ($repaired.PSObject.Properties.Name -contains 'review' -and -not [bool]$repaired.review.required) '古い手順にも要確認の既定値が補われる'
 } finally {
     Remove-Item -LiteralPath $legacyRoot -Recurse -Force -ErrorAction SilentlyContinue
 }

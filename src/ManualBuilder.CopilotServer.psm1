@@ -501,6 +501,9 @@ function Set-MbCopilotDraftSelection {
     $items = @($selection)
     if ($selection.PSObject.Properties.Name -contains 'accept') { $items = @($selection.accept) }
     if ($items.Count -gt 1000) { throw '一度に採用できる手順は1000件までです。' }
+    $attentionItems = @()
+    if ($selection.PSObject.Properties.Name -contains 'attention') { $attentionItems = @($selection.attention) }
+    if ($attentionItems.Count -gt 1000) { throw '一度に確認待ちにできる手順は1000件までです。' }
 
     $applied = 0
     foreach ($item in $items) {
@@ -517,11 +520,19 @@ function Set-MbCopilotDraftSelection {
             $visualChanged = Set-MbCopilotVisualSelection -Project $Project -StepId ([string]$item.id) `
                 -TargetCandidateId $targetCandidateId -Zoom $zoom
             $changed = $changed -or $visualChanged
+            [void](Set-MbStepReview -Project $Project -StepId ([string]$item.id))
         } catch {
             # 採用の途中で手順が消えていた場合。その1件だけ飛ばして続ける。
             continue
         }
         if ($changed) { $applied++ }
+    }
+    foreach ($item in $attentionItems) {
+        if ($null -eq $item -or $item.PSObject.Properties.Name -notcontains 'id') { continue }
+        $action = if ($item.PSObject.Properties.Name -contains 'action') { [string]$item.action } else { 'review' }
+        if ($action -notin @('review', 'delete')) { continue }
+        $reason = if ($item.PSObject.Properties.Name -contains 'reason') { [string]$item.reason } else { '' }
+        try { [void](Set-MbStepReview -Project $Project -StepId ([string]$item.id) -Action $action -Reason $reason) } catch { continue }
     }
     return $applied
 }

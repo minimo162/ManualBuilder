@@ -1282,7 +1282,8 @@ function Invoke-MbRoute {
         try {
             $project = Get-MbProject -Path $ProjectPath
             $applied = Set-MbCopilotDraftSelection -Project $project -SelectionJson $selectionJson
-            if ($applied -gt 0) { [void](Save-MbProject -Project $project -Path $ProjectPath) }
+            # 採用0件でも、不要候補・自信なし候補の「要確認」をproject.jsonへ残す。
+            [void](Save-MbProject -Project $project -Path $ProjectPath)
             Remove-MbCopilotDraftJob
             Write-MbLog "Copilotの下書きを $applied 件採用しました。" 'OK'
             # 画面の作り直しは /ui/workspace に任せる。ここでHTMLを返すと、
@@ -1757,8 +1758,12 @@ function Invoke-MbRoute {
             return
         }
         '/api/steps/add' {
-            [void](Add-MbStep -Project $project -SheetId (Get-MbFormValue $form 'sheetId'))
-            Write-MbResponse $Context (Save-MbAndRenderWorkspace -Project $project -TabId $tabId)
+            try {
+                [void](Add-MbStep -Project $project -SheetId (Get-MbFormValue $form 'sheetId') -AfterStepId (Get-MbFormValue $form 'afterStepId'))
+                Write-MbResponse $Context (Save-MbAndRenderWorkspace -Project $project -TabId $tabId)
+            } catch {
+                Write-MbResponse $Context $_.Exception.Message 400
+            }
             return
         }
         '/api/steps/update' {
@@ -1768,6 +1773,15 @@ function Invoke-MbRoute {
                 Write-MbResponse $Context (ConvertTo-MbSaveStatusHtml)
             } catch {
                 Write-MbResponse $Context (ConvertTo-MbSaveStatusHtml -Message $_.Exception.Message -State error)
+            }
+            return
+        }
+        '/api/steps/review/resolve' {
+            try {
+                [void](Set-MbStepReview -Project $project -StepId (Get-MbFormValue $form 'stepId'))
+                Write-MbResponse $Context (Save-MbAndRenderWorkspace -Project $project -TabId $tabId)
+            } catch {
+                Write-MbResponse $Context $_.Exception.Message 400 'text/plain; charset=utf-8'
             }
             return
         }

@@ -83,6 +83,18 @@ try {
     $reloaded = [IO.File]::ReadAllText($projectPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
     Assert-Mb ([string]$reloaded.sheets[0].steps[0].title -eq 'ログイン画面を開く') '保存した文章がproject.jsonへ反映される'
 
+    $attentionBody = '{"accept":[],"attention":[{"id":"' + $stepId + '","action":"review","reason":"赤枠を確認してください。"}]}'
+    $attentionResponse = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/copilot/draft/apply" -Method Post -Headers $headers -ContentType 'application/json; charset=UTF-8' -Body $attentionBody -TimeoutSec 5
+    Assert-Mb (($attentionResponse.Content | ConvertFrom-Json).applied -eq 0) '採用0件でもCopilot要確認を受け付ける'
+    $afterAttention = [IO.File]::ReadAllText($projectPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    Assert-Mb ([bool]$afterAttention.sheets[0].steps[0].review.required -and [string]$afterAttention.sheets[0].steps[0].review.action -eq 'review') 'Copilot要確認をproject.jsonへ保存する'
+    $attentionWorkspace = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/ui/workspace" -Headers $headers -TimeoutSec 5
+    Assert-Mb ($attentionWorkspace.Content -match 'data-step-review-notice') '再読込後も要確認を手順カードへ表示する'
+    $resolvedReview = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/steps/review/resolve" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body @{ stepId = $stepId } -TimeoutSec 5
+    Assert-Mb ($resolvedReview.Content -notmatch 'data-step-review-notice') '確認済み操作で要確認表示を外す'
+    $afterResolve = [IO.File]::ReadAllText($projectPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    Assert-Mb (-not [bool]$afterResolve.sheets[0].steps[0].review.required) '確認済み状態をproject.jsonへ保存する'
+
     $heartbeat = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/capture/heartbeat" -Method Post -Headers $headers -Body '' -TimeoutSec 5
     Assert-Mb ($heartbeat.Content -match 'watch-status') '撮影対象タブのハートビートを受け付ける'
 
@@ -114,6 +126,23 @@ try {
     Assert-Mb (@($withImage.images).Count -eq 1) '画像メタデータがproject.jsonへ反映される'
     Assert-Mb (@($withImage.sheets[0].steps).Count -eq 2) '画像付き手順が選択シート末尾へ追加される'
     $imageStepId = [string]$withImage.sheets[0].steps[1].id
+    $insertedResponse = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/steps/add" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body @{
+        sheetId = $sheetId
+        afterStepId = $stepId
+    } -TimeoutSec 5
+    Assert-Mb ($insertedResponse.Content -match 'class="step-card(?:\s|\")') '指定位置への手順追加APIを実行できる'
+    $afterInsert = [IO.File]::ReadAllText($projectPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    $insertedStepId = [string]$afterInsert.sheets[0].steps[1].id
+    Assert-Mb (@($afterInsert.sheets[0].steps).Count -eq 3 -and $insertedStepId -ne $imageStepId) '現在手順の直後へ空の手順を追加する'
+    $invalidAfterRejected = $false
+    try {
+        [void](Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/steps/add" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body @{ sheetId = $sheetId; afterStepId = 'step-does-not-exist' } -TimeoutSec 5)
+    } catch {
+        if ($_.Exception.Response.StatusCode.value__ -eq 400) { $invalidAfterRejected = $true }
+    }
+    $afterInvalidInsert = [IO.File]::ReadAllText($projectPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    Assert-Mb ($invalidAfterRejected -and @($afterInvalidInsert.sheets[0].steps).Count -eq 3) '無効な直後指定を400で拒否し手順を増やさない'
+    [void](Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/steps/delete" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body @{ stepId = $insertedStepId } -TimeoutSec 5)
     $reordered = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/steps/reorder" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body @{
         sheetId = $sheetId
         orderedIds = "$imageStepId,$stepId"
@@ -213,11 +242,49 @@ try {
 
     $reimported = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/images/import" -Method Post -Headers $imageHeaders -ContentType 'image/png' -Body $pngBytes -TimeoutSec 5
     Assert-Mb ($reimported.Content -match 'data-import-status="added"') '削除後は同じ画面を撮り直せる'
+    $beforeBulkSetup = [IO.File]::ReadAllText($projectPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    $sourceBeforeSetup = @($beforeBulkSetup.sheets | Where-Object { $_.id -eq $sheetId })[0]
+    $reimportedStepId = [string]@($sourceBeforeSetup.steps | Where-Object { $_.id -ne $stepId })[0].id
+    $reimportedImageId = [string]@($sourceBeforeSetup.steps | Where-Object { $_.id -eq $reimportedStepId })[0].imageId
+    $reimportedImage = @($beforeBulkSetup.images | Where-Object { $_.id -eq $reimportedImageId })[0]
+    $reimportedImagePath = Join-Path (Join-Path $testRoot 'images') ([string]$reimportedImage.fileName)
+    Assert-Mb (Test-Path -LiteralPath $reimportedImagePath) '一括削除テスト用の画像ファイルが存在する'
+    [void](Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/steps/add" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body @{ sheetId = $sheetId } -TimeoutSec 5)
+    $afterFirstBulkAdd = [IO.File]::ReadAllText($projectPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    $sourceAfterFirstBulkAdd = @($afterFirstBulkAdd.sheets | Where-Object { $_.id -eq $sheetId })[0]
+    $bulkSpacerStepId = [string]$sourceAfterFirstBulkAdd.steps[-1].id
+    [void](Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/steps/add" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body @{ sheetId = $sheetId } -TimeoutSec 5)
+    $afterSecondBulkAdd = [IO.File]::ReadAllText($projectPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    $sourceAfterSecondBulkAdd = @($afterSecondBulkAdd.sheets | Where-Object { $_.id -eq $sheetId })[0]
+    $bulkSecondStepId = [string]$sourceAfterSecondBulkAdd.steps[-1].id
 
     $addedSheetResponse = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/sheets/add" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body '' -TimeoutSec 5
     Assert-Mb ($addedSheetResponse.Content -match 'data-sheet-nav-item') '移動先シートを追加できる'
     $afterSheetAdd = [IO.File]::ReadAllText($projectPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
     $targetSheetId = [string]$afterSheetAdd.selectedSheetId
+    [void](Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/steps/add" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body @{ sheetId = $targetSheetId } -TimeoutSec 5)
+    $afterTargetSeed = [IO.File]::ReadAllText($projectPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    $targetBeforeBulk = @($afterTargetSeed.sheets | Where-Object { $_.id -eq $targetSheetId })[0]
+    $targetExistingStepId = [string]$targetBeforeBulk.steps[0].id
+    $bulkStepIds = @($reimportedStepId, $bulkSecondStepId)
+    $bulkMovedResponse = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/steps/move-many" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body @{
+        stepIds = ($bulkStepIds -join ',')
+        targetSheetId = $targetSheetId
+    } -TimeoutSec 5
+    Assert-Mb ($bulkMovedResponse.Content -match 'class="step-card(?:\s|\")') '複数手順の移動APIを実行できる'
+    $afterBulkMove = [IO.File]::ReadAllText($projectPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    $bulkTarget = @($afterBulkMove.sheets | Where-Object { $_.id -eq $targetSheetId }) | Select-Object -First 1
+    $bulkSource = @($afterBulkMove.sheets | Where-Object { $_.id -eq $sheetId }) | Select-Object -First 1
+    Assert-Mb ((@($bulkTarget.steps | ForEach-Object { [string]$_.id }) -join ',') -eq (@($targetExistingStepId) + $bulkStepIds -join ',')) '一括移動で移動先の既存順と要求順を維持する'
+    Assert-Mb ((@($bulkSource.steps | ForEach-Object { [string]$_.id }) -join ',') -eq (@($stepId, $bulkSpacerStepId) -join ',')) '一括移動で移動元の未選択順を維持する'
+    $bulkDeletedResponse = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/steps/delete-many" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body @{ stepIds = ($bulkStepIds -join ',') } -TimeoutSec 5
+    Assert-Mb ($bulkDeletedResponse.Content -match 'id="workspace"') '複数手順の削除APIを実行できる'
+    $afterBulkDelete = [IO.File]::ReadAllText($projectPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    $remainingBulkSteps = @($afterBulkDelete.sheets | ForEach-Object { @($_.steps) } | Where-Object { $_.id -in $bulkStepIds })
+    Assert-Mb ($remainingBulkSteps.Count -eq 0) '一括削除した2手順が再読込後も残らない'
+    Assert-Mb (@($afterBulkDelete.images | Where-Object { $_.id -eq $reimportedImageId }).Count -eq 0) '一括削除で孤立した画像メタデータを整理する'
+    Assert-Mb (-not (Test-Path -LiteralPath $reimportedImagePath)) '一括削除で孤立した画像ファイルを整理する'
+    [void](Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/steps/delete-many" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body @{ stepIds = "$targetExistingStepId,$bulkSpacerStepId" } -TimeoutSec 5)
     $sheetOrder = @($targetSheetId, $sheetId) -join ','
     $sheetReordered = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/sheets/reorder" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body @{ orderedIds = $sheetOrder } -TimeoutSec 5
     Assert-Mb ($sheetReordered.Content -match '保存済み') 'シートの並べ替えAPIを実行できる'

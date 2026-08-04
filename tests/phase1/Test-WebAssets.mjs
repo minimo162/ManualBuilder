@@ -139,6 +139,23 @@ if (appJs) {
   check('通知を積んで出す', appJs.includes('TOAST_LIMIT'));
   check('通知を閉じられる', appJs.includes('toast__close'));
   check('動きを減らす設定を尊重する', appJs.includes('prefers-reduced-motion'));
+  check('Copilot後に仕上げ状況を集計する', appJs.includes('updateFinishGuide'));
+  check('未完了手順へ移動できる', appJs.includes('focusFinishTarget'));
+  check('選択手順を一括で並べ替えられる', appJs.includes('reorderSelectedSteps'));
+  check('Shiftで範囲選択できる', appJs.includes('selectStepRange'));
+  check('現在手順の直後へ追加できる', appJs.includes('addStepAfterActive'));
+  check('注釈編集で前後の画像へ移動できる', appJs.includes('openAdjacentAnnotationEditor'));
+  check('出力前に完成状態を確認できる', appJs.includes('openOutputReviewDialog'));
+  check('Copilotの不要候補をシート別の要確認として残す', appJs.includes('suggestedDeletes') && appJs.includes('selectCopilotDeleteCandidatesOnCurrentSheet'));
+  check('Copilotの曖昧候補も要確認として残す', appJs.includes('suggestedReviews') && appJs.includes('data-visual-uncertain'));
+  check('Copilot候補へ既存の複数選択を混ぜない', /const selectCopilotDeleteCandidatesOnCurrentSheet[\s\S]{0,260}selectedStepIds\.clear\(\)/.test(appJs));
+  check('Copilot結果を閉じる前に破棄確認する', appJs.includes('Copilotの提案と、この画面で編集した内容を破棄して閉じますか？'));
+  check('全シートの仕上げ状況を読み込む', appJs.includes('projectFinishItems') && appJs.includes('data-project-finish-data'));
+  check('構造変更と出力の前に保存待ちする', appJs.includes('flushPendingStructuralSaves'));
+  check('文章保存のHTTP応答完了まで待つ', appJs.includes('pendingStepSaveRequests') && appJs.includes('waitForPendingStepSaves'));
+  check('要確認を再読込後も復元する', appJs.includes('loadFinishAttentionSteps') && appJs.includes('reviewRequired'));
+  check('要確認は明示操作で解除する', appJs.includes('data-step-review-resolve') && appJs.includes('/api/steps/review/resolve'));
+  check('編集中カードを追加位置として選ぶ', appJs.includes("document.body.addEventListener('focusin'"));
   // 名前の無いダイアログは読み上げが「ダイアログ」としか伝えない。作る数と名前を付ける数を合わせる。
   const dialogCreations = (appJs.match(/document\.createElement\('dialog'\)/g) || []).length;
   const dialogLabels = (appJs.match(/dialog\.setAttribute\('aria-label'/g) || []).length;
