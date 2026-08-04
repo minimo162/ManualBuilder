@@ -134,6 +134,14 @@ Add-Result ($null -eq (ConvertTo-MbRegionRect -Region $capturedRegion -Target $s
 
 Add-Result ($null -eq (ConvertTo-MbRegionRect -Region $capturedRegion -Target $null)) '操作対象が無ければ矩形は作らない'
 
+$longTargetName = ('操作対象' * 60)
+$limitedTargetName = ConvertTo-MbRecorderTargetName -Value $longTargetName
+Add-Result ($limitedTargetName.Length -eq 200 -and $limitedTargetName.EndsWith('…')) '長い操作対象名を200文字へ省略する'
+$limitedInputName = ConvertTo-MbRecorderTargetName -Value $longTargetName -Suffix '（入力）'
+Add-Result ($limitedInputName.Length -eq 200 -and $limitedInputName.EndsWith('…（入力）')) '入力の補足を含めて操作対象を200文字へ収める'
+$normalizedTargetName = ConvertTo-MbRecorderTargetName -Value "  申請`r`n   ボタン  "
+Add-Result ([string]$normalizedTargetName -eq '申請 ボタン') '操作対象名の改行と連続空白を整える'
+
 # 入力欄は自動で黒塗りしない。必要な箇所は取り込み後の画像編集で手動マスクする。
 $inputImagePath = Join-Path $env:TEMP ('ManualBuilder-RecorderInput-' + [guid]::NewGuid().ToString('N') + '.jpg')
 $inputBitmap = New-Object Drawing.Bitmap 100, 80
@@ -279,6 +287,13 @@ if (-not $capability.available) {
 # 話した内容を操作へ振り分ける
 # ---------------------------------------------------------------------
 Import-Module (Join-Path $srcRoot 'ManualBuilder.RecorderServer.psm1') -Force
+
+$focusRect = [pscustomobject]@{ x1 = 0.7; y1 = 0.7; x2 = 0.8; y2 = 0.75 }
+$focusCrop = Get-MbRecorderTargetCrop -Rect $focusRect -TargetType 'ControlType.Button'
+Add-Result ($null -ne $focusCrop -and [double]$focusCrop.width -eq 0.55 -and [double]$focusCrop.height -eq 0.55) '特定できた操作対象の周辺を初期表示する'
+Add-Result ([double]$focusCrop.x -ge 0 -and ([double]$focusCrop.x + [double]$focusCrop.width) -le 1) '対象周辺の切り抜きを画像内へ収める'
+$fallbackCrop = Get-MbRecorderTargetCrop -Rect $focusRect -TargetType 'ControlType.ClickPoint'
+Add-Result ($null -eq $fallbackCrop) '対象不明のクリックは自動で切り抜かない'
 
 $events = @(
     [pscustomobject]@{ index = 1; timeMs = 5000 },
