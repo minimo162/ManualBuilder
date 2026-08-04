@@ -11,6 +11,7 @@ param(
     [Parameter(Mandatory = $true)][string]$StopPath,
     [Parameter(Mandatory = $true)][string]$JobId,
     [AllowEmptyString()][string]$IgnoreTitlePatterns = '',
+    [AllowEmptyString()][string]$IgnoreProcessIds = '',
     [AllowEmptyString()][string]$DomTargetPath = '',
     [AllowEmptyString()][string]$UiaTargetPath = ''
 )
@@ -25,12 +26,20 @@ try {
     if (-not [string]::IsNullOrWhiteSpace($IgnoreTitlePatterns)) {
         $patterns = @($IgnoreTitlePatterns -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
     }
+    $processIds = @()
+    if (-not [string]::IsNullOrWhiteSpace($IgnoreProcessIds)) {
+        $processIds = @($IgnoreProcessIds -split ',' | ForEach-Object {
+            $value = 0
+            if ([int]::TryParse($_.Trim(), [ref]$value) -and $value -gt 0) { $value }
+        })
+    }
     if (-not (Test-Path -LiteralPath $EventsDirectory)) {
         [void](New-Item -ItemType Directory -Path $EventsDirectory -Force)
     }
 
     [void](Invoke-MbRecordingLoop -EventsDirectory $EventsDirectory -EventsPath $EventsPath `
         -StatusPath $StatusPath -StopPath $StopPath -JobId $JobId -IgnoreTitlePatterns $patterns `
+        -IgnoreProcessIds $processIds `
         -DomTargetPath $DomTargetPath -UiaTargetPath $UiaTargetPath)
     exit 0
 } catch {

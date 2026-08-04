@@ -13,6 +13,8 @@ $script:MbCopilotScriptRoot = ''
 $script:MbCopilotProfileRoot = ''
 $script:MbCopilotConfigPath = ''
 $script:MbCopilotJob = $null
+$script:MbCopilotWarmup = $null
+$script:MbCopilotRuntimeStatusPath = ''
 
 function Initialize-MbCopilotServer {
     param(
@@ -25,10 +27,89 @@ function Initialize-MbCopilotServer {
     $script:MbCopilotScriptRoot = $ScriptRoot
     $script:MbCopilotProfileRoot = $ProfileRoot
     $script:MbCopilotConfigPath = $ConfigPath
+    if (-not (Test-Path -LiteralPath $JobsRoot)) { [void](New-Item -ItemType Directory -Path $JobsRoot -Force) }
+    $script:MbCopilotRuntimeStatusPath = Join-Path $JobsRoot 'runtime-status.json'
 }
 
 function Get-MbCopilotServerSettings {
     return (Get-MbCopilotSettings -ConfigPath $script:MbCopilotConfigPath)
+}
+
+function Get-MbCopilotRuntimeIdleStatus {
+    return [pscustomobject]@{
+        state = 'idle'; message = 'Copilot画面をまだ準備していません。'; errorCode = ''
+        updatedAt = ''; visible = $false; canOpen = $true
+    }
+}
+
+function Read-MbCopilotRuntimeStatus {
+    $settings = Get-MbCopilotServerSettings
+    $ownedProcessIds = @(Get-MbCopilotEdgeProcessIds -Settings $settings -ProfileDirectory $script:MbCopilotProfileRoot)
+    $edgeAlive = (Test-MbDevTools -Port ([int]$settings.cdp_port)) -and $ownedProcessIds.Count -gt 0
+    $status = $null
+    if (-not [string]::IsNullOrWhiteSpace($script:MbCopilotRuntimeStatusPath) -and
+        (Test-Path -LiteralPath $script:MbCopilotRuntimeStatusPath -PathType Leaf)) {
+        try {
+            $raw = [IO.File]::ReadAllText($script:MbCopilotRuntimeStatusPath, [Text.Encoding]::UTF8)
+            $status = $raw | ConvertFrom-Json
+        } catch { $status = $null }
+    }
+    if ($null -eq $status) { $status = Get-MbCopilotRuntimeIdleStatus }
+
+    if (-not $edgeAlive) {
+        $warmupAlive = $false
+        if ($null -ne $script:MbCopilotWarmup) {
+            try {
+                $warmupAlive = $null -ne (Get-Process -Id ([int]$script:MbCopilotWarmup.ProcessId) -ErrorAction SilentlyContinue)
+            } catch { $warmupAlive = $false }
+        }
+        if (-not $warmupAlive -and [string]$status.state -in @('starting', 'loading', 'ready', 'signin-required')) {
+            $status.state = 'closed'
+            $status.message = 'Copilot画面が閉じられました。クリックすると再起動します。'
+            $status.errorCode = 'COPILOT_EDGE_CLOSED'
+        }
+    }
+    $status | Add-Member -NotePropertyName 'visible' -NotePropertyValue $edgeAlive -Force
+    $status | Add-Member -NotePropertyName 'canOpen' -NotePropertyValue $true -Force
+    return $status
+}
+
+function Start-MbCopilotWarmup {
+    param([switch]$Force)
+
+    if ($null -ne $script:MbCopilotWarmup) {
+        $alive = $false
+        try { $alive = $null -ne (Get-Process -Id ([int]$script:MbCopilotWarmup.ProcessId) -ErrorAction SilentlyContinue) } catch { $alive = $false }
+        if ($alive) { return (Read-MbCopilotRuntimeStatus) }
+    }
+
+    $powerShellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $powerShellPath -PathType Leaf)) { throw 'Windows PowerShell 5.1が見つかりません。' }
+    $workerPath = Join-Path $script:MbCopilotScriptRoot 'Invoke-ManualBuilderCopilotWarmup.ps1'
+    if (-not (Test-Path -LiteralPath $workerPath -PathType Leaf)) { throw 'Copilot画面の準備プログラムが見つかりません。' }
+    $quote = { param([string]$Value) '"' + $Value.Replace('"', '\"') + '"' }
+    $arguments = @(
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-STA', '-File', (& $quote $workerPath),
+        '-ProfileDirectory', (& $quote $script:MbCopilotProfileRoot),
+        '-ConfigPath', (& $quote $script:MbCopilotConfigPath),
+        '-StatusPath', (& $quote $script:MbCopilotRuntimeStatusPath)
+    )
+    $worker = Start-Process -FilePath $powerShellPath -ArgumentList $arguments -WindowStyle Hidden -PassThru
+    $processId = [int]$worker.Id
+    $worker.Dispose()
+    $script:MbCopilotWarmup = [pscustomobject]@{ ProcessId = $processId; StartedAt = Get-Date }
+    return [pscustomobject]@{
+        state = 'starting'; message = 'Copilot用Edgeを起動しています。'; errorCode = ''
+        updatedAt = [DateTime]::UtcNow.ToString('o'); visible = $false; canOpen = $true
+    }
+}
+
+function Get-MbCopilotRecorderExclusions {
+    $settings = Get-MbCopilotServerSettings
+    return [pscustomobject]@{
+        processIds = @(Get-MbCopilotEdgeProcessIds -Settings $settings -ProfileDirectory $script:MbCopilotProfileRoot)
+        titlePatterns = @('ManualBuilder', 'ManualBuilder Copilot')
+    }
 }
 
 # ---------------------------------------------------------------------
@@ -110,9 +191,37 @@ function Import-MbVideoScene {
 # ---------------------------------------------------------------------
 function Get-MbCopilotIdleStatus {
     return [pscustomobject]@{
-        jobId = ''; state = 'idle'; phase = 'idle'; message = ''; percent = 0
+        jobId = ''; mode = ''; state = 'idle'; phase = 'idle'; message = ''; percent = 0
         currentPacket = 0; totalPackets = 0; totalSteps = 0; draftCount = 0
         resultPath = ''; startedAt = ''; updatedAt = ''; completedAt = ''; errorCode = ''
+    }
+}
+
+function Restore-MbCopilotDraftJob {
+    param([Parameter(Mandatory = $true)][string]$ProjectPath)
+
+    if ($null -ne $script:MbCopilotJob -or -not (Test-Path -LiteralPath $script:MbCopilotJobsRoot -PathType Container)) { return }
+    $expectedProjectPath = [IO.Path]::GetFullPath($ProjectPath)
+    foreach ($directory in @(Get-ChildItem -LiteralPath $script:MbCopilotJobsRoot -Directory -Filter 'copilot-*' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTimeUtc -Descending)) {
+        $metadataPath = Join-Path $directory.FullName 'job.json'
+        $statusPath = Join-Path $directory.FullName 'status.json'
+        if (-not (Test-Path -LiteralPath $metadataPath -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $statusPath -PathType Leaf)) { continue }
+        try {
+            $metadata = [IO.File]::ReadAllText($metadataPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+            if ([IO.Path]::GetFullPath([string]$metadata.sourceProjectPath) -ne $expectedProjectPath) { continue }
+            $script:MbCopilotJob = [pscustomobject]@{
+                JobId = [string]$metadata.jobId; ProcessId = [int]$metadata.processId
+                Mode = [string]$metadata.mode
+                JobDirectory = [string]$directory.FullName; StatusPath = $statusPath
+                ResultPath = (Join-Path $directory.FullName 'result.json')
+                CancelPath = (Join-Path $directory.FullName 'cancel.requested')
+                SnapshotPath = (Join-Path $directory.FullName 'project.json')
+                LogPath = (Join-Path $directory.FullName 'copilot.log'); StartedAt = $directory.CreationTime
+            }
+            return
+        } catch { $script:MbCopilotJob = $null }
     }
 }
 
@@ -129,6 +238,9 @@ function Read-MbCopilotDraftStatus {
         return Get-MbCopilotIdleStatus
     }
     if ($null -eq $status) { return Get-MbCopilotIdleStatus }
+    $jobMode = ''
+    if ($script:MbCopilotJob.PSObject.Properties.Name -contains 'Mode') { $jobMode = [string]$script:MbCopilotJob.Mode }
+    $status | Add-Member -NotePropertyName 'mode' -NotePropertyValue $jobMode -Force
 
     # ワーカーが落ちて状態が running のまま残ることがある。プロセスの生死で補正する。
     if ([string]$status.state -in @('queued', 'running')) {
@@ -151,8 +263,14 @@ function Start-MbCopilotDraftJob {
         [ValidateSet('draft', 'review', 'operation')][string]$Mode = 'draft'
     )
 
+    Restore-MbCopilotDraftJob -ProjectPath $ProjectPath
     $current = Read-MbCopilotDraftStatus
-    if ([string]$current.state -in @('queued', 'running')) { return $current }
+    if ([string]$current.state -in @('queued', 'running', 'completed')) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$current.mode) -and [string]$current.mode -ne $Mode) {
+            throw '別のCopilot処理または確認待ちの結果があります。先にその画面で完了または破棄してください。'
+        }
+        return $current
+    }
 
     $project = Get-MbProject -Path $ProjectPath
     $steps = Get-MbCopilotStepListFromProject -Project $project
@@ -182,7 +300,7 @@ function Start-MbCopilotDraftJob {
     $logPath = Join-Path $jobDirectory 'copilot.log'
 
     $queued = [pscustomobject]@{
-        jobId = $jobId; state = 'queued'; phase = 'queued'; message = 'Copilotの準備をしています'; percent = 0
+        jobId = $jobId; mode = $Mode; state = 'queued'; phase = 'queued'; message = 'Copilotの準備をしています'; percent = 0
         currentPacket = 0; totalPackets = 0; totalSteps = $(if ($Mode -eq 'review') { $steps.withText } elseif ($Mode -eq 'operation') { $steps.pendingOperations } else { $steps.needsDraft }); draftCount = 0
         resultPath = $resultPath; startedAt = [DateTime]::UtcNow.ToString('o')
         updatedAt = [DateTime]::UtcNow.ToString('o'); completedAt = ''; errorCode = ''
@@ -215,10 +333,16 @@ function Start-MbCopilotDraftJob {
     $worker.Dispose()
 
     $script:MbCopilotJob = [pscustomobject]@{
-        JobId = $jobId; ProcessId = $processId; JobDirectory = $jobDirectory
+        JobId = $jobId; ProcessId = $processId; Mode = $Mode; JobDirectory = $jobDirectory
         StatusPath = $statusPath; ResultPath = $resultPath; CancelPath = $cancelPath
         SnapshotPath = $snapshotPath; LogPath = $logPath; StartedAt = Get-Date
     }
+    $metadata = [pscustomobject]@{
+        jobId = $jobId; processId = $processId; mode = $Mode
+        sourceProjectPath = [IO.Path]::GetFullPath($ProjectPath)
+        createdAt = [DateTime]::UtcNow.ToString('o')
+    }
+    [IO.File]::WriteAllText((Join-Path $jobDirectory 'job.json'), ($metadata | ConvertTo-Json -Depth 4), (New-Object Text.UTF8Encoding($false)))
     return (Read-MbCopilotDraftStatus)
 }
 
@@ -378,6 +502,9 @@ function Show-MbCopilotSignInWindow {
 Export-ModuleMember -Function @(
     'Initialize-MbCopilotServer',
     'Get-MbCopilotServerSettings',
+    'Start-MbCopilotWarmup',
+    'Read-MbCopilotRuntimeStatus',
+    'Get-MbCopilotRecorderExclusions',
     'Import-MbVideoScene',
     'Start-MbCopilotDraftJob',
     'Read-MbCopilotDraftStatus',

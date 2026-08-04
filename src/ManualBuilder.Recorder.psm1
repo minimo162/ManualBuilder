@@ -70,6 +70,9 @@ public static class MbRecorderNative
     public static extern IntPtr GetForegroundWindow();
 
     [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+    [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
 
@@ -770,6 +773,7 @@ function Invoke-MbUiaTargetCacheLoop {
         [Parameter(Mandatory = $true)][string]$StopPath,
         [AllowEmptyString()][string]$LogPath = '',
         [string[]]$IgnoreTitlePatterns = @(),
+        [int[]]$IgnoreProcessIds = @(),
         [int]$PollIntervalMs = 55
     )
 
@@ -785,7 +789,7 @@ function Invoke-MbUiaTargetCacheLoop {
             $point = New-Object 'MbRecorderNative+POINT'
             [void][MbRecorderNative]::GetCursorPos([ref]$point)
             $window = Get-MbForegroundWindowInfo
-            if (-not (Test-MbIgnoredWindow -Window $window -IgnoreTitlePatterns $IgnoreTitlePatterns)) {
+            if (-not (Test-MbIgnoredWindow -Window $window -IgnoreTitlePatterns $IgnoreTitlePatterns -IgnoreProcessIds $IgnoreProcessIds)) {
                 $elapsed = ([DateTime]::UtcNow - $lastChecked).TotalMilliseconds
                 $moved = [Math]::Abs([int]$point.X - $lastX) -gt 2 -or [Math]::Abs([int]$point.Y - $lastY) -gt 2
                 $windowChanged = [long]$window.handle -ne $lastHandle
@@ -853,8 +857,11 @@ function Get-MbForegroundWindowInfo {
     $handle = [MbRecorderNative]::GetForegroundWindow()
     if ($handle -eq [IntPtr]::Zero) { return $null }
     $rect = [MbRecorderNative]::GetVisualWindowRect($handle)
+    [uint32]$processId = 0
+    [void][MbRecorderNative]::GetWindowThreadProcessId($handle, [ref]$processId)
     return [pscustomobject]@{
         handle = [long]$handle.ToInt64()
+        processId = [int]$processId
         title  = [MbRecorderNative]::GetWindowTitle($handle)
         class  = [MbRecorderNative]::GetWindowClass($handle)
         left   = [int]$rect.Left
@@ -1056,9 +1063,15 @@ function Test-MbAsyncKeyStatePressed {
 }
 
 function Test-MbIgnoredWindow {
-    param([AllowNull()]$Window, [string[]]$IgnoreTitlePatterns = @())
+    param(
+        [AllowNull()]$Window,
+        [string[]]$IgnoreTitlePatterns = @(),
+        [int[]]$IgnoreProcessIds = @()
+    )
     if ($null -eq $Window) { return $true }
     if ($script:MbRecorderIgnoredClasses -contains [string]$Window.class) { return $true }
+    if ($Window.PSObject.Properties.Name -contains 'processId' -and
+        @($IgnoreProcessIds) -contains [int]$Window.processId) { return $true }
     $title = [string]$Window.title
     foreach ($pattern in $IgnoreTitlePatterns) {
         if ([string]::IsNullOrWhiteSpace($pattern)) { continue }
@@ -1424,6 +1437,7 @@ function Invoke-MbRecordingLoop {
         [AllowEmptyString()][string]$DomTargetPath = '',
         [AllowEmptyString()][string]$UiaTargetPath = '',
         [string[]]$IgnoreTitlePatterns = @(),
+        [int[]]$IgnoreProcessIds = @(),
         [int]$PollIntervalMs = 16,
         [int]$TypingIdleMs = 1200,
         [int]$MaxEvents = 300,
@@ -1499,7 +1513,7 @@ function Invoke-MbRecordingLoop {
                 # 残すか隠すかは、取り込み後の画像編集（黒塗り）で利用者が決める。
                 try {
                     $candidateWindow = Get-MbForegroundWindowInfo
-                    if (-not (Test-MbIgnoredWindow -Window $candidateWindow -IgnoreTitlePatterns $IgnoreTitlePatterns)) {
+                    if (-not (Test-MbIgnoredWindow -Window $candidateWindow -IgnoreTitlePatterns $IgnoreTitlePatterns -IgnoreProcessIds $IgnoreProcessIds)) {
                         $typingCapture = Copy-MbScreenBitmap
                         $typingCaptureAtMs = [int]$watch.ElapsedMilliseconds
                         $typingWindow = $candidateWindow
@@ -1589,7 +1603,7 @@ function Invoke-MbRecordingLoop {
                     $preClickCaptureAtMs = -1000
                     $capture = Copy-MbScreenBitmap
                 }
-                if (-not (Test-MbIgnoredWindow -Window $window -IgnoreTitlePatterns $IgnoreTitlePatterns)) {
+                if (-not (Test-MbIgnoredWindow -Window $window -IgnoreTitlePatterns $IgnoreTitlePatterns -IgnoreProcessIds $IgnoreProcessIds)) {
                     $target = $bufferedDomTarget
                     if (-not [string]::IsNullOrWhiteSpace($DomTargetPath)) {
                         # 画面はすでに押下直前で確保済み。Edgeからpointerdown通知が届くまで
@@ -1676,7 +1690,7 @@ function Invoke-MbRecordingLoop {
                     [string]$windowBeforeCapture.title -eq [string]$windowAfterCapture.title -and
                     -not $pendingLeftClick -and -not $pendingRightClick
                 if ($stableWindow -and
-                    -not (Test-MbIgnoredWindow -Window $windowBeforeCapture -IgnoreTitlePatterns $IgnoreTitlePatterns)) {
+                    -not (Test-MbIgnoredWindow -Window $windowBeforeCapture -IgnoreTitlePatterns $IgnoreTitlePatterns -IgnoreProcessIds $IgnoreProcessIds)) {
                     if ($null -ne $preClickCapture) { try { $preClickCapture.bitmap.Dispose() } catch { } }
                     $preClickCapture = $replacementCapture
                     $replacementCapture = $null

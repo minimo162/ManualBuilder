@@ -5,7 +5,8 @@ param(
     [Parameter(Mandatory = $true)][string]$CachePath,
     [Parameter(Mandatory = $true)][string]$StopPath,
     [AllowEmptyString()][string]$LogPath = '',
-    [AllowEmptyString()][string]$IgnoreTitlePatterns = ''
+    [AllowEmptyString()][string]$IgnoreTitlePatterns = '',
+    [AllowEmptyString()][string]$IgnoreProcessIds = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -18,8 +19,15 @@ try {
     if (-not [string]::IsNullOrWhiteSpace($IgnoreTitlePatterns)) {
         $patterns = @($IgnoreTitlePatterns -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
     }
+    $processIds = @()
+    if (-not [string]::IsNullOrWhiteSpace($IgnoreProcessIds)) {
+        $processIds = @($IgnoreProcessIds -split ',' | ForEach-Object {
+            $value = 0
+            if ([int]::TryParse($_.Trim(), [ref]$value) -and $value -gt 0) { $value }
+        })
+    }
     Invoke-MbUiaTargetCacheLoop -CachePath $CachePath -StopPath $StopPath -LogPath $LogPath `
-        -IgnoreTitlePatterns $patterns
+        -IgnoreTitlePatterns $patterns -IgnoreProcessIds $processIds
     exit 0
 } catch {
     if (-not [string]::IsNullOrWhiteSpace($LogPath)) {

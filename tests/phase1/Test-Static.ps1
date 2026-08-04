@@ -47,6 +47,7 @@ $required = @(
     'src\ManualBuilder.CopilotJob.psm1',
     'src\ManualBuilder.CopilotServer.psm1',
     'src\Invoke-ManualBuilderCopilotJob.ps1',
+    'src\Invoke-ManualBuilderCopilotWarmup.ps1',
     'src\ManualBuilder.Recorder.psm1',
     'src\ManualBuilder.RecorderServer.psm1',
     'src\Invoke-ManualBuilderRecorder.ps1',
@@ -370,6 +371,13 @@ Add-Result ($serverText -match '/api/copilot/draft/apply') '採用した下書�
 Add-Result ($webModuleText -match 'data-copilot-draft') 'Copilotでの下書きをメニューから選べる'
 Add-Result ($jsText -match 'copilot-draft-dialog') 'Copilot下書きの確認画面を実装する'
 Add-Result ($copilotModuleText -match 'm365\.cloud\.microsoft') '普段使うM365 Copilotの画面を操作する'
+Add-Result (($copilotModuleText -match 'allowed_hosts') -and
+    ($copilotModuleText -match 'Test-MbCopilotUrlHost') -and
+    ($copilotModuleText -notmatch "\(\[string\]\$_\.url\) -like '\*http\*'")) '許可したCopilotホスト以外へ送信しない'
+Add-Result (($copilotModuleText -match "browser_display_mode = 'foreground'") -and
+    ($serverText -match 'Start-MbCopilotWarmup')) '起動時にCopilot画面を通常表示で準備する'
+Add-Result (($webModuleText -match 'data-copilot-runtime') -and
+    ($jsText -match '/api/copilot/runtime/status')) 'Copilot画面の準備状態をヘッダーへ表示する'
 Add-Result ($copilotModuleText -notmatch '(?i)api[_-]?key') 'APIキーを持たない'
 Add-Result ($copilotJobText -match '\$rendered = New-MbAnnotatedImage') '焼き込み結果の戻り値を捨てない'
 Add-Result ($copilotServerText -match 'Resolve-MbOperationRect') '赤枠を読み取った文字へ寄せる'
@@ -393,6 +401,9 @@ Add-Result ($recorderServerText -match 'AllowDuplicateStep') '同じ画面でも
 Add-Result (($recorderModuleText -match 'ConvertTo-MbRecorderTargetName') -and ($recorderServerText -match 'ConvertTo-MbRecorderTargetName.+-Suffix \$suffix')) '操作対象を補足込みで200文字へ収める'
 Add-Result (($recorderServerText -notmatch 'ManualBuilder\.EdgeRecorder') -and
     ($recorderServerText -notmatch 'Invoke-ManualBuilderEdgeRecorder')) '記録用Edgeを必須経路から廃止する'
+Add-Result (($recorderModuleText -match 'GetWindowThreadProcessId') -and
+    ($recorderModuleText -match 'IgnoreProcessIds') -and
+    ($serverText -match 'Get-MbCopilotRecorderExclusions')) 'Copilot制御用Edgeを操作記録から除外する'
 Add-Result (($jsText -notmatch 'data-recorder-mode') -and
     ($jsText -notmatch '記録用Edgeを使う')) '記録用Edgeの選択UIを廃止する'
 Add-Result (($recorderModuleText -match 'event-\{0:d3\}-after\.jpg') -and
@@ -408,6 +419,10 @@ Add-Result (($copilotJobText -match 'New-MbCopilotOperationEvidence') -and
     ($copilotJobText -match 'operation-before\.jpg') -and
     ($copilotJobText -match 'operation-after\.jpg')) 'Copilotへ操作前・周辺・操作後の証跡を渡す'
 Add-Result ($copilotJobText -match 'Test-MbCopilotOperationPreflight') '実画像の前に合成画像で証跡生成を自己診断する'
+Add-Result (($copilotJobText -match '\$usedFreeBbox') -and
+    ($copilotJobText -match '\$usedFreeBbox\)\) \{ \$needsReview = \$true \}')) '自由座標と矩形なしをローカルで要確認にする'
+Add-Result (($copilotServerText -match 'Restore-MbCopilotDraftJob') -and
+    ($copilotServerText -match 'sourceProjectPath')) 'アプリ再起動後も同じプロジェクトのCopilot結果を復元する'
 Add-Result (($recorderServerText -match 'Invoke-ManualBuilderUiaRecorder\.ps1') -and
     ($recorderServerText -match 'UiaTargetPath') -and
     ($recorderModuleText -match 'Get-MbUiaTargetFromCache')) 'Windows操作対象もクリック前に別プロセスで保持する'

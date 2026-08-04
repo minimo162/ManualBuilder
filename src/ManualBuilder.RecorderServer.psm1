@@ -90,6 +90,7 @@ function Read-MbRecordingStatus {
 function Start-MbRecordingJob {
     param(
         [string[]]$IgnoreTitlePatterns = @('ManualBuilder'),
+        [int[]]$IgnoreProcessIds = @(),
         [switch]$WithNarration
     )
 
@@ -141,6 +142,9 @@ function Start-MbRecordingJob {
         if (@($IgnoreTitlePatterns).Count -gt 0) {
             $uiaArguments += @('-IgnoreTitlePatterns', (& $quote ((@($IgnoreTitlePatterns) -join ','))))
         }
+        if (@($IgnoreProcessIds).Count -gt 0) {
+            $uiaArguments += @('-IgnoreProcessIds', (& $quote ((@($IgnoreProcessIds) -join ','))))
+        }
         $uiaWorker = Start-Process -FilePath $powerShellPath -ArgumentList $uiaArguments -WindowStyle Hidden -PassThru
         $uiaWorkerProcessId = [int]$uiaWorker.Id
         $uiaWorker.Dispose()
@@ -159,7 +163,11 @@ function Start-MbRecordingJob {
     )
     if (@($IgnoreTitlePatterns).Count -gt 0) {
         $arguments += '-IgnoreTitlePatterns'
-        $arguments += (@($IgnoreTitlePatterns) | ForEach-Object { & $quote $_ }) -join ','
+        $arguments += (& $quote ((@($IgnoreTitlePatterns) -join ',')))
+    }
+    if (@($IgnoreProcessIds).Count -gt 0) {
+        $arguments += '-IgnoreProcessIds'
+        $arguments += (& $quote ((@($IgnoreProcessIds) -join ',')))
     }
 
     try {

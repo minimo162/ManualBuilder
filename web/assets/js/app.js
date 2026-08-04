@@ -32,6 +32,54 @@
     return { ...base, 'X-Tab-Id': tabId, ...extra };
   };
 
+  const renderCopilotRuntimeStatus = (status) => {
+    const state = String(status?.state || 'idle');
+    const labels = {
+      starting: 'Copilot準備中', loading: 'Copilot読込中', ready: 'Copilot準備完了',
+      'signin-required': 'Copilotサインイン', closed: 'Copilot再起動',
+      failed: 'Copilot要確認', idle: 'Copilot未起動'
+    };
+    document.querySelectorAll('[data-copilot-runtime]').forEach((button) => {
+      [...button.classList].filter((name) => name.startsWith('copilot-runtime--')).forEach((name) => button.classList.remove(name));
+      button.classList.add(`copilot-runtime--${state}`);
+      button.dataset.state = state;
+      button.title = String(status?.message || 'クリックしてCopilot画面を開く');
+      const label = button.querySelector('[data-copilot-runtime-label]');
+      if (label) label.textContent = labels[state] || 'Copilot確認';
+    });
+  };
+
+  const pollCopilotRuntimeStatus = async () => {
+    try {
+      const response = await fetch('/api/copilot/runtime/status', { headers: sessionHeaders() });
+      if (!response.ok) return;
+      renderCopilotRuntimeStatus(await response.json());
+    } catch {
+      // 起動直後や終了中は次の巡回で確認する。
+    }
+  };
+
+  const openCopilotRuntimeWindow = async (button) => {
+    if (button.disabled) return;
+    button.disabled = true;
+    const restart = ['closed', 'failed', 'idle', 'signin-required'].includes(button.dataset.state || '');
+    try {
+      const response = await fetch(restart ? '/api/copilot/runtime/start' : '/api/copilot/window', {
+        method: 'POST', headers: sessionHeaders()
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(payload?.message || `HTTP ${response.status}`);
+      }
+      showToast(restart ? 'Copilot用Edgeを起動しています。' : 'Copilotの画面を前面に表示しました。', 'info');
+      await pollCopilotRuntimeStatus();
+    } catch (error) {
+      showToast(error.message || 'Copilotの画面を開けませんでした。');
+    } finally {
+      button.disabled = false;
+    }
+  };
+
   const saveStatus = (state, message) => {
     const target = document.getElementById('save-status');
     if (!target) return;
@@ -460,6 +508,7 @@
     const remembered = activeStepId || sessionStorage.getItem(activeStepKey());
     setActiveStep(remembered, { scroll: false });
     renderAllCardAnnotations();
+    pollCopilotRuntimeStatus();
   };
 
   const stepCards = () => [...document.querySelectorAll('.steps > .step-card')];
@@ -2197,9 +2246,15 @@
     if (!ensureCurrentAssets()) return;
     initializeWorkspaceView();
     sendHeartbeat();
+    pollCopilotRuntimeStatus();
   });
 
   document.body.addEventListener('click', (event) => {
+    const copilotRuntimeButton = event.target.closest('[data-copilot-runtime]');
+    if (copilotRuntimeButton) {
+      openCopilotRuntimeWindow(copilotRuntimeButton);
+      return;
+    }
     const projectExportButton = event.target.closest('[data-project-export]');
     if (projectExportButton) {
       exportProjectPackage(projectExportButton);
@@ -3404,7 +3459,7 @@ ${review ? current + reason : reason + current}
         progress.closest('[role="progressbar"]')?.setAttribute('aria-valuenow', String(percent));
       }
       if (status.state === 'queued' || status.state === 'running') {
-        setCopilotMessage(String(status.message || '処理しています'), 'Copilotの画面は裏で動いています。編集は続けられます。');
+        setCopilotMessage(String(status.message || '処理しています'), 'Copilot用Edgeで進行を確認できます。解析中はCopilot画面を操作しないでください。ManualBuilderの編集は続けられます。');
         return;
       }
       if (status.state === 'idle') return;
@@ -3554,6 +3609,7 @@ ${review ? current + reason : reason + current}
   };
 
   window.setInterval(pollCaptures, 1500);
+  window.setInterval(pollCopilotRuntimeStatus, 3000);
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) {
       wakeHeartbeat();

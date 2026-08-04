@@ -1199,7 +1199,11 @@ function Invoke-MbRoute {
             $form = Read-MbForm -Request $request
             # 音声はマイクを入れ、Microsoftのオンライン音声認識へ送る。既定では行わない。
             $withNarration = ([string](Get-MbFormValue -Form $form -Name 'withNarration')) -match '^(?i:true|1|on|yes)$'
-            $status = Start-MbRecordingJob -WithNarration:$withNarration
+            # 起動中のCopilot制御用Edgeはマニュアル化する操作ではないため、
+            # 専用プロファイルのプロセスと識別用タイトルを記録対象から外す。
+            $exclusions = Get-MbCopilotRecorderExclusions
+            $status = Start-MbRecordingJob -WithNarration:$withNarration `
+                -IgnoreTitlePatterns @($exclusions.titlePatterns) -IgnoreProcessIds @($exclusions.processIds)
             Write-MbLog '操作の記録を開始しました。' 'OK'
             Write-MbResponse $Context ($status | ConvertTo-Json -Depth 6 -Compress) 200 'application/json; charset=utf-8'
         } catch {
@@ -1300,6 +1304,22 @@ function Invoke-MbRoute {
     if ($path -eq '/api/copilot/draft/discard') {
         Remove-MbCopilotDraftJob
         Write-MbResponse $Context '{"status":"ok"}' 200 'application/json; charset=utf-8'
+        return
+    }
+
+    if ($path -eq '/api/copilot/runtime/status') {
+        $status = Read-MbCopilotRuntimeStatus
+        Write-MbResponse $Context ($status | ConvertTo-Json -Depth 6 -Compress) 200 'application/json; charset=utf-8'
+        return
+    }
+
+    if ($path -eq '/api/copilot/runtime/start') {
+        try {
+            $status = Start-MbCopilotWarmup -Force
+            Write-MbResponse $Context ($status | ConvertTo-Json -Depth 6 -Compress) 200 'application/json; charset=utf-8'
+        } catch {
+            Write-MbResponse $Context (([pscustomobject]@{ message = [string]$_.Exception.Message } | ConvertTo-Json -Compress)) 400 'application/json; charset=utf-8'
+        }
         return
     }
 
@@ -2048,6 +2068,16 @@ try {
     Write-Host ''
 
     if (-not $NoBrowser) { Start-Process $url }
+    # ManualBuilderの表示を待たせず、Copilot用Edgeを通常ウィンドウで先に準備する。
+    # サインイン切れやUI停止は利用者がその画面で確認できる。
+    if (-not $NoBrowser) {
+        try {
+            [void](Start-MbCopilotWarmup)
+            Write-MbLog 'Copilot画面のバックグラウンド準備を開始しました。' 'INFO'
+        } catch {
+            Write-MbLog ('Copilot画面の準備を開始できませんでした: ' + $_.Exception.Message) 'WARN'
+        }
+    }
 
     while ($script:Running -and $listener.IsListening) {
         $context = $null

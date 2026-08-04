@@ -383,6 +383,7 @@ function ConvertFrom-MbCopilotStepAnswer {
         $targetLabel = Get-MbTrimmedText -Value $(if ($item.PSObject.Properties.Name -contains 'targetLabel') { $item.targetLabel } else { '' }) -MaxLength 300
         $targetType = Get-MbTrimmedText -Value $(if ($item.PSObject.Properties.Name -contains 'targetType') { $item.targetType } else { '' }) -MaxLength 80
         $targetRect = $null
+        $usedFreeBbox = $false
         if ($Mode -eq 'operation') {
             # candidateIdが有効ならローカル候補の座標を使い、Copilotに座標を転記させない。
             foreach ($candidate in @($source.targetCandidates)) {
@@ -395,9 +396,13 @@ function ConvertFrom-MbCopilotStepAnswer {
             if ($null -eq $targetRect -and $item.PSObject.Properties.Name -contains 'bbox' -and
                 (Test-MbNormalizedRect -Rect $item.bbox)) {
                 $area = ([double]$item.bbox.x2 - [double]$item.bbox.x1) * ([double]$item.bbox.y2 - [double]$item.bbox.y1)
-                if ($area -lt 0.72) { $targetRect = $item.bbox }
+                if ($area -lt 0.72) { $targetRect = $item.bbox; $usedFreeBbox = $true }
             }
         }
+        $needsReview = Get-MbBooleanOrDefault -Container $item -Name 'needsReview' -Default ($null -eq $targetRect)
+        # Copilotの自己申告よりローカルの安全条件を優先する。自由座標と矩形なしは
+        # 利用者が明示確認するまで確定扱いにしない。
+        if ($Mode -eq 'operation' -and ($null -eq $targetRect -or $usedFreeBbox)) { $needsReview = $true }
 
         # 校正で3項目とも空なら、直すところが無いという意味。確認画面へ出さない。
         if ($Mode -eq 'review' -and
@@ -425,7 +430,7 @@ function ConvertFrom-MbCopilotStepAnswer {
             targetLabel     = $targetLabel
             targetType      = $targetType
             targetRect      = $targetRect
-            needsReview     = Get-MbBooleanOrDefault -Container $item -Name 'needsReview' -Default ($null -eq $targetRect)
+            needsReview     = $needsReview
         })
     }
     return @($drafts)

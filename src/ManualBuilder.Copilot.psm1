@@ -45,7 +45,12 @@ function Get-MbCopilotDefaultSettings {
         # 校正は画像を渡さないぶん軽い。表記ゆれは広く見ないと気付けないのでまとめて渡す。
         review_steps_per_packet = 25
         copilot_model        = 'GPT 5.6 Think deeper,Opus,Think Deeper'
-        browser_display_mode = 'minimized'
+        # CopilotはUI変更やサインイン切れを利用者が確認できるよう、通常表示を既定にする。
+        browser_display_mode = 'foreground'
+        # 実画像を添付できるのは職場向けCopilotの完全一致ホストだけ。
+        # サインインホストは画面表示にだけ許可し、添付・送信先としては扱わない。
+        allowed_hosts        = @('m365.cloud.microsoft')
+        signin_hosts         = @('login.microsoftonline.com', 'login.microsoft.com')
         poll_interval_ms     = 2000
         response_end_marker  = 'MB_END'
         selectors            = [ordered]@{
@@ -86,6 +91,9 @@ function Get-MbCopilotSettings {
             }
         }
     }
+    # v0.35.0以降は、停止やサインイン要求を利用者が確認できる通常表示を製品仕様とする。
+    # 旧copilot.jsonにminimizedが残っていても画面外起動へ戻さない。
+    $defaults.browser_display_mode = 'foreground'
     return [pscustomobject]$defaults
 }
 
@@ -94,6 +102,43 @@ function Get-MbCopilotSelector {
     $selectors = $Settings.selectors
     if ($selectors -is [System.Collections.IDictionary]) { return $selectors[$Name] }
     return $selectors.PSObject.Properties[$Name].Value
+}
+
+function Get-MbCopilotHostList {
+    param([Parameter(Mandatory = $true)]$Settings, [switch]$IncludeSignin)
+
+    $hosts = New-Object System.Collections.ArrayList
+    foreach ($value in @($Settings.allowed_hosts)) {
+        $hostName = ([string]$value).Trim().TrimEnd('.').ToLowerInvariant()
+        if (-not [string]::IsNullOrWhiteSpace($hostName) -and -not $hosts.Contains($hostName)) {
+            [void]$hosts.Add($hostName)
+        }
+    }
+    if ($hosts.Count -eq 0) { [void]$hosts.Add('m365.cloud.microsoft') }
+    if ($IncludeSignin) {
+        foreach ($value in @($Settings.signin_hosts)) {
+            $hostName = ([string]$value).Trim().TrimEnd('.').ToLowerInvariant()
+            if (-not [string]::IsNullOrWhiteSpace($hostName) -and -not $hosts.Contains($hostName)) {
+                [void]$hosts.Add($hostName)
+            }
+        }
+    }
+    return @($hosts)
+}
+
+function Test-MbCopilotUrlHost {
+    param(
+        [AllowEmptyString()][string]$Url = '',
+        [Parameter(Mandatory = $true)]$Settings,
+        [switch]$IncludeSignin
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Url)) { return $false }
+    $uri = $null
+    try { $uri = [Uri]$Url } catch { return $false }
+    if ($uri.Scheme -notin @('https', 'http')) { return $false }
+    $hostName = ([string]$uri.Host).TrimEnd('.').ToLowerInvariant()
+    return ((Get-MbCopilotHostList -Settings $Settings -IncludeSignin:$IncludeSignin) -contains $hostName)
 }
 
 # ---------------------------------------------------------------------
@@ -135,7 +180,11 @@ function Start-MbCopilotEdge {
     )
 
     $port = [int]$Settings.cdp_port
-    if (Test-MbDevTools -Port $port) { return }
+    if (Test-MbDevTools -Port $port) {
+        $owned = @(Get-MbCopilotEdgeProcessIds -Settings $Settings -ProfileDirectory $ProfileDirectory)
+        if ($owned.Count -gt 0) { return }
+        throw "Copilot制御ポート $port は別のブラウザーが使用しています。copilot.jsonのcdp_portを変更してください。"
+    }
     $edge = Get-MbEdgePath
     if (-not (Test-Path -LiteralPath $ProfileDirectory)) {
         [void](New-Item -ItemType Directory -Path $ProfileDirectory -Force)
@@ -158,6 +207,9 @@ function Start-MbCopilotEdge {
     if ($display -ne 'foreground') { $display = 'minimized' }
     if ($display -eq 'minimized') {
         $arguments += '--window-position=-32000,-32000'
+        $arguments += '--window-size=1280,900'
+    } else {
+        $arguments += '--window-position=120,120'
         $arguments += '--window-size=1280,900'
     }
     $arguments += [string]$Settings.copilot_url
@@ -206,22 +258,13 @@ function Get-MbCopilotPage {
 
     $port = [int]$Settings.cdp_port
     $url = [string]$Settings.copilot_url
-    $copilotHost = ([Uri]$url).Host
     for ($attempt = 0; $attempt -lt 3; $attempt++) {
         $targets = @(Get-MbCdpTargets -Port $port)
         $pages = @($targets | Where-Object {
             $_ -and ([string]$_.type) -eq 'page' -and
             (-not [string]::IsNullOrWhiteSpace([string]$_.webSocketDebuggerUrl)) -and
-            ((([string]$_.url) -like ('*' + $copilotHost + '*')) -or (([string]$_.url) -like '*copilot*'))
+            (Test-MbCopilotUrlHost -Url ([string]$_.url) -Settings $Settings -IncludeSignin)
         })
-        if ($pages.Count -eq 0) {
-            # サインインへ飛んでいる最中の受け皿（約束事4）。
-            $pages = @($targets | Where-Object {
-                $_ -and ([string]$_.type) -eq 'page' -and
-                (-not [string]::IsNullOrWhiteSpace([string]$_.webSocketDebuggerUrl)) -and
-                (([string]$_.url) -like 'http*')
-            })
-        }
         if ($pages.Count -gt 0) { return $pages[0] }
 
         foreach ($method in @('Put', 'Get')) {
@@ -426,13 +469,27 @@ function Wait-MbCopilotScreenReady {
             return [pscustomobject]@{ ok = $false; cancelled = $true; signinRequired = $false; message = '中止しました。' }
         }
         $last = Get-MbCopilotScreenState -WsUrl $WsUrl -Settings $Settings
+        if (-not (Test-MbCopilotUrlHost -Url ([string]$last.url) -Settings $Settings -IncludeSignin)) {
+            Write-MbCopilotLog ('許可されていないCopilotホストを検出しました: ' + (Format-MbCopilotScreenDiagnostic -State $last)) 'ERROR'
+            return [pscustomobject]@{
+                ok = $false; cancelled = $false; signinRequired = $false; errorCode = 'COPILOT_WRONG_HOST'
+                message = '許可されていない画面のためCopilot操作を停止しました。Copilot用Edgeを閉じて、もう一度実行してください。'
+            }
+        }
         if ($last.ready -eq $true) {
-            return [pscustomobject]@{ ok = $true; cancelled = $false; signinRequired = $false; message = '' }
+            if (-not (Test-MbCopilotUrlHost -Url ([string]$last.url) -Settings $Settings)) {
+                return [pscustomobject]@{
+                    ok = $false; cancelled = $false; signinRequired = $true; errorCode = 'COPILOT_SIGNIN_REQUIRED'
+                    message = 'Microsoft 365 Copilotへのサインインが必要です。Copilotの画面でサインインしてください。'
+                }
+            }
+            return [pscustomobject]@{ ok = $true; cancelled = $false; signinRequired = $false; errorCode = ''; message = '' }
         }
         if ($last.signin_required -eq $true) {
             Write-MbCopilotLog ('Copilotの準備ができません（サインインが必要）: ' + (Format-MbCopilotScreenDiagnostic -State $last)) 'ERROR'
             return [pscustomobject]@{
                 ok = $false; cancelled = $false; signinRequired = $true
+                errorCode = 'COPILOT_SIGNIN_REQUIRED'
                 message = 'Microsoft 365 Copilotへのサインインが必要です。［Copilotの画面を開く］からサインインして、もう一度実行してください。'
             }
         }
@@ -446,9 +503,45 @@ function Wait-MbCopilotScreenReady {
     if ($null -eq $last) { $last = Get-MbCopilotScreenState -WsUrl $WsUrl -Settings $Settings }
     Write-MbCopilotLog ('Copilotの準備ができません: ' + (Format-MbCopilotScreenDiagnostic -State $last)) 'ERROR'
     return [pscustomobject]@{
-        ok = $false; cancelled = $false; signinRequired = $false
+        ok = $false; cancelled = $false; signinRequired = $false; errorCode = 'COPILOT_CHAT_NOT_READY'
         message = 'Copilotの画面が開きませんでした。［Copilotの画面を開く］で様子を確認して、もう一度実行してください。'
     }
+}
+
+# 操作記録からCopilot制御用Edgeを除外するため、専用プロファイルまたは
+# デバッグポートで起動したEdgeの親プロセスIDを返す。
+function Get-MbCopilotEdgeProcessIds {
+    param(
+        [Parameter(Mandatory = $true)]$Settings,
+        [Parameter(Mandatory = $true)][string]$ProfileDirectory
+    )
+
+    $ids = New-Object 'System.Collections.Generic.HashSet[int]'
+    $profileMarker = [IO.Path]::GetFullPath($ProfileDirectory).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    try {
+        foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" -ErrorAction Stop)) {
+            $commandLine = [string]$process.CommandLine
+            if ([string]::IsNullOrWhiteSpace($commandLine)) { continue }
+            if ($commandLine.IndexOf($profileMarker, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                [void]$ids.Add([int]$process.ProcessId)
+            }
+        }
+    } catch {
+        Write-MbCopilotLog ('Copilot用Edgeのプロセスを確認できませんでした: ' + $_.Exception.Message) 'WARN'
+    }
+    return @($ids)
+}
+
+function Set-MbCopilotWindowMarker {
+    param([Parameter(Mandatory = $true)][string]$WsUrl)
+    $js = @'
+(() => {
+  const marker='ManualBuilder Copilot';
+  if(!String(document.title||'').startsWith(marker)){document.title=marker+' — '+String(document.title||'');}
+  return document.title;
+})()
+'@
+    try { return [string](Invoke-MbCdpEval -WebSocketUrl $WsUrl -Expression $js -TimeoutSeconds 10) } catch { return '' }
 }
 
 function Get-MbCopilotMainText {
@@ -1109,12 +1202,14 @@ function Invoke-MbCopilotRequest {
     $gate = Wait-MbCopilotScreenReady -WsUrl $wsUrl -Settings $Settings -TimeoutSeconds 60 -ShouldCancel $ShouldCancel
     if ($gate.cancelled) { return [pscustomobject]@{ ok = $false; cancelled = $true; completedBy = 'cancelled'; answer = $null; tail = '' } }
     if (-not $gate.ok) { throw ([string]$gate.message) }
+    $null = Set-MbCopilotWindowMarker -WsUrl $wsUrl
 
     # 手順のまとまりごとに新しいチャットで始める。前の依頼の添付や文脈を引きずらない。
     $null = Invoke-MbFreshChat -WsUrl $wsUrl -Settings $Settings
     $gate = Wait-MbCopilotScreenReady -WsUrl $wsUrl -Settings $Settings -TimeoutSeconds 60 -ShouldCancel $ShouldCancel
     if ($gate.cancelled) { return [pscustomobject]@{ ok = $false; cancelled = $true; completedBy = 'cancelled'; answer = $null; tail = '' } }
     if (-not $gate.ok) { throw ([string]$gate.message) }
+    $null = Set-MbCopilotWindowMarker -WsUrl $wsUrl
 
     $null = Set-MbCopilotModel -WsUrl $wsUrl -Settings $Settings
 
@@ -1149,9 +1244,8 @@ function Show-MbCopilotWindow {
     )
 
     $port = [int]$Settings.cdp_port
-    if (-not (Test-MbDevTools -Port $port)) {
-        Start-MbCopilotEdge -Settings $Settings -ProfileDirectory $ProfileDirectory
-    }
+    # 既存ポートも専用プロファイルのEdgeか検証してから再利用する。
+    Start-MbCopilotEdge -Settings $Settings -ProfileDirectory $ProfileDirectory
     $page = Get-MbCopilotPage -Settings $Settings
     $socket = $null
     try {
@@ -1176,7 +1270,10 @@ Export-ModuleMember -Function @(
     'Get-MbCopilotDefaultSettings',
     'Get-MbCopilotSettings',
     'Get-MbCopilotSelector',
+    'Get-MbCopilotHostList',
+    'Test-MbCopilotUrlHost',
     'Start-MbCopilotEdge',
+    'Test-MbDevTools',
     'Get-MbCopilotPage',
     'Get-MbCopilotScreenState',
     'Wait-MbCopilotScreenReady',
@@ -1189,9 +1286,10 @@ Export-ModuleMember -Function @(
     'Wait-MbCopilotResponse',
     'Invoke-MbCopilotRequest',
     'Show-MbCopilotWindow',
+    'Get-MbCopilotEdgeProcessIds',
+    'Set-MbCopilotWindowMarker',
     'Get-MbJsonObjectCandidates',
     'Repair-MbJsonText',
     'Get-MbStepAnswerJson',
     'Get-MbCopilotPromptTailAnchor'
 )
-
