@@ -267,8 +267,8 @@ function Merge-MbNarrationIntoEvents {
 
 # 記録した操作を手順にする。
 #
-# 録画からの取り込みと違い、赤枠の位置も操作対象の名前も UI Automation の確定値なので、
-# 推定も文字認識も要らない。ここでは受け取った矩形をそのまま注釈にする。
+# 録画からの取り込みと違い、赤枠はUI Automationの矩形、またはUIA非対応画面の
+# 小さなクリック位置枠である。文字認識や全画面矩形への推定は行わず、受け取った矩形を使う。
 function Import-MbRecordedEvents {
     param(
         [Parameter(Mandatory = $true)][object]$Project,
