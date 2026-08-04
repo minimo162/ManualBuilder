@@ -134,33 +134,32 @@ Add-Result ($null -eq (ConvertTo-MbRegionRect -Region $capturedRegion -Target $s
 
 Add-Result ($null -eq (ConvertTo-MbRegionRect -Region $capturedRegion -Target $null)) '操作対象が無ければ矩形は作らない'
 
-# 入力欄は画像にも文字を残さない。白い画像の指定範囲だけが黒くなることを確かめる。
-$redactionPath = Join-Path $env:TEMP ('ManualBuilder-RecorderRedaction-' + [guid]::NewGuid().ToString('N') + '.jpg')
-$redactionBitmap = New-Object Drawing.Bitmap 100, 80
-$redactionGraphics = [Drawing.Graphics]::FromImage($redactionBitmap)
+# 入力欄は自動で黒塗りしない。必要な箇所は取り込み後の画像編集で手動マスクする。
+$inputImagePath = Join-Path $env:TEMP ('ManualBuilder-RecorderInput-' + [guid]::NewGuid().ToString('N') + '.jpg')
+$inputBitmap = New-Object Drawing.Bitmap 100, 80
+$inputGraphics = [Drawing.Graphics]::FromImage($inputBitmap)
 try {
-    $redactionGraphics.Clear([Drawing.Color]::White)
+    $inputGraphics.Clear([Drawing.Color]::White)
+    $inputGraphics.FillRectangle([Drawing.Brushes]::Blue, 20, 25, 40, 20)
     $capture = [pscustomobject]@{
-        bitmap = $redactionBitmap
+        bitmap = $inputBitmap
         origin = [pscustomobject]@{ left = 0; top = 0; width = 100; height = 80 }
     }
     $imageRegion = [pscustomobject]@{ left = 0; top = 0; width = 100; height = 80 }
-    $inputField = [pscustomobject]@{ left = 20.0; top = 25.0; width = 40.0; height = 20.0 }
-    [void](Save-MbBitmapRegion -Capture $capture -Region $imageRegion -Path $redactionPath `
-        -MaxEdge 0 -Quality 100 -RedactTarget $inputField)
-    $savedBitmap = New-Object Drawing.Bitmap $redactionPath
+    [void](Save-MbBitmapRegion -Capture $capture -Region $imageRegion -Path $inputImagePath -MaxEdge 0 -Quality 100)
+    $savedBitmap = New-Object Drawing.Bitmap $inputImagePath
     try {
-        $hidden = $savedBitmap.GetPixel(30, 30)
+        $inputPixel = $savedBitmap.GetPixel(30, 30)
         $visible = $savedBitmap.GetPixel(5, 5)
-        Add-Result ($hidden.R -lt 20 -and $hidden.G -lt 20 -and $hidden.B -lt 20) '入力欄を画像上でも黒塗りする'
-        Add-Result ($visible.R -gt 235 -and $visible.G -gt 235 -and $visible.B -gt 235) '入力欄以外の画面は維持する'
+        Add-Result ($inputPixel.B -gt 180 -and $inputPixel.R -lt 80) '入力欄の表示を自動で黒塗りしない'
+        Add-Result ($visible.R -gt 235 -and $visible.G -gt 235 -and $visible.B -gt 235) '入力欄以外の画面も維持する'
     } finally {
         $savedBitmap.Dispose()
     }
 } finally {
-    $redactionGraphics.Dispose()
-    $redactionBitmap.Dispose()
-    Remove-Item -LiteralPath $redactionPath -Force -ErrorAction SilentlyContinue
+    $inputGraphics.Dispose()
+    $inputBitmap.Dispose()
+    Remove-Item -LiteralPath $inputImagePath -Force -ErrorAction SilentlyContinue
 }
 
 # ---------------------------------------------------------------------
@@ -196,6 +195,10 @@ Add-Result ((Test-MbUsableElementInfo -Info $infinite) -eq $false) '画面に出
 
 Add-Result ((Test-MbUsableElementInfo -Info $null) -eq $false) 'nullは使わない'
 
+$nearEdge = [pscustomobject]@{ name = '境界のボタン'; controlType = 'ControlType.Button'; isActionable = $true; left = 107.0; top = 100.0; width = 80.0; height = 30.0 }
+$selected = Select-MbUiaTargetInfo -Candidates @($nearEdge) -X 101 -Y 115
+Add-Result ($null -ne $selected) 'UIA座標が数ピクセルずれても近傍の操作対象を選ぶ'
+
 # ブラウザーではFromPointがページ全体のDocumentを返すことがある。
 # 同じ点を含む候補から、実際に押せるリンク・ボタンの最小矩形を選ぶ。
 $page = [pscustomobject]@{
@@ -228,6 +231,14 @@ $selected = Select-MbUiaTargetInfo -Candidates @($page, $invokeText) -X 640 -Y 5
 Add-Result ($null -ne $selected -and [string]$selected.name -eq '次へ') 'Textとして公開された要素も操作パターンがあれば選ぶ'
 
 Add-Result ($null -eq (Select-MbUiaTargetInfo -Candidates @($page, $linkText) -X 200 -Y 430)) '操作できる候補が無ければページ全体の赤枠を付けない'
+
+$window = [pscustomobject]@{ left = 100.0; top = 100.0; width = 800.0; height = 600.0 }
+$pointFallback = New-MbClickPointTargetInfo -X 420 -Y 360 -Window $window
+Add-Result ([string]$pointFallback.controlType -eq 'ControlType.ClickPoint') 'UIAで特定できない操作はクリック位置へフォールバックする'
+Add-Result ([Math]::Abs([double]$pointFallback.left - 392.0) -lt 0.001 -and
+    [Math]::Abs([double]$pointFallback.top - 342.0) -lt 0.001) 'クリック位置の小さな枠を中央へ置く'
+$edgeFallback = New-MbClickPointTargetInfo -X 101 -Y 101 -Window $window
+Add-Result ([double]$edgeFallback.left -ge 100.0 -and [double]$edgeFallback.top -ge 100.0) 'クリック位置の枠をウィンドウ外へ出さない'
 
 # ---------------------------------------------------------------------
 # 入力の検出に使うキー
