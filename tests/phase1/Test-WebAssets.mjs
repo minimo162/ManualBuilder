@@ -138,6 +138,7 @@ if (appJs) {
   check('キーボードでもシートを並べ替えられる', appJs.includes('moveSheetByKeyboard'));
   check('通知を積んで出す', appJs.includes('TOAST_LIMIT'));
   check('通知を閉じられる', appJs.includes('toast__close'));
+  check('手順を一度にすべて選択できる', appJs.includes('data-step-select-all') && appJs.includes('selectAll.indeterminate'));
   check('動きを減らす設定を尊重する', appJs.includes('prefers-reduced-motion'));
   // 名前の無いダイアログは読み上げが「ダイアログ」としか伝えない。作る数と名前を付ける数を合わせる。
   const dialogCreations = (appJs.match(/document\.createElement\('dialog'\)/g) || []).length;

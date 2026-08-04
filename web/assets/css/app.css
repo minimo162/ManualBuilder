@@ -653,6 +653,32 @@ button:disabled {
   font-weight: 700;
 }
 
+.step-nav__heading-title,
+.step-nav__select-all {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.step-nav__select-all {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.step-nav__select-all input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.step-nav__select-all:has(input:disabled) {
+  cursor: default;
+  color: var(--text-3);
+}
+
 .step-nav__guide {
   height: 0;
   overflow: hidden;

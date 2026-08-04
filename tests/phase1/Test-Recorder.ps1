@@ -411,6 +411,35 @@ Add-Result ([double]$focusCrop.x -ge 0 -and ([double]$focusCrop.x + [double]$foc
 $fallbackCrop = Get-MbRecorderTargetCrop -Rect $focusRect -TargetType 'ControlType.ClickPoint'
 Add-Result ($null -eq $fallbackCrop) '対象不明のクリックは自動で切り抜かない'
 
+# 固定名の .bak が同期ソフト等に一瞬開かれていても、主ファイルの保存を止めない。
+# 固有名の退避が残った場合は、主ファイル破損時の復旧にも利用する。
+$projectSaveRoot = Join-Path $env:TEMP ('ManualBuilder-ProjectSave-' + [guid]::NewGuid().ToString('N'))
+$projectSavePath = Join-Path $projectSaveRoot 'project.json'
+$backupLock = $null
+try {
+    [void](New-Item -ItemType Directory -Path $projectSaveRoot -Force)
+    $saveProject = New-MbProject
+    $saveProject.title = '初回'
+    $saveProject = Save-MbProject -Project $saveProject -Path $projectSavePath
+    $saveProject.title = '更新前'
+    $saveProject = Save-MbProject -Project $saveProject -Path $projectSavePath
+    $backupLock = [IO.File]::Open(($projectSavePath + '.bak'), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    $saveProject.title = '更新後'
+    $saveProject = Save-MbProject -Project $saveProject -Path $projectSavePath
+    $savedWhileBackupLocked = [IO.File]::ReadAllText($projectSavePath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    Add-Result ([string]$savedWhileBackupLocked.title -eq '更新後') '固定バックアップが使用中でもプロジェクト本体を保存する'
+    $recoveryFiles = @([IO.Directory]::GetFiles($projectSaveRoot, '.project.json.recovery-*.bak'))
+    Add-Result ($recoveryFiles.Count -ge 1) '正式バックアップを更新できない場合は固有名の退避を残す'
+    $backupLock.Dispose()
+    $backupLock = $null
+    [IO.File]::WriteAllText($projectSavePath, '{broken', (New-Object Text.UTF8Encoding($false)))
+    $recoveredProject = Get-MbProject -Path $projectSavePath
+    Add-Result ([string]$recoveredProject.title -eq '更新前') '主ファイル破損時は最新の固有名退避から復旧する'
+} finally {
+    if ($null -ne $backupLock) { $backupLock.Dispose() }
+    Remove-Item -LiteralPath $projectSaveRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 $bulkProject = New-MbProject
 $sourceSheet = $bulkProject.sheets[0]
 $bulkStep1 = Add-MbStep -Project $bulkProject -SheetId $sourceSheet.id

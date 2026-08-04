@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const appVersion = '0.34.1';
+  const appVersion = '0.34.2';
   // 番号注釈はSVG属性で指定するためCSS変数を参照できない。
   // 編集画面とExcel・Word出力（New-MbAnnotatedImage）で同じ見た目にするため、基準フォントを揃える。
   const ANNOTATION_NUMBER_FONT = '"BIZ UDPGothic", "BIZ UDPゴシック", "BIZ UDGothic", "BIZ UDゴシック", Meiryo, "Yu Gothic UI", "MS Pゴシック", sans-serif';
@@ -350,14 +350,22 @@
   const selectedStepIds = new Set();
 
   function updateStepBulkActions() {
-    document.querySelectorAll('[data-step-nav-item]').forEach((item) => {
+    const items = [...document.querySelectorAll('[data-step-nav-item]')];
+    items.forEach((item) => {
       const selected = selectedStepIds.has(item.dataset.stepId || '');
       item.classList.toggle('step-nav__item--selected', selected);
       const checkbox = item.querySelector('[data-step-select]');
       if (checkbox) checkbox.checked = selected;
     });
+    const selectedCount = items.filter((item) => selectedStepIds.has(item.dataset.stepId || '')).length;
+    const selectAll = document.querySelector('[data-step-select-all]');
+    if (selectAll) {
+      selectAll.disabled = items.length === 0;
+      selectAll.checked = items.length > 0 && selectedCount === items.length;
+      selectAll.indeterminate = selectedCount > 0 && selectedCount < items.length;
+    }
     const actions = document.querySelector('[data-step-bulk-actions]');
-    const count = selectedStepIds.size;
+    const count = selectedCount;
     if (!actions) return;
     actions.hidden = count === 0;
     const label = actions.querySelector('[data-step-selection-count]');
@@ -2351,6 +2359,16 @@
   });
 
   document.body.addEventListener('change', (event) => {
+    if (event.target.matches('[data-step-select-all]')) {
+      document.querySelectorAll('[data-step-nav-item]').forEach((item) => {
+        const stepId = item.dataset.stepId || '';
+        if (!stepId) return;
+        if (event.target.checked) selectedStepIds.add(stepId);
+        else selectedStepIds.delete(stepId);
+      });
+      updateStepBulkActions();
+      return;
+    }
     if (event.target.matches('[data-step-select]')) {
       const item = event.target.closest('[data-step-nav-item]');
       const stepId = item?.dataset.stepId || '';
