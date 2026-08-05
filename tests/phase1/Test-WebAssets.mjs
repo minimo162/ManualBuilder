@@ -163,6 +163,8 @@ if (appJs) {
   check('文章保存のHTTP応答完了まで待つ', appJs.includes('pendingStepSaveRequests') && appJs.includes('waitForPendingStepSaves'));
   check('要確認を再読込後も復元する', appJs.includes('loadFinishAttentionSteps') && appJs.includes('reviewRequired'));
   check('要確認は明示操作で解除する', appJs.includes('data-step-review-resolve') && appJs.includes('/api/steps/review/resolve'));
+  check('手順とシートの削除を元に戻せる', appJs.includes('/api/deletions/status') && appJs.includes('/api/deletions/undo') && appJs.includes('deletion-undo__button'));
+  check('シート削除を取り消し対応APIへ送る', appJs.includes('data-sheet-delete') && appJs.includes("fetch('/api/sheets/delete'"));
   check('編集中カードを追加位置として選ぶ', appJs.includes("document.body.addEventListener('focusin'"));
   // 名前の無いダイアログは読み上げが「ダイアログ」としか伝えない。作る数と名前を付ける数を合わせる。
   const dialogCreations = (appJs.match(/document\.createElement\('dialog'\)/g) || []).length;
@@ -176,6 +178,7 @@ if (appCss) {
   check('フォーカス位置を輪郭線でも示す', /:focus-visible[\s\S]{0,200}outline:/.test(appCss));
   check('ハイコントラストでもフォーカスが見える', appCss.includes('forced-colors: active'));
   check('未入力の目印を狭い画面で切り捨てない', !appCss.includes('max-width: 32px'));
+  check('削除取り消しを消えない操作バーで表示する', appCss.includes('.deletion-undo') && appCss.includes('.deletion-undo__button'));
 }
 
 const indexHtmlText = read('web/index.html');

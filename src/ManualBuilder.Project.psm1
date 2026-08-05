@@ -559,6 +559,29 @@ function Remove-MbSheet {
     }
 }
 
+function Restore-MbSheet {
+    param(
+        [Parameter(Mandatory = $true)][object]$Project,
+        [Parameter(Mandatory = $true)][object]$Sheet,
+        [Parameter(Mandatory = $true)][int]$Index
+    )
+
+    $sheetId = [string]$Sheet.id
+    if ([string]::IsNullOrWhiteSpace($sheetId)) { throw '復元するシートが不正です。' }
+    if (@($Project.sheets | Where-Object { [string]$_.id -eq $sheetId }).Count -gt 0) {
+        throw '同じシートがすでにあります。'
+    }
+    if (@($Project.sheets).Count -ge 50) { throw 'シートは50件までです。' }
+
+    $sheets = New-Object System.Collections.ArrayList
+    foreach ($current in @($Project.sheets)) { [void]$sheets.Add($current) }
+    $insertAt = [Math]::Max(0, [Math]::Min($Index, $sheets.Count))
+    $sheets.Insert($insertAt, $Sheet)
+    $Project.sheets = @($sheets)
+    $Project.selectedSheetId = $sheetId
+    return $Sheet
+}
+
 function Set-MbSheetOrder {
     param(
         [Parameter(Mandatory = $true)][object]$Project,
@@ -1062,6 +1085,55 @@ function Remove-MbSteps {
     }
 }
 
+function Restore-MbSteps {
+    param(
+        [Parameter(Mandatory = $true)][object]$Project,
+        [Parameter(Mandatory = $true)][object[]]$Items
+    )
+
+    $restoreItems = @($Items)
+    if ($restoreItems.Count -lt 1) { throw '復元する手順がありません。' }
+    $existingIds = New-Object 'System.Collections.Generic.HashSet[string]'
+    foreach ($sheet in @($Project.sheets)) {
+        foreach ($step in @($sheet.steps)) { [void]$existingIds.Add([string]$step.id) }
+    }
+    $restoringIds = New-Object 'System.Collections.Generic.HashSet[string]'
+    $countsBySheet = @{}
+    foreach ($item in $restoreItems) {
+        $sheetId = [string]$item.sheetId
+        $stepId = [string]$item.step.id
+        if ([string]::IsNullOrWhiteSpace($sheetId) -or [string]::IsNullOrWhiteSpace($stepId)) {
+            throw '復元する手順が不正です。'
+        }
+        $sheet = @($Project.sheets | Where-Object { [string]$_.id -eq $sheetId }) | Select-Object -First 1
+        if (-not $sheet) { throw '復元先のシートが見つかりません。' }
+        if ($existingIds.Contains($stepId) -or -not $restoringIds.Add($stepId)) {
+            throw '同じ手順がすでにあります。'
+        }
+        if (-not $countsBySheet.ContainsKey($sheetId)) { $countsBySheet[$sheetId] = 0 }
+        $countsBySheet[$sheetId]++
+    }
+    foreach ($sheetId in @($countsBySheet.Keys)) {
+        $sheet = @($Project.sheets | Where-Object { [string]$_.id -eq [string]$sheetId }) | Select-Object -First 1
+        if (@($sheet.steps).Count + [int]$countsBySheet[$sheetId] -gt 500) { throw '1シートの手順は500件までです。' }
+    }
+
+    $now = Get-MbUtcTimestamp
+    foreach ($sheetId in @($countsBySheet.Keys)) {
+        $sheet = @($Project.sheets | Where-Object { [string]$_.id -eq [string]$sheetId }) | Select-Object -First 1
+        $steps = New-Object System.Collections.ArrayList
+        foreach ($step in @($sheet.steps)) { [void]$steps.Add($step) }
+        $forSheet = @($restoreItems | Where-Object { [string]$_.sheetId -eq [string]$sheetId } | Sort-Object { [int]$_.index })
+        foreach ($item in $forSheet) {
+            $insertAt = [Math]::Max(0, [Math]::Min([int]$item.index, $steps.Count))
+            $steps.Insert($insertAt, $item.step)
+        }
+        $sheet.steps = @($steps)
+        $sheet.updatedAt = $now
+    }
+    return @($restoreItems | ForEach-Object { $_.step })
+}
+
 Export-ModuleMember -Function @(
     'New-MbProject',
     'New-MbSheet',
@@ -1082,6 +1154,7 @@ Export-ModuleMember -Function @(
     'Select-MbSheet',
     'Rename-MbSheet',
     'Remove-MbSheet',
+    'Restore-MbSheet',
     'Set-MbSheetOrder',
     'Add-MbStep',
     'Update-MbStep',
@@ -1092,5 +1165,6 @@ Export-ModuleMember -Function @(
     'Set-MbStepImageEdits',
     'Set-MbStepReview',
     'Remove-MbStep',
-    'Remove-MbSteps'
+    'Remove-MbSteps',
+    'Restore-MbSteps'
 )

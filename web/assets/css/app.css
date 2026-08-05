@@ -2015,6 +2015,57 @@ kbd {
   background: var(--success);
 }
 
+.deletion-undo {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  z-index: 65;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  max-width: min(620px, calc(100vw - 32px));
+  padding: 12px 14px 12px 18px;
+  border: 1px solid #23447a;
+  border-radius: 12px;
+  background: #17345f;
+  color: #fff;
+  box-shadow: 0 12px 32px rgba(17, 37, 68, 0.28);
+  transform: translateX(-50%);
+}
+
+.deletion-undo[hidden] {
+  display: none;
+}
+
+.deletion-undo__message {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deletion-undo__button {
+  flex: none;
+  min-height: 34px;
+  padding: 6px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: 8px;
+  background: #fff;
+  color: #17345f;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.deletion-undo__button:hover {
+  background: #edf4ff;
+}
+
+.deletion-undo__button:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
 .image-preview-dialog {
   width: min(94vw, 1600px);
   max-width: none;

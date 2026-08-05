@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const appVersion = '0.39.0';
+  const appVersion = '0.40.0';
   // 番号注釈はSVG属性で指定するためCSS変数を参照できない。
   // 編集画面とExcel・Word出力（New-MbAnnotatedImage）で同じ見た目にするため、基準フォントを揃える。
   const ANNOTATION_NUMBER_FONT = '"BIZ UDPGothic", "BIZ UDPゴシック", "BIZ UDGothic", "BIZ UDゴシック", Meiryo, "Yu Gothic UI", "MS Pゴシック", sans-serif';
@@ -62,6 +62,81 @@
     region.appendChild(toast);
     while (region.children.length > TOAST_LIMIT) region.firstElementChild?.remove();
     window.setTimeout(() => toast.remove(), TOAST_TIMEOUT_MS[tone] || TOAST_TIMEOUT_MS.info);
+  };
+
+  let deletionUndoBusy = false;
+  const ensureDeletionUndoBar = () => {
+    let bar = document.getElementById('deletion-undo');
+    if (bar) return bar;
+    bar = document.createElement('div');
+    bar.id = 'deletion-undo';
+    bar.className = 'deletion-undo';
+    bar.hidden = true;
+    bar.setAttribute('role', 'status');
+    bar.innerHTML = '<span class="deletion-undo__message"></span><button type="button" class="deletion-undo__button">元に戻す</button>';
+    bar.querySelector('.deletion-undo__button')?.addEventListener('click', () => { void undoLastDeletion(); });
+    document.body.appendChild(bar);
+    return bar;
+  };
+
+  const showDeletionUndo = (label) => {
+    const bar = ensureDeletionUndoBar();
+    const message = bar.querySelector('.deletion-undo__message');
+    if (message) message.textContent = label || '直前の削除を元に戻せます';
+    bar.hidden = false;
+  };
+
+  const hideDeletionUndo = () => {
+    const bar = document.getElementById('deletion-undo');
+    if (bar) bar.hidden = true;
+  };
+
+  const refreshDeletionUndo = async () => {
+    try {
+      const response = await fetch('/api/deletions/status', { headers: sessionHeaders() });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const status = await response.json();
+      if (status.available) showDeletionUndo(status.label);
+      else hideDeletionUndo();
+    } catch {
+      hideDeletionUndo();
+    }
+  };
+
+  const undoLastDeletion = async () => {
+    if (deletionUndoBusy) return;
+    const button = ensureDeletionUndoBar().querySelector('.deletion-undo__button');
+    deletionUndoBusy = true;
+    if (button) {
+      button.disabled = true;
+      button.textContent = '復元中…';
+    }
+    try {
+      const response = await fetch('/api/deletions/undo', {
+        method: 'POST',
+        headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }),
+        body: new URLSearchParams()
+      });
+      const html = await response.text();
+      if (!response.ok) throw new Error(html || `HTTP ${response.status}`);
+      const workspace = document.getElementById('workspace');
+      if (!workspace) throw new Error('編集画面を更新できません。');
+      workspace.outerHTML = html;
+      const nextWorkspace = document.getElementById('workspace');
+      if (nextWorkspace && window.htmx?.process) window.htmx.process(nextWorkspace);
+      hideDeletionUndo();
+      initializeWorkspaceView();
+      sendHeartbeat();
+      showToast('削除した内容を元に戻しました。', 'success');
+    } catch (error) {
+      showToast(error?.message || '削除した内容を元に戻せませんでした。');
+    } finally {
+      deletionUndoBusy = false;
+      if (button) {
+        button.disabled = false;
+        button.textContent = '元に戻す';
+      }
+    }
   };
 
   const replaceProjectLibrary = (html) => {
@@ -664,6 +739,7 @@
     renderAllCardAnnotations();
     setStepSelectionMode(selectedStepIds.size > 0, { keepSelection: true });
     updateFinishGuide();
+    void refreshDeletionUndo();
   };
 
   const stepCards = () => [...document.querySelectorAll('.steps > .step-card')];
@@ -2613,6 +2689,40 @@
   });
 
   document.body.addEventListener('click', (event) => {
+    const sheetDeleteButton = event.target.closest('[data-sheet-delete]');
+    if (sheetDeleteButton) {
+      const menu = sheetDeleteButton.closest('details');
+      if (menu) menu.open = false;
+      if (!window.confirm('このシートと中の手順を削除しますか？')) return;
+      sheetDeleteButton.disabled = true;
+      saveStatus('saving', 'シートを削除中…');
+      void (async () => {
+        try {
+          await flushPendingStructuralSaves({ waitForText: true });
+          const response = await fetch('/api/sheets/delete', {
+            method: 'POST',
+            headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }),
+            body: new URLSearchParams({ sheetId: sheetDeleteButton.dataset.sheetId || '' })
+          });
+          const html = await response.text();
+          if (!response.ok) throw new Error(html || `HTTP ${response.status}`);
+          const workspace = document.getElementById('workspace');
+          if (!workspace) throw new Error('編集画面を更新できません。');
+          workspace.outerHTML = html;
+          const nextWorkspace = document.getElementById('workspace');
+          if (nextWorkspace && window.htmx?.process) window.htmx.process(nextWorkspace);
+          selectedStepIds.clear();
+          initializeWorkspaceView();
+          sendHeartbeat();
+          showToast('シートを削除しました。「元に戻す」で復元できます。', 'success');
+        } catch (error) {
+          sheetDeleteButton.disabled = false;
+          saveStatus('error', 'シートを削除できません');
+          showToast(error?.message || 'シートを削除できませんでした。');
+        }
+      })();
+      return;
+    }
     const projectExportButton = event.target.closest('[data-project-export]');
     if (projectExportButton) {
       exportProjectPackage(projectExportButton);
@@ -2845,20 +2955,22 @@
             headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }),
             body: new URLSearchParams({ stepId })
           });
-          if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
-          const current = document.getElementById('save-status');
-          if (current) current.outerHTML = await response.text();
+          const html = await response.text();
+          if (!response.ok) throw new Error(html || `HTTP ${response.status}`);
+          const workspace = document.getElementById('workspace');
+          if (!workspace) throw new Error('編集画面を更新できません。');
+          workspace.outerHTML = html;
+          const nextWorkspace = document.getElementById('workspace');
+          if (nextWorkspace && window.htmx?.process) window.htmx.process(nextWorkspace);
           selectedStepIds.delete(stepId);
           finishAttentionSteps.delete(stepId);
-          card.remove();
-          refreshStepControls();
-          if (!stepCards().length) {
-            window.htmx?.ajax('GET', '/ui/workspace', { target: '#workspace', swap: 'outerHTML' });
-          }
-        } catch {
+          initializeWorkspaceView();
+          sendHeartbeat();
+          showToast('手順を削除しました。「元に戻す」で復元できます。', 'success');
+        } catch (error) {
           deleteButton.disabled = false;
           saveStatus('error', '削除できません');
-          showToast('手順を削除できませんでした。入力内容は画面に残っています。');
+          showToast(error?.message || '手順を削除できませんでした。入力内容は画面に残っています。');
         }
       })();
       return;
