@@ -23,6 +23,20 @@ Import-Module (Join-Path $srcRoot 'ManualBuilder.Ocr.psm1') -Force
 Import-Module (Join-Path $srcRoot 'ManualBuilder.CopilotServer.psm1') -Force
 
 # ---------------------------------------------------------------------
+# Copilotの画像利用確認
+# ---------------------------------------------------------------------
+$copilotModule = Get-Module ManualBuilder.Copilot
+$japaneseConsent = '開始する前に… 画像の分析や編集を Copilot に手伝ってもらうことができます。 確認して続行 今はしない'
+$englishConsent = 'Before you begin Images may be processed by Copilot. Confirm and continue Not now'
+$ordinaryDialog = '画像を添付します。続行しますか。'
+Add-Result (& $copilotModule { param($Text) Test-MbCopilotImageConsentText -Text $Text } $japaneseConsent) `
+    '日本語の画像利用確認を検出する'
+Add-Result (& $copilotModule { param($Text) Test-MbCopilotImageConsentText -Text $Text } $englishConsent) `
+    '英語の画像利用確認を検出する'
+Add-Result (-not (& $copilotModule { param($Text) Test-MbCopilotImageConsentText -Text $Text } $ordinaryDialog)) `
+    '通常の画像確認を初回同意画面と誤認しない'
+
+# ---------------------------------------------------------------------
 # 下書きジョブのスナップショット
 # ---------------------------------------------------------------------
 # Copilotを起動せず、ワーカー起動だけを差し替えて、ジョブが参照する画像を検査する。

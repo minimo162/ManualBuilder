@@ -176,8 +176,10 @@ try {
                 -Prompt $prompt -AttachPaths @($attachments) -Marker $marker `
                 -OnPhase $onPhase -ShouldCancel $shouldCancel
         } catch {
-            Write-MbJobLog ("パケット {0} の依頼に失敗しました: {1}" -f $packetNumber, $_.Exception.Message) 'ERROR'
-            [void]$failures.Add([pscustomobject]@{ packet = $packetNumber; message = [string]$_.Exception.Message })
+            $failureMessage = [string]$_.Exception.Message
+            $failureCode = if ($failureMessage -like '*Copilotで画像利用の確認が必要です*') { 'IMAGE_CONSENT_REQUIRED' } else { 'REQUEST_FAILED' }
+            Write-MbJobLog ("パケット {0} の依頼に失敗しました: {1}" -f $packetNumber, $failureMessage) 'ERROR'
+            [void]$failures.Add([pscustomobject]@{ packet = $packetNumber; code = $failureCode; message = $failureMessage })
             continue
         }
 
@@ -218,8 +220,18 @@ try {
         $message += "（{0} 件のまとまりは失敗しました）" -f $failures.Count
     }
     if ($drafts.Count -eq 0) {
+        $failureMessage = $(if ($Mode -eq 'review') { '直すところは見つかりませんでした' } else { 'Copilotから手順の下書きを受け取れませんでした' })
+        $failureCode = 'NO_DRAFT'
+        $consentFailure = @($failures | Where-Object { [string]$_.code -eq 'IMAGE_CONSENT_REQUIRED' } | Select-Object -First 1)
+        if ($consentFailure.Count -gt 0) {
+            $failureMessage = [string]$consentFailure[0].message
+            $failureCode = 'COPILOT_IMAGE_CONSENT_REQUIRED'
+        } elseif ($failures.Count -gt 0) {
+            $failureMessage = 'Copilotへ依頼できませんでした: ' + [string]$failures[0].message
+            $failureCode = 'COPILOT_REQUEST_FAILED'
+        }
         Write-MbJobStatus -Fields (New-MbStatusFields -State 'failed' -Phase 'failed' `
-            -Message $(if ($Mode -eq 'review') { '直すところは見つかりませんでした' } else { 'Copilotから手順の下書きを受け取れませんでした' }) -Percent 100 -ErrorCode 'NO_DRAFT' `
+            -Message $failureMessage -Percent 100 -ErrorCode $failureCode `
             -CompletedAt ([DateTime]::UtcNow.ToString('o')))
         exit 1
     }

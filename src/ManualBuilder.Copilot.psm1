@@ -585,6 +585,17 @@ function Set-MbCopilotModel {
 # ---------------------------------------------------------------------
 # 添付
 # ---------------------------------------------------------------------
+function Test-MbCopilotImageConsentText {
+    param([AllowNull()][string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
+    $normalized = [regex]::Replace($Text, '\s+', ' ').Trim()
+    $hasIntro = $normalized -match '(?i)開始する前に|before you (?:begin|continue)'
+    $hasImage = $normalized -match '(?i)画像|images?'
+    $hasContinue = $normalized -match '(?i)確認して続行|confirm (?:and )?continue'
+    return ($hasIntro -and $hasImage -and $hasContinue)
+}
+
 function Get-MbAttachmentSnapshot {
     param([Parameter(Mandatory = $true)][string]$WsUrl, [Parameter(Mandatory = $true)]$Settings)
 
@@ -595,6 +606,8 @@ function Get-MbAttachmentSnapshot {
   const itemSels=__ITEM_SELS__, nameSels=__NAME_SELS__;
   const visible=e=>{if(!e)return false;const r=e.getBoundingClientRect();return r.width>0&&r.height>0;};
   const docs=[document];for(const f of document.querySelectorAll('iframe')){try{if(f.contentDocument)docs.push(f.contentDocument);}catch(e){}}
+  const dialogTexts=docs.flatMap(d=>Array.from(d.querySelectorAll('[role="dialog"],[aria-modal="true"]')))
+    .filter(visible).map(d=>String(d.innerText||d.textContent||'').replace(/\s+/g,' ').trim().slice(0,1000)).filter(Boolean);
   let nodes=[],used='';
   for(const s of itemSels){const found=docs.flatMap(d=>Array.from(d.querySelectorAll(s))).filter(visible);if(found.length){nodes=found;used=s;break;}}
   const items=nodes.map(n=>{
@@ -605,15 +618,19 @@ function Get-MbAttachmentSnapshot {
     const busy=n.getAttribute('aria-busy')==='true'||!!n.querySelector('[role="progressbar"]');
     return {name,live:live.trim(),busy};
   });
-  return JSON.stringify({count:items.length,items,usedItemSelector:used});
+  return JSON.stringify({count:items.length,items,usedItemSelector:used,dialogTexts});
 })()
 '@
     $js = $template.Replace('__ITEM_SELS__', (ConvertTo-Json @($itemSelectors) -Compress)).Replace('__NAME_SELS__', (ConvertTo-Json @($nameSelectors) -Compress))
     try {
         $raw = Invoke-MbCdpEval -WebSocketUrl $WsUrl -Expression $js -TimeoutSeconds 15
-        return ($raw | ConvertFrom-Json)
+        $snapshot = $raw | ConvertFrom-Json
+        $consentDialog = @($snapshot.dialogTexts | Where-Object { Test-MbCopilotImageConsentText -Text ([string]$_) } | Select-Object -First 1)
+        Add-Member -InputObject $snapshot -NotePropertyName consentRequired -NotePropertyValue ($consentDialog.Count -gt 0) -Force
+        Add-Member -InputObject $snapshot -NotePropertyName consentText -NotePropertyValue $(if ($consentDialog.Count -gt 0) { [string]$consentDialog[0] } else { '' }) -Force
+        return $snapshot
     } catch {
-        return [pscustomobject]@{ count = 0; items = @(); usedItemSelector = '' }
+        return [pscustomobject]@{ count = 0; items = @(); usedItemSelector = ''; dialogTexts = @(); consentRequired = $false; consentText = '' }
     }
 }
 
@@ -704,6 +721,9 @@ function Invoke-MbCopilotAttachFiles {
         }
         Start-Sleep -Milliseconds 500
         $snapshot = Get-MbAttachmentSnapshot -WsUrl $WsUrl -Settings $Settings
+        if ($snapshot.consentRequired -eq $true) {
+            throw 'Copilotで画像利用の確認が必要です。［Copilotの画面を開く］を押し、内容を確認して［確認して続行］を選んでから、もう一度実行してください。'
+        }
         $mine = @($snapshot.items | Where-Object {
             $actual = [string]$_.name
             @($expected | Where-Object { Test-MbAttachmentNameMatch -Actual $actual -Expected $_ }).Count -gt 0
