@@ -148,6 +148,7 @@ function New-MbCopilotStepPrompt {
     [void]$builder.AppendLine()
 
     [void]$builder.AppendLine('## 今回書いてほしい手順')
+    [void]$builder.AppendLine('添付画像は録画時刻順です。各画像を単独で決めず、直前・直後の画像と比較して、操作前の状態、操作、結果のつながりを確認してください。')
     [void]$builder.AppendLine('添付画像の番号付き枠は、DOM、UI Automation、OCR、または動画差分から得た操作対象の候補です。いずれも誤る可能性があり、確定した事実ではありません。')
     [void]$builder.AppendLine('候補の意味が画面と操作内容に一致するかを確認し、列挙された候補IDか none を選んでください。座標は生成しないでください。')
     [void]$builder.AppendLine()
@@ -211,7 +212,9 @@ function New-MbCopilotStepPrompt {
     [void]$builder.AppendLine('- 操作対象が小さく周辺文脈を残した拡大が有効なら zoom=focus、画面全体の確認なら zoom=full、判断できなければ zoom=keep にする。')
     [void]$builder.AppendLine('- 画像と与えられた情報から読み取れないことは書かない。想像で補わない。')
     [void]$builder.AppendLine('- 判断できない手順は confident を false にし、reason に理由を短く書く。')
-    [void]$builder.AppendLine('- 直前の手順と同じ画面である、操作されていない、といった理由で手順として不要な場合は keep を false にする。')
+    [void]$builder.AppendLine('- 直前の手順と実質的に同じ画面、描画途中、ぼけ・残像、ローディングだけ、操作や結果が読み取れない通過画面は keep を false にする。')
+    [void]$builder.AppendLine('- 画面の一部だけが変わった場合は、前後を比較して何が変わったかを説明する。変化が確認できなければ想像で操作を書かない。')
+    [void]$builder.AppendLine('- 最初の画像は操作開始に必要な状態、最後の画像は利用者が確認すべき結果である場合に残す。単に録画の開始・終了に写っただけなら残さない。')
     [void]$builder.AppendLine('- すでに人が書いた内容がある手順は、それを尊重して整えるだけにする。')
     [void]$builder.AppendLine()
 

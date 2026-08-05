@@ -13,6 +13,7 @@ $script:MbCopilotScriptRoot = ''
 $script:MbCopilotProfileRoot = ''
 $script:MbCopilotConfigPath = ''
 $script:MbCopilotJob = $null
+$script:MbCopilotWarmupStatusPath = ''
 
 function Initialize-MbCopilotServer {
     param(
@@ -25,10 +26,24 @@ function Initialize-MbCopilotServer {
     $script:MbCopilotScriptRoot = $ScriptRoot
     $script:MbCopilotProfileRoot = $ProfileRoot
     $script:MbCopilotConfigPath = $ConfigPath
+    $script:MbCopilotWarmupStatusPath = Join-Path (Split-Path -Parent $JobsRoot) 'copilot-warmup.json'
 }
 
 function Get-MbCopilotServerSettings {
     return (Get-MbCopilotSettings -ConfigPath $script:MbCopilotConfigPath)
+}
+
+function Start-MbCopilotWarmup {
+    $worker = Join-Path $script:MbCopilotScriptRoot 'Initialize-ManualBuilderCopilot.ps1'
+    if (-not (Test-Path -LiteralPath $worker -PathType Leaf)) { return $false }
+    $arguments = @(
+        '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $worker + '"'),
+        '-ProfileRoot', ('"' + $script:MbCopilotProfileRoot + '"'),
+        '-ConfigPath', ('"' + $script:MbCopilotConfigPath + '"'),
+        '-StatusPath', ('"' + $script:MbCopilotWarmupStatusPath + '"')
+    )
+    Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -WindowStyle Hidden | Out-Null
+    return $true
 }
 
 # ---------------------------------------------------------------------
@@ -45,7 +60,7 @@ function Get-MbVideoSceneHash {
     finally { $sha.Dispose() }
 }
 
-# 1コマを手順として追加し、操作位置の赤枠と、読み取った文字を書き込む。
+# 1コマを手順として追加し、操作位置の候補と、読み取った文字を書き込む。
 function Import-MbVideoScene {
     param(
         [Parameter(Mandatory = $true)][object]$Project,
@@ -133,37 +148,28 @@ function Import-MbVideoScene {
         }
     }
 
-    if ($candidates.Count -gt 0) {
-        $rect = $candidates[0].rect
-        $clickLabel = [string]$candidates[0].label
-    }
-
-    if ($null -ne $rect) {
-        $annotation = @([pscustomobject]@{
-            id    = New-MbAnnotationId
-            type  = 'rect'
-            x1    = [Math]::Round([double]$rect.x1, 6)
-            y1    = [Math]::Round([double]$rect.y1, 6)
-            x2    = [Math]::Round([double]$rect.x2, 6)
-            y2    = [Math]::Round([double]$rect.y2, 6)
-            label = 0
-        })
-        [void](Set-MbStepAnnotations -Project $Project -StepId $stepId -AnnotationsJson (ConvertTo-Json -InputObject $annotation -Depth 5))
-    }
+    # 動画差分はカーソル・描画アニメーションを含み、候補の先頭が正解とは限らない。
+    # ここでは赤枠や拡大を確定せず、番号付き候補としてCopilotへ渡す。Copilotが選んだ候補だけを
+    # Set-MbCopilotVisualSelection で初めて利用者向けの赤枠・切り抜きへ反映する。
+    $rect = $null
+    $clickLabel = ''
 
     # 候補数は確からしさではない。複数あるほど曖昧な場合もあるため、
     # 現在採用している候補自身の評価をそのまま引き継ぐ。
-    [void](Set-MbStepCapture -Project $Project -StepId $stepId -Kind 'video-scene' -VideoTimeMs $TimeMs `
+    $capturedStep = Set-MbStepCapture -Project $Project -StepId $stepId -Kind 'video-scene' -VideoTimeMs $TimeMs `
         -ClickLabel $clickLabel -ScreenText $screenText -TargetSource 'video-diff' `
         -TargetConfidence $(if ($candidates.Count -gt 0) { [string]$candidates[0].confidence } else { '' }) `
-        -TargetCandidateId $(if ($candidates.Count -gt 0) { [string]$candidates[0].id } else { '' }) `
-        -TargetCandidatesJson $(if ($candidates.Count -gt 0) { ConvertTo-Json -InputObject @($candidates) -Depth 8 -Compress } else { '' }))
+        -TargetCandidateId '' `
+        -TargetCandidatesJson $(if ($candidates.Count -gt 0) { ConvertTo-Json -InputObject @($candidates) -Depth 8 -Compress } else { '' })
+    # Set-MbStepCapture は操作記録向けに先頭候補へフォールバックする。動画差分だけは
+    # Copilot精査前なので、候補一覧を残したまま現在候補を未選択へ戻す。
+    $capturedStep.capture.targetCandidateId = ''
 
     return [pscustomobject]@{
         status       = 'added'
         stepId       = $stepId
         clickLabel   = $clickLabel
-        hasRect      = ($null -ne $rect)
+        hasRect      = $false
         ocrAvailable = $ocrAvailable
     }
 }
@@ -552,6 +558,7 @@ function Show-MbCopilotSignInWindow {
 Export-ModuleMember -Function @(
     'Initialize-MbCopilotServer',
     'Get-MbCopilotServerSettings',
+    'Start-MbCopilotWarmup',
     'Import-MbVideoScene',
     'Start-MbCopilotDraftJob',
     'Read-MbCopilotDraftStatus',

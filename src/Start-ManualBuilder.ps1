@@ -2055,7 +2055,11 @@ try {
     Write-Host '  停止するには画面の「終了」または Ctrl+C を使用してください。' -ForegroundColor Yellow
     Write-Host ''
 
-    if (-not $NoBrowser) { Start-Process $url }
+    if (-not $NoBrowser) {
+        # 利用者が下書きボタンを押すまで待たず、アプリと同時にCopilot用Edgeを非同期で準備する。
+        try { [void](Start-MbCopilotWarmup) } catch { Write-MbLog ('Copilotの事前準備を開始できませんでした: ' + $_.Exception.Message) 'WARN' }
+        Start-Process $url
+    }
 
     while ($script:Running -and $listener.IsListening) {
         $context = $null

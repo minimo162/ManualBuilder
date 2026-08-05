@@ -86,7 +86,8 @@ try {
         Add-Result ([int]$steps[0].capture.videoTimeMs -eq 1000 -and
             [int]$steps[1].capture.videoTimeMs -eq 2500 -and
             [int]$steps[2].capture.videoTimeMs -eq 4000) '録画内の時刻を手順ごとに保存する'
-        Add-Result (@($steps | Where-Object { @($_.annotations).Count -eq 1 }).Count -eq 3) '各手順に操作位置の赤枠を保存する'
+        Add-Result (@($steps | Where-Object { @($_.annotations).Count -eq 0 }).Count -eq 3) '未精査の動画差分を赤枠として確定しない'
+        Add-Result (@($steps | Where-Object { @($_.capture.targetCandidates).Count -eq 1 -and [string]::IsNullOrWhiteSpace([string]$_.capture.targetCandidateId) }).Count -eq 3) '動画差分はCopilotが選べる未確定候補として保存する'
         Add-Result (@($steps | Where-Object { [string]$_.capture.kind -eq 'video-scene' }).Count -eq 3) '録画由来の手順として識別できる'
     }
 
@@ -137,7 +138,7 @@ try {
         Add-Result ([string]$finalSteps[0].description -eq '画面の操作1を行います。' -and
             [string]$finalSteps[2].description -eq '画面の操作3を行います。') '採用した説明を再読込できる'
         Add-Result ([string]$finalSteps[0].imageId -eq [string]$finalSteps[2].imageId) '下書き反映後も共有画像の参照を維持する'
-        Add-Result (@($finalSteps | Where-Object { @($_.annotations).Count -eq 1 }).Count -eq 3) '下書き反映で赤枠を失わない'
+        Add-Result (@($finalSteps | Where-Object { @($_.annotations).Count -eq 0 }).Count -eq 3) '視覚候補を選んでいない下書きでは誤った赤枠を追加しない'
     }
 } finally {
     if (Test-Path -LiteralPath $testRoot) {

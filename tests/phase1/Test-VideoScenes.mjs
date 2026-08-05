@@ -86,6 +86,18 @@ console.log('signatureDistance');
 }
 
 // ---------------------------------------------------------------
+console.log('isSameScene');
+{
+  const base = makeSignature(0.5);
+  const tinyLocal = makeSignature(0.5);
+  const changedContent = makeSignature(0.5);
+  for (let i = 0; i < 2; i += 1) tinyLocal[i] += 0.04;
+  for (let i = 0; i < 12; i += 1) changedContent[i] += 0.04;
+  check('カーソル程度の局所差は同じ場面とみなす', scenes.isSameScene(base, tinyLocal, {}));
+  check('平均差が小さくても本文の複数領域が変われば別場面にする', !scenes.isSameScene(base, changedContent, {}));
+}
+
+// ---------------------------------------------------------------
 console.log('largestCluster / clusterToRect');
 {
   // 隣り合う4ブロックの塊と、離れた1ブロックのノイズ。
@@ -175,13 +187,40 @@ console.log('detectStillRuns / selectScenes');
 
   const selected = scenes.selectScenes(samples, runs, {});
   check('場面が3つ選ばれる', selected.length === 3, String(selected.length));
-  check('1つ目は静止開始から少し後', selected[0].timeMs === 300, String(selected[0].timeMs));
-  check('2つ目は画面Bの中', selected[1].timeMs >= 2100 && selected[1].timeMs <= 2400, String(selected[1].timeMs));
-  check('3つ目は画面Cの中', selected[2].timeMs >= 4800 && selected[2].timeMs <= 5100, String(selected[2].timeMs));
+  check('1つ目は遷移端を避けた静止区間の中央', selected[0].timeMs >= 600 && selected[0].timeMs <= 900, String(selected[0].timeMs));
+  check('2つ目は画面Bの中央', selected[1].timeMs >= 3000 && selected[1].timeMs <= 3300, String(selected[1].timeMs));
+  check('3つ目は画面Cの中央', selected[2].timeMs >= 5400 && selected[2].timeMs <= 5700, String(selected[2].timeMs));
 
   // 遷移の1コマだけの区間は手順にしない。
   const shortRun = runs.find((run) => run.durationMs === 0);
   check('遷移中の単発コマは短い区間として現れる', Boolean(shortRun));
+}
+
+// ---------------------------------------------------------------
+console.log('selectScenes は描画途中より多数派の安定コマを選ぶ');
+{
+  const settled = makeSignature(0.50);
+  const partial = makeSignature(0.494);
+  const samples = [
+    { timeMs: 0, signature: partial },
+    { timeMs: 300, signature: partial },
+    { timeMs: 600, signature: settled },
+    { timeMs: 900, signature: settled },
+    { timeMs: 1200, signature: settled },
+    { timeMs: 1500, signature: settled }
+  ];
+  const selected = scenes.selectScenes(samples, [{ startIndex: 0, endIndex: 5, startMs: 0, endMs: 1500, durationMs: 1500 }], {});
+  check('安定後のコマを代表にする', selected.length === 1 && selected[0].timeMs >= 600, String(selected[0]?.timeMs));
+}
+
+// ---------------------------------------------------------------
+console.log('操作候補の一瞬のノイズを除く');
+{
+  const candidate = { id: 'video-diff-1', rect: { x1: 0.2, y1: 0.2, x2: 0.4, y2: 0.4 } };
+  const nearby = { id: 'video-diff-1', rect: { x1: 0.21, y1: 0.2, x2: 0.41, y2: 0.4 } };
+  check('1コマだけの候補は採用しない', scenes.selectPersistentCandidates([[candidate]], {}).length === 0);
+  check('近い位置で2コマ続く候補は残す', scenes.selectPersistentCandidates([[candidate], [nearby]], {}).length === 1);
+  check('別位置へ飛んだ候補は採用しない', scenes.selectPersistentCandidates([[candidate], [{ id: 'video-diff-1', rect: { x1: 0.7, y1: 0.7, x2: 0.9, y2: 0.9 } }]], {}).length === 0);
 }
 
 // ---------------------------------------------------------------
