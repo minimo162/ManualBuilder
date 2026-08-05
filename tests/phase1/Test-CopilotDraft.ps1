@@ -35,6 +35,14 @@ Add-Result (& $copilotModule { param($Text) Test-MbCopilotImageConsentText -Text
     '英語の画像利用確認を検出する'
 Add-Result (-not (& $copilotModule { param($Text) Test-MbCopilotImageConsentText -Text $Text } $ordinaryDialog)) `
     '通常の画像確認を初回同意画面と誤認しない'
+$pageCandidates = @(
+    [pscustomobject]@{ page = [pscustomobject]@{ id = 'blocked' }; ready = $true; consentRequired = $true },
+    [pscustomobject]@{ page = [pscustomobject]@{ id = 'usable' }; ready = $true; consentRequired = $false }
+)
+$usablePage = & $copilotModule { param($Items) Select-MbCopilotPageCandidate -Candidates $Items } $pageCandidates
+$consentPage = & $copilotModule { param($Items) Select-MbCopilotPageCandidate -Candidates $Items -PreferConsent } $pageCandidates
+Add-Result ([string]$usablePage.page.id -eq 'usable') '通常処理では画像同意に塞がれていないCopilotタブを選ぶ'
+Add-Result ([string]$consentPage.page.id -eq 'blocked') 'Copilot画面を開く操作では画像同意のあるタブを選ぶ'
 
 # ---------------------------------------------------------------------
 # 下書きジョブのスナップショット
@@ -54,13 +62,16 @@ try {
     $targetImageId = 'image-' + ('1' * 32)
     $writtenImageId = 'image-' + ('2' * 32)
     $unusedImageId = 'image-' + ('3' * 32)
+    $resultImageId = 'image-' + ('4' * 32)
     $snapshotProject.images = @(
         [pscustomobject]@{ id = $targetImageId; fileName = "$targetImageId.png"; sha256 = ('A' * 64); width = 1; height = 1; byteLength = 4; mimeType = 'image/png'; source = 'recorder'; createdAt = [DateTime]::UtcNow.ToString('o') },
         [pscustomobject]@{ id = $writtenImageId; fileName = "$writtenImageId.png"; sha256 = ('B' * 64); width = 1; height = 1; byteLength = 4; mimeType = 'image/png'; source = 'recorder'; createdAt = [DateTime]::UtcNow.ToString('o') },
-        [pscustomobject]@{ id = $unusedImageId; fileName = "$unusedImageId.png"; sha256 = ('C' * 64); width = 1; height = 1; byteLength = 4; mimeType = 'image/png'; source = 'recorder'; createdAt = [DateTime]::UtcNow.ToString('o') }
+        [pscustomobject]@{ id = $unusedImageId; fileName = "$unusedImageId.png"; sha256 = ('C' * 64); width = 1; height = 1; byteLength = 4; mimeType = 'image/png'; source = 'recorder'; createdAt = [DateTime]::UtcNow.ToString('o') },
+        [pscustomobject]@{ id = $resultImageId; fileName = "$resultImageId.png"; sha256 = ('D' * 64); width = 1; height = 1; byteLength = 4; mimeType = 'image/png'; source = 'recorder'; createdAt = [DateTime]::UtcNow.ToString('o') }
     )
     $targetStep = Add-MbStep -Project $snapshotProject -SheetId $snapshotSheet.id
     $targetStep.imageId = $targetImageId
+    $targetStep.resultImageId = $resultImageId
     $writtenStep = Add-MbStep -Project $snapshotProject -SheetId $snapshotSheet.id
     $writtenStep.imageId = $writtenImageId
     $writtenStep.title = '記入済み'
@@ -86,7 +97,9 @@ try {
         $jobProjectPath = Join-Path $jobDirectories[0].FullName 'project.json'
         $jobProject = Get-MbProject -Path $jobProjectPath
         $resolvedTargetPath = Get-MbImageFilePath -Project $jobProject -ProjectPath $jobProjectPath -ImageId $targetImageId
+        $resolvedResultPath = Get-MbImageFilePath -Project $jobProject -ProjectPath $jobProjectPath -ImageId $resultImageId
         Add-Result (Test-Path -LiteralPath $resolvedTargetPath -PathType Leaf) 'ワーカーが下書き対象画像をスナップショットから解決できる'
+        Add-Result (Test-Path -LiteralPath $resolvedResultPath -PathType Leaf) 'ワーカーが操作後の結果画像もスナップショットから解決できる'
         Add-Result (-not (Test-Path -LiteralPath (Join-Path $jobDirectories[0].FullName "images\$writtenImageId.png") -PathType Leaf)) '記入済みで対象外の画像は複製しない'
         Add-Result (-not (Test-Path -LiteralPath (Join-Path $jobDirectories[0].FullName "images\$unusedImageId.png") -PathType Leaf)) '手順から参照されない画像は複製しない'
     }
@@ -172,6 +185,20 @@ Add-Result (@($flat | Where-Object { $_.id -eq $stepIds[3] }).Count -eq 0) '画�
 Add-Result (@($packets).Count -eq 2) '2件ずつのまとまりに分かれる'
 Add-Result (@($packets[0]).Count -eq 2 -and @($packets[1]).Count -eq 1) '端数のまとまりが残る'
 
+$steps[1].resultImageId = 'image-result-000000000000000000000001'
+$imageLimitedPackets = Get-MbCopilotPackets -Steps $steps -StepsPerPacket 6 -MaxAttachmentsPerPacket 3
+$imageLimitedCounts = @($imageLimitedPackets | ForEach-Object {
+    $count = 0
+    foreach ($item in @($_)) { $count += 1 + $(if ($item.resultImageId) { 1 } else { 0 }) }
+    $count
+})
+Add-Result (@($imageLimitedPackets).Count -eq 2) '操作後画像を含めてもCopilotの画像上限ごとに分割する'
+Add-Result (@($imageLimitedCounts | Where-Object { $_ -gt 3 }).Count -eq 0) '各Copilot依頼の画像を3枚以下にする'
+Add-Result (Test-MbCopilotImageLimitText -Text '追加しようとしている画像の数が上限を超えています。Copilot では現在、一度に最大 3 個の画像を追加できます。') '画像上限の警告を即時検出する'
+Add-Result ((Get-MbCopilotDefaultSettings).max_images_per_request -eq 2) '実機で安定した2枚をCopilot依頼の安全上限にする'
+Add-Result (Test-MbAttachmentNameMatch -Actual 'mb-de09314…' -Expected 'mb-de09314a0b-p01-step-001-result.jpg') `
+    'Copilot画面で省略された固有添付名を照合する'
+
 $allPackets = Get-MbCopilotPackets -Steps $steps -StepsPerPacket 10 -IncludeWritten
 Add-Result (@($allPackets[0]).Count -eq 4) '書き直しを選ぶと書き終えた手順も対象になる'
 
@@ -184,6 +211,7 @@ Add-Result (@($samples).Count -eq 1 -and [string]$samples[0].title -eq 'ログ�
 $packet = @($packets[0])
 $names = @{}
 foreach ($step in $packet) { $names[[string]$step.id] = ('step-{0:d3}.jpg' -f [int]$step.order) }
+$resultNames = @{ ([string]$packet[0].id) = 'step-002-result.jpg' }
 $packet[0].clickLabel = '申請'
 $packet[0].videoTimeMs = 72000
 $packet[0].narration = 'ここで申請ボタンを押します'
@@ -199,19 +227,23 @@ $packet[0].targetCandidates = @(
 )
 
 $prompt = New-MbCopilotStepPrompt -Project $project -PacketSteps $packet -AttachmentNames $names `
-    -StyleSamples $samples -TotalSteps 5 -Marker 'MB_END'
+    -ResultAttachmentNames $resultNames -StyleSamples $samples -TotalSteps 5 -Marker 'MB_END'
 
 Add-Result ($prompt.Contains('経費精算システム操作手順')) '依頼文にマニュアル名が入る'
 Add-Result ($prompt.Contains('申請を出す')) '依頼文にシート名が入る'
 Add-Result ($prompt.Contains([string]$packet[0].id)) '依頼文に手順のidが入る'
 Add-Result ($prompt.Contains('step-002.jpg')) '依頼文に添付画像の名前が入る'
+Add-Result ($prompt.Contains('step-002-result.jpg') -and $prompt.Contains('操作後の結果')) '依頼文でクリック前と操作後の結果を比較できる'
 Add-Result ($prompt.Contains('アプリが暫定選択した操作対象: 申請')) '暫定の操作対象が依頼文に入る'
 Add-Result ($prompt.Contains('id=video-diff-1')) '選択できる候補IDが依頼文に入る'
 Add-Result ($prompt.Contains('確定した事実ではありません')) 'DOM・UIA・動画差分を確定扱いしない'
+Add-Result ($prompt.Contains('UIA候補が低信頼') -and $prompt.Contains('click-pointを優先')) '横長UIAよりクリック座標を優先する条件を伝える'
 Add-Result (-not $prompt.Contains('推測ではありません')) '誤った確定表現を依頼文へ入れない'
 Add-Result ($prompt.Contains('1:12')) '録画内の時刻が入る'
 Add-Result ($prompt.Contains('ここで申請ボタンを押します')) '録画の音声が入る'
 Add-Result ($prompt.Contains('ログイン')) '文体の見本が入る'
+Add-Result ($prompt.Contains('原則として操作を表す1文')) '説明を簡潔な1文にするよう頼む'
+Add-Result ($prompt.Contains('自明な結果は繰り返さない')) '操作と同義の結果を重ねないよう頼む'
 Add-Result ($prompt.Contains('MB_END')) '終了の合図が入る'
 # 回答の始まりを見つける目印。末尾に無いと依頼文自体を回答と読み違える。
 Add-Result ($prompt.EndsWith((Get-MbCopilotPromptTailAnchor))) '依頼文が目印で終わる'
@@ -224,6 +256,8 @@ $badgePoints = & (Get-Module ManualBuilder.CopilotJob) {
 $badgeYs = @($badgePoints | ForEach-Object { [Math]::Round([double]$_.y, 3) } | Sort-Object -Unique)
 Add-Result ($badgeYs.Count -eq 4 -and ([double]$badgeYs[1] - [double]$badgeYs[0]) -ge 0.039) `
     '同じ左上の候補番号を識別できる間隔でずらす'
+Add-Result ([double]$badgePoints[0].y -lt [double]$badgeRect.y1 -and
+    [double]$badgePoints[1].y -gt [double]$badgeRect.y1) '候補番号を枠の外側へ上下に逃がして対象を隠さない'
 
 $attachmentRoot = Join-Path ([IO.Path]::GetTempPath()) ('mb-copilot-attachment-test-' + [guid]::NewGuid().ToString('N'))
 [void](New-Item -ItemType Directory -Path $attachmentRoot -Force)

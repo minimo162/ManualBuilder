@@ -413,6 +413,18 @@ function Invoke-MbWordExport {
                 if (-not [string]::IsNullOrWhiteSpace([string]$step.note)) {
                     Add-MbWordNote $selection $document ([string]$step.note) $fontName
                 }
+                $hasResultImage = ($step.PSObject.Properties.Name -contains 'resultImageId' -and
+                    -not [string]::IsNullOrWhiteSpace([string]$step.resultImageId))
+                $imageLayout = if ($step.PSObject.Properties.Name -contains 'imageLayout') { [string]$step.imageLayout } else { 'before' }
+                $imageOrder = if ($step.PSObject.Properties.Name -contains 'imageOrder') { [string]$step.imageOrder } else { 'before-after' }
+                if ($imageOrder -notin @('before-after', 'after-before')) { $imageOrder = 'before-after' }
+                $resultPath = $null
+                if ($hasResultImage) {
+                    $resultPath = Get-MbImageFilePath -Project $Project -ProjectPath $ProjectPath -ImageId ([string]$step.resultImageId)
+                    if (-not $resultPath -or -not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+                        throw "操作後の結果画像が見つかりません: $($step.resultImageId)"
+                    }
+                }
                 if (-not [string]::IsNullOrWhiteSpace([string]$step.imageId)) {
                     $sourcePath = Get-MbImageFilePath -Project $Project -ProjectPath $ProjectPath -ImageId ([string]$step.imageId)
                     if (-not $sourcePath -or -not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) { throw "画像が見つかりません: $($step.imageId)" }
@@ -420,6 +432,15 @@ function Invoke-MbWordExport {
                     $imagePath = New-MbAnnotatedImage -SourcePath $sourcePath -Annotations @($step.annotations) -Crop $step.crop `
                         -DestinationPath $renderedPath -TargetDisplayWidth 600 -TargetDisplayHeight 680 -NumberFontName $fontName
                     if ($imagePath -eq $renderedPath) { [void]$generatedImages.Add($renderedPath) }
+                    if ($hasResultImage -and $imageLayout -eq 'after') {
+                        $imagePath = $resultPath
+                    } elseif ($hasResultImage -and $imageLayout -in @('side-by-side', 'stacked')) {
+                        $comparisonPath = Join-Path $renderDirectory ("word-comparison-{0:d4}.png" -f $globalStep)
+                        $orientation = if ($imageLayout -eq 'side-by-side') { 'horizontal' } else { 'vertical' }
+                        $imagePath = New-MbBeforeAfterImage -BeforePath $imagePath -AfterPath $resultPath `
+                            -DestinationPath $comparisonPath -FontName $fontName -Orientation $orientation -Order $imageOrder
+                        [void]$generatedImages.Add($comparisonPath)
+                    }
                     Move-MbWordSelectionToEnd $selection $document
                     $shape = $null; $imageParagraph = $null
                     try {

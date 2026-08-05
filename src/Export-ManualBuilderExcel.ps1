@@ -13,6 +13,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Project.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Capture.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Excel.psm1') -Force
 
 try {

@@ -91,7 +91,9 @@ try {
     $allSteps = Get-MbCopilotStepList -Project $project
     $stepsPerPacket = [int]$settings.steps_per_packet
     if ($Mode -eq 'review') { $stepsPerPacket = [int]$settings.review_steps_per_packet }
-    $packets = Get-MbCopilotPackets -Steps $allSteps -StepsPerPacket $stepsPerPacket -IncludeWritten:$IncludeWritten -Mode $Mode
+    $maxAttachmentsPerPacket = if ($Mode -eq 'review') { 0 } else { [int]$settings.max_images_per_request }
+    $packets = Get-MbCopilotPackets -Steps $allSteps -StepsPerPacket $stepsPerPacket `
+        -MaxAttachmentsPerPacket $maxAttachmentsPerPacket -IncludeWritten:$IncludeWritten -Mode $Mode
     $totalPackets = @($packets).Count
     $totalSteps = 0
     foreach ($packet in $packets) { $totalSteps += @($packet).Count }
@@ -108,6 +110,10 @@ try {
     $drafts = New-Object System.Collections.ArrayList
     $failures = New-Object System.Collections.ArrayList
     $shouldCancel = { Test-MbJobCancelled }
+    # Copilotは同じ名前のファイルを短時間に選び直すとchangeを発火しないことがある。
+    # ジョブごとの短いタグとパケット番号を付け、再実行も必ず新しい添付として扱わせる。
+    $jobFileTag = ($JobId -replace '[^A-Za-z0-9]', '')
+    if ($jobFileTag.Length -gt 10) { $jobFileTag = $jobFileTag.Substring($jobFileTag.Length - 10) }
 
     for ($packetIndex = 0; $packetIndex -lt $totalPackets; $packetIndex++) {
         if (Test-MbJobCancelled) { break }
@@ -126,6 +132,7 @@ try {
         $packetDirectory = Join-Path $WorkDirectory ('packet-{0:d3}' -f $packetNumber)
         $attachments = New-Object System.Collections.ArrayList
         $attachmentNames = @{}
+        $resultAttachmentNames = @{}
         $usableSteps = New-Object System.Collections.ArrayList
         if ($Mode -eq 'review') {
             foreach ($step in $packet) { [void]$usableSteps.Add($step) }
@@ -136,10 +143,25 @@ try {
                     Write-MbJobLog ("画像が見つからないため手順を飛ばします: " + [string]$step.id) 'WARN'
                     continue
                 }
-                $fileName = ('step-{0:d3}.jpg' -f [int]$step.order)
+                $fileName = ('mb-{0}-p{1:d2}-step-{2:d3}.jpg' -f $jobFileTag, $packetNumber, [int]$step.order)
                 $attachmentPath = New-MbCopilotAttachment -Step $step -SourcePath $sourcePath -WorkDirectory $packetDirectory -FileName $fileName
                 [void]$attachments.Add($attachmentPath)
                 $attachmentNames[[string]$step.id] = $fileName
+                if (-not [string]::IsNullOrWhiteSpace([string]$step.resultImageId)) {
+                    $resultSourcePath = Get-MbImageFilePath -Project $project -ProjectPath $ProjectPath `
+                        -ImageId ([string]$step.resultImageId)
+                    if (-not [string]::IsNullOrWhiteSpace($resultSourcePath) -and
+                        (Test-Path -LiteralPath $resultSourcePath -PathType Leaf)) {
+                        if (-not (Test-Path -LiteralPath $packetDirectory)) {
+                            [void](New-Item -ItemType Directory -Path $packetDirectory -Force)
+                        }
+                        $resultFileName = ('mb-{0}-p{1:d2}-step-{2:d3}-result.jpg' -f $jobFileTag, $packetNumber, [int]$step.order)
+                        $resultAttachmentPath = Join-Path $packetDirectory $resultFileName
+                        [IO.File]::Copy($resultSourcePath, $resultAttachmentPath, $true)
+                        [void]$attachments.Add($resultAttachmentPath)
+                        $resultAttachmentNames[[string]$step.id] = $resultFileName
+                    }
+                }
                 [void]$usableSteps.Add($step)
             }
         }
@@ -155,7 +177,8 @@ try {
                 -TotalSteps @($allSteps).Count -Marker $marker
         } else {
             $prompt = New-MbCopilotStepPrompt -Project $project -PacketSteps @($usableSteps) `
-                -AttachmentNames $attachmentNames -StyleSamples $styleSamples -TotalSteps @($allSteps).Count -Marker $marker
+                -AttachmentNames $attachmentNames -ResultAttachmentNames $resultAttachmentNames `
+                -StyleSamples $styleSamples -TotalSteps @($allSteps).Count -Marker $marker
         }
 
         $onPhase = {

@@ -506,6 +506,81 @@ function New-MbAnnotatedImage {
     }
 }
 
+# Excel・Wordの1カード1画像を保ちながら、操作前と操作後を選択した配置へ合成する。
+function New-MbBeforeAfterImage {
+    param(
+        [Parameter(Mandatory = $true)][string]$BeforePath,
+        [Parameter(Mandatory = $true)][string]$AfterPath,
+        [Parameter(Mandatory = $true)][string]$DestinationPath,
+        [AllowEmptyString()][string]$FontName = '',
+        [ValidateSet('vertical', 'horizontal')][string]$Orientation = 'vertical',
+        [ValidateSet('before-after', 'after-before')][string]$Order = 'before-after'
+    )
+    if ([string]::IsNullOrWhiteSpace($FontName)) { $FontName = Resolve-MbExcelBodyFont }
+    $before = $null; $after = $null; $bitmap = $null; $graphics = $null
+    $font = $null; $textBrush = $null; $labelBrush = $null; $borderPen = $null
+    try {
+        $before = [Drawing.Image]::FromFile($BeforePath)
+        $after = [Drawing.Image]::FromFile($AfterPath)
+        $labelHeight = 36
+        $gap = 14
+        $first = if ($Order -eq 'after-before') { $after } else { $before }
+        $second = if ($Order -eq 'after-before') { $before } else { $after }
+        $firstLabel = if ($Order -eq 'after-before') { '操作後' } else { '操作前' }
+        $secondLabel = if ($Order -eq 'after-before') { '操作前' } else { '操作後' }
+        $maxItemWidth = if ($Orientation -eq 'horizontal') { 680.0 } else { [double][Math]::Min(1400, [Math]::Max($before.Width, $after.Width)) }
+        $getSize = {
+            param($image, [double]$maximumWidth)
+            $scale = [Math]::Min($maximumWidth / [double]$image.Width, 680.0 / [double]$image.Height)
+            return [pscustomobject]@{ Width = [int][Math]::Max(1, [Math]::Round($image.Width * $scale)); Height = [int][Math]::Max(1, [Math]::Round($image.Height * $scale)) }
+        }
+        $firstSize = & $getSize $first $maxItemWidth
+        $secondSize = & $getSize $second $maxItemWidth
+        if ($Orientation -eq 'horizontal') {
+            $canvasWidth = $firstSize.Width + $gap + $secondSize.Width
+            $canvasHeight = $labelHeight + [Math]::Max($firstSize.Height, $secondSize.Height)
+        } else {
+            $canvasWidth = [Math]::Max($firstSize.Width, $secondSize.Width)
+            $canvasHeight = $labelHeight + $firstSize.Height + $gap + $labelHeight + $secondSize.Height
+        }
+        $bitmap = New-Object Drawing.Bitmap -ArgumentList @($canvasWidth, $canvasHeight, [Drawing.Imaging.PixelFormat]::Format24bppRgb)
+        try { $bitmap.SetResolution(96, 96) } catch { }
+        $graphics = [Drawing.Graphics]::FromImage($bitmap)
+        $graphics.Clear([Drawing.Color]::White)
+        $graphics.InterpolationMode = [Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+        $font = New-Object Drawing.Font $FontName, 18, ([Drawing.FontStyle]::Bold), ([Drawing.GraphicsUnit]::Pixel)
+        $textBrush = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(38, 57, 104))
+        $labelBrush = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(238, 243, 252))
+        $borderPen = New-Object Drawing.Pen ([Drawing.Color]::FromArgb(216, 222, 232)), 1
+
+        $drawSection = {
+            param($image, $size, [int]$left, [int]$top, [int]$sectionWidth, [string]$label)
+            $graphics.FillRectangle($labelBrush, $left, $top, $sectionWidth, $labelHeight)
+            $graphics.DrawString($label, $font, $textBrush, ($left + 12), ($top + 7))
+            $imageTop = $top + $labelHeight
+            $imageLeft = $left + [int](($sectionWidth - $size.Width) / 2)
+            $graphics.DrawImage($image, $imageLeft, $imageTop, $size.Width, $size.Height)
+            $graphics.DrawRectangle($borderPen, $imageLeft, $imageTop, ($size.Width - 1), ($size.Height - 1))
+            return $imageTop + $size.Height
+        }
+        if ($Orientation -eq 'horizontal') {
+            [void](& $drawSection $first $firstSize 0 0 $firstSize.Width $firstLabel)
+            [void](& $drawSection $second $secondSize ($firstSize.Width + $gap) 0 $secondSize.Width $secondLabel)
+        } else {
+            $bottom = & $drawSection $first $firstSize 0 0 $canvasWidth $firstLabel
+            [void](& $drawSection $second $secondSize 0 ($bottom + $gap) $canvasWidth $secondLabel)
+        }
+        $directory = Split-Path -Parent $DestinationPath
+        if (-not (Test-Path -LiteralPath $directory)) { [void](New-Item -ItemType Directory -Path $directory -Force) }
+        $bitmap.Save($DestinationPath, [Drawing.Imaging.ImageFormat]::Png)
+        return $DestinationPath
+    } finally {
+        foreach ($item in @($borderPen, $labelBrush, $textBrush, $font, $graphics, $bitmap, $after, $before)) {
+            if ($item) { try { $item.Dispose() } catch { } }
+        }
+    }
+}
+
 function Set-MbExcelBorders {
     param([Parameter(Mandatory = $true)][object]$Range, [int]$Color, [int]$LineStyle = 1, [int]$Weight = 2)
     $borders = $null
@@ -550,8 +625,42 @@ function Set-MbExcelWorksheetView {
         $window.SplitColumn = 0
         $window.SplitRow = $FreezeRows
         $window.FreezePanes = $true
+        $window.ScrollRow = 1
+        $window.ScrollColumn = 1
     } finally {
         Release-MbExcelComObject $window
+    }
+}
+
+function Set-MbExcelPrintLayout {
+    param(
+        [Parameter(Mandatory = $true)][object]$Application,
+        [Parameter(Mandatory = $true)][object]$Worksheet,
+        [bool]$Landscape = $true,
+        [AllowEmptyString()][string]$RepeatRows = ''
+    )
+    $pageSetup = $null
+    try {
+        $pageSetup = $Worksheet.PageSetup
+        $pageSetup.Orientation = if ($Landscape) { 2 } else { 1 }
+        $pageSetup.Zoom = $false
+        $pageSetup.FitToPagesWide = 1
+        $pageSetup.FitToPagesTall = $false
+        $pageSetup.CenterHorizontally = $true
+        $pageSetup.PrintGridlines = $false
+        $pageSetup.PrintHeadings = $false
+        $pageSetup.LeftMargin = $Application.InchesToPoints(0.3)
+        $pageSetup.RightMargin = $Application.InchesToPoints(0.3)
+        $pageSetup.TopMargin = $Application.InchesToPoints(0.45)
+        $pageSetup.BottomMargin = $Application.InchesToPoints(0.45)
+        $pageSetup.HeaderMargin = $Application.InchesToPoints(0.2)
+        $pageSetup.FooterMargin = $Application.InchesToPoints(0.2)
+        $pageSetup.CenterFooter = '&P / &N'
+        if (-not [string]::IsNullOrWhiteSpace($RepeatRows)) { $pageSetup.PrintTitleRows = $RepeatRows }
+    } catch {
+        # 既定プリンターが無いPCではPageSetupの一部が失敗する。画面用ブックの出力は継続する。
+    } finally {
+        Release-MbExcelComObject $pageSetup
     }
 }
 
@@ -756,6 +865,7 @@ function Add-MbExcelStepCard {
         $titleArea.Font.Color = $colorText
         $titleArea.HorizontalAlignment = $xlLeft
         $titleArea.VerticalAlignment = $xlCenter
+        $titleArea.IndentLevel = 1
 
         if ($hasVideoLink) {
             $videoCell.Merge()
@@ -788,7 +898,7 @@ function Add-MbExcelStepCard {
 
         $descriptionLabel.Merge()
         $descriptionLabel.NumberFormat = '@'
-        $descriptionLabel.Value2 = '説明'
+        $descriptionLabel.Value2 = '操作'
         $descriptionLabel.Font.Name = $FontName
         $descriptionLabel.Font.Size = 10
         $descriptionLabel.Font.Bold = $true
@@ -817,7 +927,7 @@ function Add-MbExcelStepCard {
             $noteBlock = $Worksheet.Range("${textColumn}${noteLabelRow}:L${noteEnd}")
             $noteLabel.Merge()
             $noteLabel.NumberFormat = '@'
-            $noteLabel.Value2 = '補足'
+            $noteLabel.Value2 = '！ ポイント・注意'
             $noteLabel.Interior.Color = $colorNote
             $noteLabel.Font.Name = $FontName
             $noteLabel.Font.Size = 10
@@ -1029,10 +1139,12 @@ function Invoke-MbExcelExport {
         $indexSheet.Columns.Item(4).ColumnWidth = 14
         $titleRange = $null
         $metaRange = $null
+        $guideRange = $null
         $headerRange = $null
         try {
             $titleRange = $indexSheet.Range('A1:D1')
             $metaRange = $indexSheet.Range('A2:D2')
+            $guideRange = $indexSheet.Range('A3:D3')
             $headerRange = $indexSheet.Range('A4:D4')
             $titleRange.Merge()
             $titleRange.NumberFormat = '@'
@@ -1045,6 +1157,7 @@ function Invoke-MbExcelExport {
             $titleRange.RowHeight = 46
             $titleRange.HorizontalAlignment = $xlLeft
             $titleRange.VerticalAlignment = $xlCenter
+            $titleRange.IndentLevel = 1
 
             $metaRange.Merge()
             $metaRange.NumberFormat = '@'
@@ -1054,7 +1167,21 @@ function Invoke-MbExcelExport {
             $metaRange.Font.Color = $colorMuted
             $metaRange.Interior.Color = $colorWhite
             $metaRange.RowHeight = 24
+            $metaRange.IndentLevel = 1
             Set-MbExcelEdgeBorder -Range $metaRange -Edges @(9) -Color $colorLine -Weight 2
+
+            $guideRange.Merge()
+            $guideRange.NumberFormat = '@'
+            $guideRange.Value2 = '使い方　シート名をクリックして開き、各STEPを上から順に進めます。青い「目次へ戻る」からいつでも戻れます。'
+            $guideRange.Font.Name = $bodyFont
+            $guideRange.Font.Size = 10.5
+            $guideRange.Font.Color = $colorText
+            $guideRange.Interior.Color = $colorAccentSoft
+            $guideRange.RowHeight = 30
+            $guideRange.WrapText = $true
+            $guideRange.VerticalAlignment = $xlCenter
+            $guideRange.IndentLevel = 1
+            Set-MbExcelEdgeBorder -Range $guideRange -Edges @(7) -Color $colorAccent -Weight 4
 
             $indexSheet.Cells.Item(4, 1).Value2 = 'No.'
             $indexSheet.Cells.Item(4, 2).Value2 = 'シート'
@@ -1069,6 +1196,7 @@ function Invoke-MbExcelExport {
             try { $indexSheet.Tab.Color = $colorAccentDark } catch { }
         } finally {
             Release-MbExcelComObject $headerRange
+            Release-MbExcelComObject $guideRange
             Release-MbExcelComObject $metaRange
             Release-MbExcelComObject $titleRange
         }
@@ -1112,7 +1240,7 @@ function Invoke-MbExcelExport {
                     $backLink = $worksheet.Range('K1:L1')
                     $sheetTitle.Merge()
                     $sheetTitle.NumberFormat = '@'
-                    $sheetTitle.Value2 = [string]$safeName
+                    $sheetTitle.Value2 = [string]("{0:D2}　{1}" -f ($sheetIndex + 1), $safeName)
                     $sheetTitle.Font.Name = $bodyFont
                     $sheetTitle.Font.Size = 16
                     $sheetTitle.Font.Bold = $true
@@ -1133,27 +1261,32 @@ function Invoke-MbExcelExport {
                     $backLink.VerticalAlignment = $xlCenter
                     try {
                         $sheetHyperlinks = $worksheet.Hyperlinks
-                        $newHyperlink = $sheetHyperlinks.Add($backLink, [string]'', [string]("'$escapedIndexName'!A1"), [Type]::Missing, [string]'目次へ戻る')
-                    } catch { $backLink.Value2 = '目次へ戻る' }
+                        $newHyperlink = $sheetHyperlinks.Add($backLink, [string]'', [string]("'$escapedIndexName'!A1"), [Type]::Missing, [string]'← 目次へ戻る')
+                    } catch { $backLink.Value2 = '← 目次へ戻る' }
                     $backLink.Font.Color = $colorAccent
                     try { $backLink.Font.Underline = -4142 } catch { }
 
                     $summaryText = if ($sheetModel.PSObject.Properties.Name -contains 'summary') { [string]$sheetModel.summary } else { '' }
-                    if (-not [string]::IsNullOrWhiteSpace($summaryText)) {
-                        $summaryRange = $worksheet.Range('A2:L2')
-                        $summaryRange.Merge()
-                        $summaryRange.NumberFormat = '@'
-                        $summaryRange.Value2 = $summaryText
-                        $summaryRange.Font.Name = $bodyFont
-                        $summaryRange.Font.Size = 10.5
-                        # 淡い青地の上ではcolorMutedがAA(4.5:1)を下回るため、本文色で表示する。
-                        $summaryRange.Font.Color = $colorText
-                        $summaryRange.Interior.Color = $colorAccentSoft
-                        $summaryRange.RowHeight = 28
-                        $summaryRange.WrapText = $true
-                        $summaryRange.VerticalAlignment = -4108
-                        Set-MbExcelEdgeBorder -Range $summaryRange -Edges @(7) -Color $colorAccent -Weight 4
+                    $stepCount = @($sheetModel.steps).Count
+                    $summaryRange = $worksheet.Range('A2:L2')
+                    $summaryRange.Merge()
+                    $summaryRange.NumberFormat = '@'
+                    $summaryRange.Value2 = if ([string]::IsNullOrWhiteSpace($summaryText)) {
+                        "全 $stepCount 手順　｜　各STEPの画像と操作を上から順に確認します"
+                    } else {
+                        "このセクション　$summaryText　｜　全 $stepCount 手順"
                     }
+                    $summaryRange.Font.Name = $bodyFont
+                    $summaryRange.Font.Size = 10.5
+                    # 淡い青地の上ではcolorMutedがAA(4.5:1)を下回るため、本文色で表示する。
+                    $summaryRange.Font.Color = $colorText
+                    $summaryRange.Interior.Color = $colorAccentSoft
+                    $summaryLines = Get-MbExcelTextLineEstimate -Text ([string]$summaryRange.Value2) -CharactersPerLine 105
+                    $summaryRange.RowHeight = [Math]::Min(60, 10 + (20 * $summaryLines))
+                    $summaryRange.WrapText = $true
+                    $summaryRange.VerticalAlignment = -4108
+                    $summaryRange.IndentLevel = 1
+                    Set-MbExcelEdgeBorder -Range $summaryRange -Edges @(7) -Color $colorAccent -Weight 4
                     Set-MbExcelEdgeBorder -Range $sheetHeader -Edges @(9) -Color $colorAccentDark -Weight -4138
                     Set-MbExcelEdgeBorder -Range $sheetHeader -Edges @(7) -Color $colorAccent -Weight 4
                 } finally {
@@ -1165,7 +1298,7 @@ function Invoke-MbExcelExport {
                     Release-MbExcelComObject $sheetHeader
                 }
 
-                $startRow = if ([string]::IsNullOrWhiteSpace($summaryText)) { 2 } else { 3 }
+                $startRow = 3
                 $steps = @($sheetModel.steps)
                 for ($stepIndex = 0; $stepIndex -lt $steps.Count; $stepIndex++) {
                     Test-MbExcelCancellation -CancelPath $CancelPath
@@ -1200,6 +1333,25 @@ function Invoke-MbExcelExport {
                         $imagePath = New-MbAnnotatedImage -SourcePath $sourcePath -Annotations $annotations -Crop $crop `
                             -DestinationPath $renderedPath -TargetDisplayWidth $renderTargetWidth -TargetDisplayHeight $renderTargetHeight -MaximumDisplayScale 1.5 -NumberFontName $bodyFont
                         if ($imagePath -eq $renderedPath) { [void]$generatedImages.Add($renderedPath) }
+                        if ($step.PSObject.Properties.Name -contains 'resultImageId' -and
+                            -not [string]::IsNullOrWhiteSpace([string]$step.resultImageId)) {
+                            $resultSourcePath = Get-MbImageFilePath -Project $Project -ProjectPath $ProjectPath -ImageId ([string]$step.resultImageId)
+                            if (-not $resultSourcePath -or -not (Test-Path -LiteralPath $resultSourcePath -PathType Leaf)) {
+                                throw "操作後の結果画像が見つかりません: $($step.resultImageId)"
+                            }
+                            $imageLayout = if ($step.PSObject.Properties.Name -contains 'imageLayout') { [string]$step.imageLayout } else { 'before' }
+                            $imageOrder = if ($step.PSObject.Properties.Name -contains 'imageOrder') { [string]$step.imageOrder } else { 'before-after' }
+                            if ($imageOrder -notin @('before-after', 'after-before')) { $imageOrder = 'before-after' }
+                            if ($imageLayout -eq 'after') {
+                                $imagePath = $resultSourcePath
+                            } elseif ($imageLayout -in @('side-by-side', 'stacked')) {
+                                $comparisonPath = Join-Path $renderDirectory ("$($step.id)-before-after.png")
+                                $orientation = if ($imageLayout -eq 'side-by-side') { 'horizontal' } else { 'vertical' }
+                                $imagePath = New-MbBeforeAfterImage -BeforePath $imagePath -AfterPath $resultSourcePath `
+                                    -DestinationPath $comparisonPath -FontName $bodyFont -Orientation $orientation -Order $imageOrder
+                                [void]$generatedImages.Add($comparisonPath)
+                            }
+                        }
                         $expectedShapes++
                     }
 
@@ -1228,7 +1380,8 @@ function Invoke-MbExcelExport {
 
                 $used = $null
                 try { $used = $worksheet.UsedRange; $used.Font.Name = $bodyFont } finally { Release-MbExcelComObject $used }
-                Set-MbExcelWorksheetView -Application $excel -Worksheet $worksheet -FreezeRows 1
+                Set-MbExcelPrintLayout -Application $excel -Worksheet $worksheet -Landscape $true -RepeatRows '$1:$2'
+                Set-MbExcelWorksheetView -Application $excel -Worksheet $worksheet -FreezeRows 2
             } finally { Release-MbExcelComObject $worksheet }
         }
 
@@ -1257,7 +1410,7 @@ function Invoke-MbExcelExport {
                     $numberCell.Value2 = [double]($sheetIndex + 1)
                     $numberCell.NumberFormat = '00'
                     $nameCell.NumberFormat = '@'
-                    $nameCell.Value2 = [string]$safeName
+                    $nameCell.Value2 = [string]("開く　$safeName")
                     $summaryCell.NumberFormat = '@'
                     $summaryText = if ($sheetModel.PSObject.Properties.Name -contains 'summary') { [string]$sheetModel.summary } else { '' }
                     if ([string]::IsNullOrWhiteSpace($summaryText)) {
@@ -1271,8 +1424,8 @@ function Invoke-MbExcelExport {
                     $countCell.NumberFormat = '0 "手順"'
                     try {
                         $escapedName = ConvertTo-MbExcelSheetAddress -Name $safeName
-                        $newHyperlink = $indexHyperlinks.Add($nameCell, [string]'', [string]("'$escapedName'!A1"), [Type]::Missing, [string]$safeName)
-                    } catch { $nameCell.Value2 = [string]$safeName }
+                        $newHyperlink = $indexHyperlinks.Add($nameCell, [string]'', [string]("'$escapedName'!A1"), [Type]::Missing, [string]("開く　$safeName"))
+                    } catch { $nameCell.Value2 = [string]("開く　$safeName") }
                     $rowRange = $indexSheet.Range("A${row}:D${row}")
                     $rowRange.Font.Name = $bodyFont
                     $rowRange.Font.Size = 10.5
@@ -1301,6 +1454,7 @@ function Invoke-MbExcelExport {
         }
         $indexSheet.Columns.Item(1).HorizontalAlignment = $xlCenter
         $indexSheet.Columns.Item(4).HorizontalAlignment = $xlCenter
+        Set-MbExcelPrintLayout -Application $excel -Worksheet $indexSheet -Landscape $false -RepeatRows '$1:$4'
         Set-MbExcelWorksheetView -Application $excel -Worksheet $indexSheet -FreezeRows 4
 
         $expectedNames = @($indexSheetName) + $createdSheetNames
@@ -1468,5 +1622,6 @@ Export-ModuleMember -Function @(
     'Test-MbExcelWorksheetName',
     'Get-MbExcelStepCardLayout',
     'New-MbAnnotatedImage',
+    'New-MbBeforeAfterImage',
     'Invoke-MbExcelExport'
 )

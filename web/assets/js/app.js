@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const appVersion = '0.37.0';
+  const appVersion = '0.38.9';
   // 番号注釈はSVG属性で指定するためCSS変数を参照できない。
   // 編集画面とExcel・Word出力（New-MbAnnotatedImage）で同じ見た目にするため、基準フォントを揃える。
   const ANNOTATION_NUMBER_FONT = '"BIZ UDPGothic", "BIZ UDPゴシック", "BIZ UDGothic", "BIZ UDゴシック", Meiryo, "Yu Gothic UI", "MS Pゴシック", sans-serif';
@@ -1527,6 +1527,7 @@
 
   let importQueue = Promise.resolve();
   let replacementStepId = '';
+  let resultImageStepId = '';
   const enqueueImages = (files, source) => {
     const received = [...files];
     const supported = received.filter(isSupportedImage);
@@ -1654,6 +1655,72 @@
     showToast(result.message || '画像を差し替えました。', 'info');
   };
 
+  const setStepResultImage = async (file, stepId, source = 'file') => {
+    if (!isSupportedImage(file)) throw new Error('PNG、JPEG、BMP画像を選択してください。');
+    if (file.size > 20 * 1024 * 1024) throw new Error('画像は20MB以下にしてください。');
+    await flushPendingStructuralSaves({ waitForText: true });
+    saveStatus('saving', '操作後画像を追加中…');
+    const response = await fetch('/api/images/result', {
+      method: 'POST',
+      headers: sessionHeaders({
+        'Content-Type': file.type || 'application/octet-stream',
+        'X-Image-Source': source,
+        'X-Sheet-Id': selectedSheetId(),
+        'X-Step-Id': stepId
+      }),
+      body: file
+    });
+    const text = await response.text();
+    let result = null;
+    try { result = JSON.parse(text); } catch { result = { message: text }; }
+    if (!response.ok) throw new Error(result.message || `HTTP ${response.status}`);
+    await refreshWorkspace(stepId);
+    saveStatus('saved', '保存済み');
+    showToast(result.message || '操作後画像を追加しました。', 'success');
+  };
+
+  const saveStepImageLayout = async (card, layout, order) => {
+    const stepId = card?.dataset.stepId || '';
+    if (!stepId) return;
+    await flushPendingStructuralSaves({ waitForText: true });
+    saveStatus('saving', '画像の見せ方を保存中…');
+    const body = new URLSearchParams({ stepId, layout, order });
+    const response = await fetch('/api/steps/image-layout', {
+      method: 'POST',
+      headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }),
+      body
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      let message = text;
+      try { message = JSON.parse(text).message || text; } catch { }
+      throw new Error(message || `HTTP ${response.status}`);
+    }
+    await refreshWorkspace(stepId);
+    saveStatus('saved', '保存済み');
+  };
+
+  const removeStepResultImage = async (card) => {
+    const stepId = card?.dataset.stepId || '';
+    if (!stepId) return;
+    await flushPendingStructuralSaves({ waitForText: true });
+    saveStatus('saving', '操作後画像を外しています…');
+    const response = await fetch('/api/images/result/remove', {
+      method: 'POST',
+      headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }),
+      body: new URLSearchParams({ stepId })
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      let message = text;
+      try { message = JSON.parse(text).message || text; } catch { }
+      throw new Error(message || `HTTP ${response.status}`);
+    }
+    await refreshWorkspace(stepId);
+    saveStatus('saved', '保存済み');
+    showToast('操作後画像を外しました。', 'info');
+  };
+
   const undoStepImageReplacement = async (card, button) => {
     button.disabled = true;
     saveStatus('saving', '元の画像へ戻しています…');
@@ -1775,7 +1842,7 @@
     window.setTimeout(settle, 600);
   });
 
-  // 動画本体は「動画つきで手順にする」を選んだときだけ送る。ExcelとHTMLの出力から再生する。
+  // 動画本体は「動画つきで手順にする」を選んだときだけ送る。Excel出力から再生する。
   const attachVideoToStep = async (stepId) => {
     const file = videoCapture.file;
     if (!file || !stepId) return false;
@@ -2147,7 +2214,7 @@
     dialog.id = 'excel-export-dialog';
     dialog.className = 'excel-export-dialog';
     dialog.setAttribute('aria-label', 'Excelで作成');
-    dialog.innerHTML = '<header class="excel-export-dialog__header"><div><strong>Excelで作成</strong><span>現在の内容を専用プロセスで出力します</span></div><button type="button" class="excel-export-dialog__close" data-export-close aria-label="閉じる">×</button></header><div class="excel-export-dialog__content"><div class="excel-export-dialog__state" role="status" aria-live="polite"><span class="excel-export-dialog__mark" data-export-mark aria-hidden="true"></span><div><strong data-export-message>準備しています</strong><span data-export-detail>プロジェクトを保存しています</span></div></div><div class="excel-export-progress" role="progressbar" aria-label="Excel作成の進捗" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span data-export-progress></span></div><p class="excel-export-dialog__path" data-export-path hidden></p><p class="excel-export-dialog__note" data-export-video-note hidden></p><details class="excel-export-dialog__mappings" data-export-mappings hidden><summary>出力シート名を確認</summary><ul></ul></details><p class="excel-export-dialog__error" data-export-error hidden></p></div><footer class="excel-export-dialog__footer"><button type="button" class="button button--ghost" data-export-cancel>中止</button><span class="excel-export-dialog__spacer"></span><button type="button" class="button button--ghost" data-export-open="folder" hidden>保存先を開く</button><button type="button" class="button button--primary" data-export-open="file" hidden>Excelを開く</button><button type="button" class="button button--ghost" data-export-close data-export-done hidden>閉じる</button></footer>';
+    dialog.innerHTML = '<header class="excel-export-dialog__header"><div><strong>Excelで作成</strong><span>現在の内容をこのPCへ出力します</span></div><button type="button" class="excel-export-dialog__close" data-export-close aria-label="閉じる">×</button></header><div class="excel-export-dialog__content"><div class="excel-export-dialog__state" role="status" aria-live="polite"><span class="excel-export-dialog__mark" data-export-mark aria-hidden="true"></span><div><strong data-export-message>準備しています</strong><span data-export-detail>プロジェクトを保存しています</span></div></div><div class="excel-export-progress" role="progressbar" aria-label="Excel作成の進捗" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span data-export-progress></span></div><p class="excel-export-dialog__path" data-export-path hidden></p><p class="excel-export-dialog__note" data-export-local-note hidden>PC内に作成しました。共有や公開が必要な場合は、完成ファイルを手動でコピーまたは送付してください。</p><p class="excel-export-dialog__note" data-export-video-note hidden></p><details class="excel-export-dialog__mappings" data-export-mappings hidden><summary>出力シート名を確認</summary><ul></ul></details><p class="excel-export-dialog__error" data-export-error hidden></p></div><footer class="excel-export-dialog__footer"><button type="button" class="button button--ghost" data-export-cancel>中止</button><span class="excel-export-dialog__spacer"></span><button type="button" class="button button--ghost" data-export-open="folder" hidden>保存先を開く</button><button type="button" class="button button--primary" data-export-open="file" hidden>Excelを開く</button><button type="button" class="button button--ghost" data-export-close data-export-done hidden>閉じる</button></footer>';
     dialog.querySelectorAll('[data-export-close]').forEach((button) => {
       button.addEventListener('click', () => dialog.close());
     });
@@ -2216,6 +2283,7 @@
     path.textContent = status.outputFolderName
       ? `${status.outputFolderName}\\${status.outputName || ''}`
       : (status.outputName || '');
+    dialog.querySelector('[data-export-local-note]').hidden = state !== 'completed';
     // 動画つきの手順があるとフォルダー出力になる。ブックだけコピーするとリンクが切れるので必ず伝える。
     const videoNote = dialog.querySelector('[data-export-video-note]');
     const outputFolderName = state === 'completed' ? String(status.outputFolderName || '') : '';
@@ -2316,7 +2384,7 @@
     dialog.id = 'word-export-dialog';
     dialog.className = 'excel-export-dialog word-export-dialog';
     dialog.setAttribute('aria-label', 'Wordで作成');
-    dialog.innerHTML = '<header class="excel-export-dialog__header"><div><strong>Wordで作成</strong><span>縦型の操作マニュアルを専用プロセスで出力します</span></div><button type="button" class="excel-export-dialog__close" data-word-export-close aria-label="閉じる">×</button></header><div class="excel-export-dialog__content"><div class="excel-export-dialog__state" role="status" aria-live="polite"><span class="excel-export-dialog__mark" data-word-export-mark aria-hidden="true"></span><div><strong data-word-export-message>準備しています</strong><span data-word-export-detail>プロジェクトを保存しています</span></div></div><div class="excel-export-progress" role="progressbar" aria-label="Word作成の進捗" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span data-word-export-progress></span></div><p class="excel-export-dialog__path" data-word-export-path hidden></p><p class="excel-export-dialog__error" data-word-export-error hidden></p></div><footer class="excel-export-dialog__footer"><button type="button" class="button button--ghost" data-word-export-cancel>中止</button><button type="button" class="button button--ghost" data-word-export-fallback hidden>Excelで作成</button><span class="excel-export-dialog__spacer"></span><button type="button" class="button button--ghost" data-word-export-open="folder" hidden>保存先を開く</button><button type="button" class="button button--primary" data-word-export-open="file" hidden>Wordを開く</button><button type="button" class="button button--ghost" data-word-export-close data-word-export-done hidden>閉じる</button></footer>';
+    dialog.innerHTML = '<header class="excel-export-dialog__header"><div><strong>Wordで作成</strong><span>縦型の操作マニュアルをこのPCへ出力します</span></div><button type="button" class="excel-export-dialog__close" data-word-export-close aria-label="閉じる">×</button></header><div class="excel-export-dialog__content"><div class="excel-export-dialog__state" role="status" aria-live="polite"><span class="excel-export-dialog__mark" data-word-export-mark aria-hidden="true"></span><div><strong data-word-export-message>準備しています</strong><span data-word-export-detail>プロジェクトを保存しています</span></div></div><div class="excel-export-progress" role="progressbar" aria-label="Word作成の進捗" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span data-word-export-progress></span></div><p class="excel-export-dialog__path" data-word-export-path hidden></p><p class="excel-export-dialog__note" data-word-export-local-note hidden>PC内に作成しました。共有や公開が必要な場合は、完成ファイルを手動でコピーまたは送付してください。</p><p class="excel-export-dialog__error" data-word-export-error hidden></p></div><footer class="excel-export-dialog__footer"><button type="button" class="button button--ghost" data-word-export-cancel>中止</button><button type="button" class="button button--ghost" data-word-export-fallback hidden>Excelで作成</button><span class="excel-export-dialog__spacer"></span><button type="button" class="button button--ghost" data-word-export-open="folder" hidden>保存先を開く</button><button type="button" class="button button--primary" data-word-export-open="file" hidden>Wordを開く</button><button type="button" class="button button--ghost" data-word-export-close data-word-export-done hidden>閉じる</button></footer>';
     dialog.querySelectorAll('[data-word-export-close]').forEach((button) => button.addEventListener('click', () => dialog.close()));
     dialog.querySelector('[data-word-export-cancel]').addEventListener('click', async () => {
       const button = dialog.querySelector('[data-word-export-cancel]');
@@ -2381,6 +2449,7 @@
     const path = dialog.querySelector('[data-word-export-path]');
     path.hidden = state !== 'completed';
     path.textContent = status.outputName || '';
+    dialog.querySelector('[data-word-export-local-note]').hidden = state !== 'completed';
     const error = dialog.querySelector('[data-word-export-error]');
     error.hidden = state !== 'failed';
     error.textContent = state === 'failed'
@@ -2428,148 +2497,16 @@
     catch (error) { updateWordExportDialog({ state: 'failed', message: error.message || 'Wordファイルを作成できませんでした', errorCode: error.code, percent: 0 }); }
   };
 
-  // HTML出力はCOMを使わないため、進捗のポーリングも中止の仕組みも要らない。
-  // 応答を待つ間だけダイアログを出す。
-  const htmlExport = { dialog: null, busy: false, publishTarget: '' };
-
-  const ensureHtmlExportDialog = () => {
-    if (htmlExport.dialog) return htmlExport.dialog;
-    const dialog = document.createElement('dialog');
-    dialog.id = 'html-export-dialog';
-    dialog.className = 'excel-export-dialog html-export-dialog';
-    dialog.setAttribute('aria-label', 'HTMLで作成');
-    dialog.innerHTML = '<header class="excel-export-dialog__header"><div><strong>HTMLで作成</strong><span>ブラウザーで開けるマニュアルをフォルダーごと作ります</span></div><button type="button" class="excel-export-dialog__close" data-html-export-close aria-label="閉じる">×</button></header><div class="excel-export-dialog__content"><div class="excel-export-dialog__state" role="status" aria-live="polite"><span class="excel-export-dialog__mark" data-html-export-mark aria-hidden="true"></span><div><strong data-html-export-message>作成しています</strong><span data-html-export-detail>画像に注釈を焼き込んでいます</span></div></div><p class="excel-export-dialog__path" data-html-export-path hidden></p><p class="excel-export-dialog__note" data-html-publish-note hidden></p><p class="excel-export-dialog__error" data-html-export-error hidden></p></div><footer class="excel-export-dialog__footer"><button type="button" class="button button--secondary" data-html-publish hidden>共有フォルダーへ反映</button><span class="excel-export-dialog__spacer"></span><button type="button" class="button button--ghost" data-html-export-open="folder" hidden>フォルダーを開く</button><button type="button" class="button button--primary" data-html-export-open="file" hidden>マニュアルを開く</button><button type="button" class="button button--ghost" data-html-export-close data-html-export-done hidden>閉じる</button></footer>';
-    dialog.querySelectorAll('[data-html-export-close]').forEach((button) => button.addEventListener('click', () => dialog.close()));
-    dialog.querySelectorAll('[data-html-export-open]').forEach((button) => {
-      button.addEventListener('click', async () => {
-        button.disabled = true;
-        try {
-          const response = await fetch('/api/export/html/open', {
-            method: 'POST',
-            headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }),
-            body: new URLSearchParams({ mode: button.dataset.htmlExportOpen }).toString()
-          });
-          if (!response.ok) {
-            const result = await response.json().catch(() => null);
-            throw new Error(result?.message || `HTTP ${response.status}`);
-          }
-        } catch (error) {
-          showToast(error.message || '出力先を開けませんでした。');
-        } finally {
-          button.disabled = false;
-        }
-      });
-    });
-    dialog.querySelector('[data-html-publish]').addEventListener('click', async () => {
-      const button = dialog.querySelector('[data-html-publish]');
-      const note = dialog.querySelector('[data-html-publish-note]');
-      if (!window.confirm(`共有フォルダーの次の場所を、いま作ったマニュアルで置き換えます。\n\n${htmlExport.publishTarget}\n\n続けますか？`)) return;
-      button.disabled = true;
-      note.hidden = false;
-      note.textContent = '共有フォルダーへコピーしています…';
-      try {
-        const response = await fetch('/api/export/html/publish', {
-          method: 'POST',
-          headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }),
-          body: ''
-        });
-        const result = await response.json().catch(() => null);
-        if (!response.ok) throw new Error(result?.message || `HTTP ${response.status}`);
-        note.textContent = `共有フォルダーへ反映しました（${result?.fileCount || 0} ファイル · ${result?.totalMb || 0}MB）`;
-        showToast('共有フォルダーへ反映しました。');
-      } catch (error) {
-        note.textContent = `共有フォルダーへ反映できませんでした: ${error.message || ''}`;
-        button.disabled = false;
-      }
-    });
-    dialog.addEventListener('cancel', (event) => { if (htmlExport.busy) event.preventDefault(); });
-    document.body.appendChild(dialog);
-    htmlExport.dialog = dialog;
-    return dialog;
-  };
-
-  const updateHtmlExportDialog = (state, status = {}) => {
-    const dialog = ensureHtmlExportDialog();
-    const busy = state === 'running';
-    htmlExport.busy = busy;
-    dialog.dataset.state = state;
-    dialog.querySelector('[data-html-export-message]').textContent = busy
-      ? '作成しています'
-      : (status.message || 'HTMLマニュアルを作成できませんでした');
-    const detail = dialog.querySelector('[data-html-export-detail]');
-    if (busy) {
-      detail.textContent = '画像に注釈を焼き込んでいます。手順が多いと時間がかかります';
-    } else if (state === 'completed') {
-      const videoText = Number(status.videoCount) > 0 ? ` · 動画 ${status.videoCount} 本` : '';
-      detail.textContent = `${status.stepCount || 0} 手順 · 画像 ${status.imageCount || 0} 枚${videoText} · 合計 ${status.totalMb || 0}MB`;
-    } else {
-      detail.textContent = 'ManualBuilderの入力内容は変更されていません';
-    }
-    const path = dialog.querySelector('[data-html-export-path]');
-    path.hidden = state !== 'completed';
-    path.textContent = status.folderName || '';
-    // 配布先は「編集する.cmd」から起動したときだけ分かる。分からないうちはボタンを出さず、
-    // エクスプローラーで手でコピーしてもらう（最初の1回だけ）。
-    htmlExport.publishTarget = state === 'completed' ? String(status.publishTarget || '') : '';
-    const publishButton = dialog.querySelector('[data-html-publish]');
-    publishButton.hidden = !htmlExport.publishTarget;
-    publishButton.disabled = false;
-    // 反映先を知らないうち（＝最初の1回）は人がコピーする。ここでも次にどれを押すかを示す。
-    const publishNote = dialog.querySelector('[data-html-publish-note]');
-    publishNote.hidden = state !== 'completed';
-    publishNote.textContent = htmlExport.publishTarget
-      ? `反映先: ${htmlExport.publishTarget}`
-      : '配るときは下の「フォルダーを開く」から、フォルダーごと共有フォルダーへコピーしてください。次からは、そのフォルダーの「編集する.cmd」で開けば1回で反映できます。';
-    const error = dialog.querySelector('[data-html-export-error]');
-    error.hidden = state !== 'failed';
-    error.textContent = state === 'failed' ? '内容を確認して、もう一度実行してください。' : '';
-    dialog.querySelector('.excel-export-dialog__close').disabled = busy;
-    dialog.querySelectorAll('[data-html-export-open]').forEach((button) => { button.hidden = state !== 'completed'; });
-    dialog.querySelector('[data-html-export-done]').hidden = busy;
-    dialog.querySelector('[data-html-export-mark]').textContent = state === 'completed' ? '✓' : state === 'failed' ? '!' : '';
-    document.querySelectorAll('[data-export-html]').forEach((button) => {
-      button.disabled = busy;
-      button.setAttribute('aria-busy', String(busy));
-    });
-  };
-
-  const startHtmlExport = async (overwrite = false) => {
-    const dialog = ensureHtmlExportDialog();
-    updateHtmlExportDialog('running');
-    if (!dialog.open) dialog.showModal();
-    try {
-      await flushPendingStructuralSaves({ waitForText: true });
-      const response = await fetch('/api/export/html', {
-        method: 'POST',
-        headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }),
-        body: overwrite ? new URLSearchParams({ overwrite: '1' }).toString() : ''
-      });
-      const result = await response.json().catch(() => null);
-      // フォルダー名に日付を付けないため、同じ名前があれば作り直してよいか本人に確認する。
-      if (response.status === 409 && result?.errorCode === 'FOLDER_EXISTS') {
-        updateHtmlExportDialog('idle');
-        dialog.close();
-        const message = `「${result.folderName}」はすでにあります。\n最新の内容で作り直しますか？\n\n前に作ったHTMLマニュアルは置き換わります。共有フォルダーへコピー済みのものはそのまま残ります。`;
-        if (window.confirm(message)) startHtmlExport(true);
-        return;
-      }
-      if (!response.ok) throw new Error(result?.message || `HTTP ${response.status}`);
-      updateHtmlExportDialog('completed', result || {});
-    } catch (error) {
-      updateHtmlExportDialog('failed', { message: error.message || 'HTMLマニュアルを作成できませんでした' });
-    }
-  };
-
   let outputReviewDialog = null;
   const ensureOutputReviewDialog = () => {
     if (outputReviewDialog) return outputReviewDialog;
     const dialog = document.createElement('dialog');
     dialog.className = 'output-review-dialog';
     dialog.setAttribute('aria-label', '仕上げを確認して手順書を出力');
-    dialog.innerHTML = '<header class="output-review-dialog__header"><div><strong>仕上げを確認して出力</strong><span>全シートの編集内容と順番が、そのまま手順書になります</span></div><button type="button" class="output-review-dialog__close" data-output-close aria-label="閉じる">×</button></header>'
+    dialog.innerHTML = '<header class="output-review-dialog__header"><div><strong>仕上げを確認して出力</strong><span>Excelを標準形式、Wordを印刷向けの副形式として、このPCへ作成します</span></div><button type="button" class="output-review-dialog__close" data-output-close aria-label="閉じる">×</button></header>'
       + '<div class="output-review-dialog__content"><section class="output-review-dialog__summary" aria-label="最終確認"><div><span>全手順</span><strong data-output-total>0件</strong></div><button type="button" data-output-fix="text"><span>説明なし</span><strong data-output-missing-text>0件</strong></button><button type="button" data-output-fix="image"><span>画像なし</span><strong data-output-missing-image>0件</strong></button><div><span>赤枠・番号あり</span><strong data-output-annotated>0件</strong></div><button type="button" data-output-fix="attention"><span>Copilot後の要確認</span><strong data-output-attention>0件</strong></button></section><p class="output-review-dialog__note" data-output-note></p>'
-      + '<section class="output-review-dialog__formats" aria-label="出力形式"><button type="button" class="output-format output-format--recommended" data-output-format="excel"><span class="output-format__badge">おすすめ</span><strong>Excelで作成</strong><span>横長で、手順を一覧しやすい形式</span></button><button type="button" class="output-format" data-output-format="word"><strong>Wordで作成</strong><span>印刷しやすい縦型の文書</span></button><button type="button" class="output-format" data-output-format="html"><strong>HTMLで作成</strong><span>ブラウザーで閲覧・共有する形式</span></button></section></div>'
-      + '<footer class="output-review-dialog__footer"><span>説明や画像がなくても、意図した内容なら出力できます。</span><button type="button" class="button button--ghost" data-output-close>編集に戻る</button></footer>';
+      + '<section class="output-review-dialog__formats" aria-label="出力形式"><button type="button" class="output-format output-format--recommended" data-output-format="excel"><span class="output-format__badge">標準</span><strong>Excelで作成</strong><span>横長で画像と説明を見比べやすく、出力後も追記できます</span></button><button type="button" class="output-format" data-output-format="word"><strong>Wordで作成</strong><span>印刷しやすい縦型の副形式です</span></button></section></div>'
+      + '<footer class="output-review-dialog__footer"><span>出力後の共有や公開は、作成したファイルを利用者が管理します。</span><button type="button" class="button button--ghost" data-output-close>編集に戻る</button></footer>';
     dialog.querySelectorAll('[data-output-close]').forEach((button) => button.addEventListener('click', () => dialog.close()));
     dialog.addEventListener('click', (event) => {
       const fix = event.target.closest('[data-output-fix]');
@@ -2582,8 +2519,7 @@
       if (!format) return;
       dialog.close();
       if (format.dataset.outputFormat === 'excel') startExcelExport();
-      else if (format.dataset.outputFormat === 'word') startWordExport();
-      else startHtmlExport();
+      else startWordExport();
     });
     dialog.addEventListener('cancel', (event) => {
       event.preventDefault();
@@ -2717,13 +2653,6 @@
       void openOutputReviewDialog();
       return;
     }
-    const htmlExportButton = event.target.closest('[data-export-html]');
-    if (htmlExportButton) {
-      const menu = htmlExportButton.closest('details');
-      if (menu) menu.open = false;
-      startHtmlExport();
-      return;
-    }
     const wordExportButton = event.target.closest('[data-export-word]');
     if (wordExportButton) {
       const menu = wordExportButton.closest('details');
@@ -2779,6 +2708,40 @@
       window.queueMicrotask(updateStepBulkActions);
       return;
     }
+    const resultImageButton = event.target.closest('[data-add-result-image], [data-replace-result-image]');
+    if (resultImageButton) {
+      const card = resultImageButton.closest('.step-card');
+      if (!card) return;
+      resultImageStepId = card.dataset.stepId || '';
+      document.getElementById('result-image-file-input')?.click();
+      return;
+    }
+    const layoutButton = event.target.closest('[data-image-layout-option]');
+    if (layoutButton) {
+      const card = layoutButton.closest('.step-card');
+      const visual = card?.querySelector('[data-step-visual]');
+      if (!card || !visual) return;
+      saveStepImageLayout(card, layoutButton.dataset.imageLayoutOption || 'before', visual.dataset.imageOrder || 'before-after')
+        .catch((error) => { saveStatus('error', '見せ方を保存できません'); showToast(error.message || '画像の見せ方を保存できませんでした。'); });
+      return;
+    }
+    const swapImageOrderButton = event.target.closest('[data-swap-image-order]');
+    if (swapImageOrderButton) {
+      const card = swapImageOrderButton.closest('.step-card');
+      const visual = card?.querySelector('[data-step-visual]');
+      if (!card || !visual) return;
+      const nextOrder = visual.dataset.imageOrder === 'after-before' ? 'before-after' : 'after-before';
+      saveStepImageLayout(card, visual.dataset.imageLayout || 'side-by-side', nextOrder)
+        .catch((error) => { saveStatus('error', '順序を保存できません'); showToast(error.message || '画像の順序を保存できませんでした。'); });
+      return;
+    }
+    const removeResultImageButton = event.target.closest('[data-remove-result-image]');
+    if (removeResultImageButton) {
+      const card = removeResultImageButton.closest('.step-card');
+      if (!card || !window.confirm('操作後画像をこの手順から外しますか？')) return;
+      removeStepResultImage(card).catch((error) => { saveStatus('error', '画像を外せません'); showToast(error.message || '操作後画像を外せませんでした。'); });
+      return;
+    }
     const replaceButton = event.target.closest('[data-replace-image], [data-add-image-to-step]');
     if (replaceButton) {
       const card = replaceButton.closest('.step-card');
@@ -2812,16 +2775,17 @@
     if (previewButton) {
       const source = previewButton.dataset.imagePreview;
       const card = previewButton.closest('.step-card');
+      const isResultPreview = previewButton.dataset.imagePreviewKind === 'result';
       const dialog = ensureImagePreview();
       const image = dialog.querySelector('img');
-      let previewAnnotations = card ? readCardAnnotations(card) : [];
+      let previewAnnotations = card && !isResultPreview ? readCardAnnotations(card) : [];
       if (!card && previewButton.dataset.previewRect) {
         const values = previewButton.dataset.previewRect.split(',').map(Number);
         if (values.length === 4 && values.every(Number.isFinite)) {
           previewAnnotations = [{ id: 'copilot-preview', type: 'rect', x1: values[0], y1: values[1], x2: values[2], y2: values[3] }];
         }
       }
-      const previewCrop = card ? readCardCrop(card) : fullCrop();
+      const previewCrop = card && !isResultPreview ? readCardCrop(card) : fullCrop();
       image.onload = () => {
         window.requestAnimationFrame(() => renderImagePreview(dialog, previewAnnotations, previewCrop));
       };
@@ -2944,6 +2908,18 @@
       replaceStepImage(file, stepId).catch((error) => {
         saveStatus('error', '差し替えできません');
         showToast(error.message || '画像を差し替えできませんでした。');
+      });
+      return;
+    }
+    if (event.target.id === 'result-image-file-input') {
+      const file = event.target.files?.[0];
+      const stepId = resultImageStepId;
+      event.target.value = '';
+      resultImageStepId = '';
+      if (!file || !stepId) return;
+      setStepResultImage(file, stepId).catch((error) => {
+        saveStatus('error', '操作後画像を追加できません');
+        showToast(error.message || '操作後画像を追加できませんでした。');
       });
     }
   });
@@ -3539,6 +3515,59 @@
     dialog.querySelectorAll('[data-recorder-detail]').forEach((node) => { node.textContent = detail; });
   };
 
+  const recorderApplicationKey = (item) => {
+    const title = String(item?.windowTitle || '').trim();
+    const rules = [
+      [/\bExcel$/i, 'Excel'], [/\bWord$/i, 'Word'], [/Microsoft\s*Edge$/i, 'Edge'],
+      [/Google\s*Chrome$/i, 'Chrome'], [/エクスプローラー$/i, 'エクスプローラー'],
+      [/^ChatGPT$/i, 'ChatGPT'], [/Copilot/i, 'Copilot']
+    ];
+    const known = rules.find(([pattern]) => pattern.test(title));
+    return known ? known[1] : title;
+  };
+
+  const getRecommendedRecordedIndexes = (events) => {
+    const counts = new Map();
+    events.forEach((item) => {
+      const key = recorderApplicationKey(item);
+      if (key) counts.set(key, (counts.get(key) || 0) + 1);
+    });
+    const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    // すべて単発なら、複数アプリをまたぐ正規の手順かもしれないため全件を残す。
+    if (ranked.length === 0 || ranked[0][1] < 2) return new Set(events.map((item) => Number(item.index)));
+    const primary = ranked[0][0];
+    return new Set(events.filter((item) => recorderApplicationKey(item) === primary).map((item) => Number(item.index)));
+  };
+
+  const updateRecorderSelectionSummary = () => {
+    const summary = recorder.dialog?.querySelector('[data-recorder-selection-summary]');
+    if (!summary) return;
+    const boxes = [...recorder.dialog.querySelectorAll('[data-recorder-accept]')];
+    summary.textContent = `${boxes.filter((box) => box.checked).length} / ${boxes.length} 件を取り込む`;
+  };
+
+  const selectRecommendedRecordedEvents = () => {
+    const recommended = getRecommendedRecordedIndexes(recorder.events);
+    recorder.dialog.querySelectorAll('[data-recorder-event]').forEach((row) => {
+      row.querySelector('[data-recorder-accept]').checked = recommended.has(Number(row.dataset.index));
+    });
+    updateRecorderSelectionSummary();
+  };
+
+  const excludeRecordedFinishingSequence = () => {
+    const finishing = /^(?:上書き保存|名前を付けて保存|保存|閉じる|この PC|ここにファイル名を入力してください|その他のオプション(?:\.\.\.|…)?|キャンセル)$/;
+    const start = recorder.events.findIndex((item) => finishing.test(String(item.targetName || '').trim()));
+    if (start < 0) {
+      showToast('保存・終了に当たる操作は見つかりませんでした。');
+      return;
+    }
+    const tail = new Set(recorder.events.slice(start).map((item) => Number(item.index)));
+    recorder.dialog.querySelectorAll('[data-recorder-event]').forEach((row) => {
+      if (tail.has(Number(row.dataset.index))) row.querySelector('[data-recorder-accept]').checked = false;
+    });
+    updateRecorderSelectionSummary();
+  };
+
   // 記録した操作を一覧にする。押し間違いをここで外してから取り込む。
   const renderRecordedEvents = (events) => {
     const list = recorder.dialog.querySelector('[data-recorder-list]');
@@ -3548,6 +3577,7 @@
     }
     // imgタグはヘッダーを送れないので、画像だけはクエリにトークンを載せる。
     const token = encodeURIComponent(sessionHeaders()['X-Manual-Token'] || '');
+    const recommended = getRecommendedRecordedIndexes(events);
     list.innerHTML = events.map((item) => {
       const fallback = item.targetType === 'ControlType.ClickPoint';
       const label = item.targetName || (fallback ? 'クリック位置（対象を特定できませんでした）' : '（名前を取得できませんでした）');
@@ -3557,13 +3587,23 @@
         ? `${kind}・対象不明（空クリックならチェックを外せます）`
         : [kind, source, item.windowTitle || ''].filter(Boolean).join('・');
       const src = `/images/recording/${encodeURIComponent(item.image)}?token=${token}`;
+      const resultSrc = item.resultImage
+        ? `/images/recording/${encodeURIComponent(item.resultImage)}?token=${token}`
+        : '';
+      const shots = `<span class="recorder-event__shots"><span><small>操作前</small><img class="recorder-event__shot" src="${src}" alt="操作前" loading="lazy"></span>`
+        + (resultSrc ? `<span><small>操作後</small><img class="recorder-event__shot" src="${resultSrc}" alt="操作後の結果" loading="lazy"></span>` : '')
+        + '</span>';
+      const selected = recommended.has(Number(item.index));
+      const reviewReason = selected ? '' : '<small class="recorder-event__review">別のアプリ・要確認</small>';
       return `<label class="recorder-event" data-recorder-event data-index="${item.index}">
-<input type="checkbox" data-recorder-accept checked>
-<img class="recorder-event__shot" src="${src}" alt="" loading="lazy">
-<span class="recorder-event__body"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(detail)}</span></span>
+<input type="checkbox" data-recorder-accept${selected ? ' checked' : ''}>
+${shots}
+<span class="recorder-event__body"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(detail)}</span>${reviewReason}</span>
 <span class="recorder-event__index">${item.index}</span>
 </label>`;
     }).join('');
+    list.querySelectorAll('[data-recorder-accept]').forEach((box) => box.addEventListener('change', updateRecorderSelectionSummary));
+    updateRecorderSelectionSummary();
   };
 
   const loadRecordedEvents = async () => {
@@ -3727,7 +3767,8 @@
       + '</section>'
       + '<section data-recorder-view="review" hidden>'
       + '<div class="copilot-dialog__state"><strong data-recorder-message></strong><span data-recorder-detail></span></div>'
-      + '<p class="copilot-note">対象を特定できた画像は、元のウィンドウ全体を残したまま周辺を大きく表示します。全体が必要な手順は、取り込み後に「画像を編集 → 切り抜きを戻す」で戻せます。対象不明のクリックも記録漏れを避けるため選択されています。不要ならチェックを外してください。</p>'
+      + '<p class="copilot-note">最も多く操作したアプリを「おすすめ」として選びました。別アプリの操作も下に残しているため、必要なら追加できます。</p>'
+      + '<div class="recorder-review-tools"><strong data-recorder-selection-summary></strong><div><button type="button" class="button button--ghost button--small" data-recorder-select-recommended>おすすめだけ</button><button type="button" class="button button--ghost button--small" data-recorder-select-all>すべて選択</button><button type="button" class="button button--ghost button--small" data-recorder-exclude-finishing>保存・終了を外す</button></div></div>'
       + '<div class="recorder-list" data-recorder-list></div>'
       + '</section>'
       + '</div>'
@@ -3758,6 +3799,12 @@
       dialog.querySelector('[data-recorder-narration-note]').hidden = !event.target.checked;
     });
     dialog.querySelector('[data-recorder-stop]').addEventListener('click', () => stopRecording());
+    dialog.querySelector('[data-recorder-select-recommended]').addEventListener('click', selectRecommendedRecordedEvents);
+    dialog.querySelector('[data-recorder-select-all]').addEventListener('click', () => {
+      dialog.querySelectorAll('[data-recorder-accept]').forEach((box) => { box.checked = true; });
+      updateRecorderSelectionSummary();
+    });
+    dialog.querySelector('[data-recorder-exclude-finishing]').addEventListener('click', excludeRecordedFinishingSequence);
     dialog.querySelector('[data-recorder-import]').addEventListener('click', () => importRecordedEvents());
     dialog.addEventListener('close', () => {
       stopRecorderPolling();
@@ -3828,6 +3875,7 @@
     dialog.querySelector('[data-copilot-cancel]').hidden = view !== 'progress';
     dialog.querySelector('[data-copilot-apply]').hidden = view !== 'review';
     dialog.querySelector('[data-copilot-signin]').hidden = view === 'review';
+    dialog.querySelector('[data-copilot-selection-summary]').hidden = view !== 'review';
   };
 
   // 同じ目印の要素が各ビューにあるため、まとめて書き換える。
@@ -3843,18 +3891,35 @@
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
+  const updateCopilotSelectionSummary = () => {
+    const dialog = copilotDraft.dialog;
+    if (!dialog) return;
+    const items = [...dialog.querySelectorAll('[data-copilot-draft-item]')];
+    const selected = items.filter((item) => item.querySelector('[data-copilot-accept]')?.checked).length;
+    const needsReview = items.filter((item) => item.dataset.dropped === 'true'
+      || item.dataset.uncertain === 'true' || item.dataset.visualUncertain === 'true').length;
+    const summary = dialog.querySelector('[data-copilot-selection-summary]');
+    summary.textContent = `${selected}/${items.length}件を反映${needsReview ? `・要確認 ${needsReview}件` : ''}`;
+  };
+
   // 下書きを1件ずつ確認できる形で並べる。
   // 既に文章がある手順は、何がどう変わるかが分かるように今の内容も出す。
   const renderCopilotDrafts = (drafts) => {
     const list = copilotDraft.dialog.querySelector('[data-copilot-list]');
+    // imgタグでは認証ヘッダーを送れないため、提案画像のURLにもセッショントークンを付ける。
+    const token = sessionHeaders()['X-Manual-Token'] || '';
     if (drafts.length === 0) {
       list.innerHTML = '<p class="copilot-empty">採用できる下書きがありませんでした。</p>';
+      updateCopilotSelectionSummary();
       return;
     }
     list.innerHTML = drafts.map((draft, index) => {
       const review = copilotDraft.mode === 'review';
       const uncertain = draft.confident === false;
-      const visualUncertain = Boolean(draft.targetCandidateId) && draft.visualConfident === false;
+      // 画像があるのに赤枠候補が無い手順も要確認にする。
+      // 「文章と赤枠を反映」が初期選択のままだと、確認していない画像まで確定したように見える。
+      const visualUncertain = !review && Boolean(draft.imageId)
+        && (!draft.targetCandidateId || draft.visualConfident === false);
       const dropped = draft.keep === false;
       const flags = [];
       if (draft.kind) flags.push(`<span class="copilot-flag copilot-flag--kind">${escapeHtml(draft.kind)}</span>`);
@@ -3899,6 +3964,10 @@ ${review ? current + reason : reason + current}
 <span class="copilot-draft__index">${index + 1}</span>
 </article>`;
     }).join('');
+    list.querySelectorAll('[data-copilot-accept]').forEach((box) => {
+      box.addEventListener('change', updateCopilotSelectionSummary);
+    });
+    updateCopilotSelectionSummary();
   };
 
   const applyCopilotDrafts = async () => {
@@ -4078,6 +4147,7 @@ ${review ? current + reason : reason + current}
       + '</div>'
       + '<footer class="copilot-dialog__footer">'
       + '<button type="button" class="button button--ghost" data-copilot-signin>Copilotの画面を開く</button>'
+      + '<span class="copilot-dialog__selection-summary" data-copilot-selection-summary hidden></span>'
       + '<span class="excel-export-dialog__spacer"></span>'
       + '<button type="button" class="button button--ghost" data-copilot-cancel hidden>中止</button>'
       + '<button type="button" class="button button--ghost" data-copilot-close>閉じる</button>'

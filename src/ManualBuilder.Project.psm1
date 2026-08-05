@@ -45,6 +45,7 @@ function New-MbStepCapture {
         targetConfidence = ''   # high / medium / low。空は古いデータ
         targetCandidateId = ''  # 現在採用している候補
         targetCandidates = @()  # Copilotが選び直せる、正規化矩形つきの候補
+        clickPoint       = $null # 画像内のクリック位置（x, y は0〜1）。場面と赤枠のアンカー
     }
 }
 
@@ -64,6 +65,9 @@ function New-MbStep {
         description = ''
         note        = ''
         imageId     = $null
+        resultImageId = $null
+        imageLayout = 'before'
+        imageOrder  = 'before-after'
         videoId     = $null
         annotations = @()
         crop        = [pscustomobject]@{ x = 0.0; y = 0.0; width = 1.0; height = 1.0 }
@@ -152,6 +156,10 @@ function Repair-MbProject {
             Add-MbPropertyIfMissing $step 'description' ''
             Add-MbPropertyIfMissing $step 'note' ''
             Add-MbPropertyIfMissing $step 'imageId' $null
+            Add-MbPropertyIfMissing $step 'resultImageId' $null
+            $defaultImageLayout = if (-not [string]::IsNullOrWhiteSpace([string]$step.resultImageId)) { 'side-by-side' } else { 'before' }
+            Add-MbPropertyIfMissing $step 'imageLayout' $defaultImageLayout
+            Add-MbPropertyIfMissing $step 'imageOrder' 'before-after'
             Add-MbPropertyIfMissing $step 'videoId' $null
             Add-MbPropertyIfMissing $step 'annotations' @()
             Add-MbPropertyIfMissing $step 'crop' ([pscustomobject]@{ x = 0.0; y = 0.0; width = 1.0; height = 1.0 })
@@ -178,6 +186,7 @@ function Repair-MbProject {
                 Add-MbPropertyIfMissing $step.capture 'targetConfidence' ''
                 Add-MbPropertyIfMissing $step.capture 'targetCandidateId' ''
                 Add-MbPropertyIfMissing $step.capture 'targetCandidates' @()
+                Add-MbPropertyIfMissing $step.capture 'clickPoint' $null
                 $step.capture.targetCandidates = @($step.capture.targetCandidates)
             }
             if ($null -eq $step.review) {
@@ -228,6 +237,12 @@ function Test-MbProject {
             [void](Get-MbText -Value $step.title -MaxLength 100 -FieldName '手順タイトル')
             [void](Get-MbText -Value $step.description -MaxLength 4000 -FieldName '説明')
             [void](Get-MbText -Value $step.note -MaxLength 2000 -FieldName '補足')
+            if ([string]$step.imageLayout -notin @('before', 'after', 'side-by-side', 'stacked')) {
+                throw '画像の見せ方が不正です。'
+            }
+            if ([string]$step.imageOrder -notin @('before-after', 'after-before')) {
+                throw '画像の並び順が不正です。'
+            }
             if ([bool]$step.review.required) {
                 if ([string]$step.review.action -notin @('review', 'delete')) { throw '要確認の操作が不正です。' }
                 [void](Get-MbText -Value $step.review.reason -MaxLength 500 -FieldName '要確認の理由')
@@ -271,6 +286,7 @@ function Test-MbProject {
                 if ([string]$annotation.type -ne 'number' -and $label -ne 0) { throw '番号以外の注釈ラベルが不正です。' }
             }
             if ($step.imageId) { [void]$referencedImageIds.Add([string]$step.imageId) }
+            if ($step.resultImageId) { [void]$referencedImageIds.Add([string]$step.resultImageId) }
             if ($step.videoId) { [void]$referencedVideoIds.Add([string]$step.videoId) }
         }
     }
@@ -292,7 +308,7 @@ function Test-MbProject {
         if (-not $imageIds.Contains($imageId)) { throw "手順が参照する画像が見つかりません: $imageId" }
     }
 
-    # 動画はExcelとHTMLの出力から再生する。共有フォルダーへ置ける大きさに収めるため、
+    # 動画はExcel出力から再生する。扱いやすい大きさに収めるため、
     # 1本30MB・1マニュアル50本までとする。
     if (@($Project.videos).Count -gt 50) { throw '動画は1マニュアル50本までです。' }
     $videoIds = New-Object 'System.Collections.Generic.HashSet[string]'
@@ -546,6 +562,25 @@ function Get-MbStepById {
     return $null
 }
 
+function Set-MbStepImageLayout {
+    param(
+        [Parameter(Mandatory = $true)][object]$Project,
+        [Parameter(Mandatory = $true)][string]$StepId,
+        [ValidateSet('before', 'after', 'side-by-side', 'stacked')][string]$Layout,
+        [ValidateSet('before-after', 'after-before')][string]$Order = 'before-after'
+    )
+    $step = Get-MbStepById -Project $Project -StepId $StepId
+    if (-not $step) { throw '対象手順が見つかりません。' }
+    $hasResult = -not [string]::IsNullOrWhiteSpace([string]$step.resultImageId)
+    if (-not $hasResult -and $Layout -ne 'before') {
+        throw '2枚目の画像を追加してから見せ方を選んでください。'
+    }
+    $step.imageLayout = $Layout
+    $step.imageOrder = $Order
+    $step.updatedAt = Get-MbUtcTimestamp
+    return $step
+}
+
 # 録画から取り込んだ情報を手順へ書き込む。文章は触らない。
 function Set-MbStepCapture {
     param(
@@ -561,7 +596,8 @@ function Set-MbStepCapture {
         [AllowEmptyString()][string]$TargetSource = '',
         [ValidateSet('', 'high', 'medium', 'low')][string]$TargetConfidence = '',
         [AllowEmptyString()][string]$TargetCandidateId = '',
-        [AllowEmptyString()][string]$TargetCandidatesJson = ''
+        [AllowEmptyString()][string]$TargetCandidatesJson = '',
+        [AllowEmptyString()][string]$ClickPointJson = ''
     )
 
     $target = Get-MbStepById -Project $Project -StepId $StepId
@@ -579,6 +615,22 @@ function Set-MbStepCapture {
     $target.capture.targetSource = Get-MbText -Value $TargetSource -MaxLength 40 -FieldName '操作対象の取得元'
     $target.capture.targetConfidence = $TargetConfidence
     $target.capture.targetCandidateId = Get-MbText -Value $TargetCandidateId -MaxLength 80 -FieldName '操作対象候補'
+    if (-not [string]::IsNullOrWhiteSpace($ClickPointJson)) {
+        $parsedPoint = $null
+        try { $parsedPoint = $ClickPointJson | ConvertFrom-Json } catch { throw 'クリック位置を読み取れません。' }
+        if ($null -eq $parsedPoint -or $parsedPoint.PSObject.Properties.Name -notcontains 'x' -or
+            $parsedPoint.PSObject.Properties.Name -notcontains 'y') { throw 'クリック位置が正しくありません。' }
+        $pointX = [double]$parsedPoint.x
+        $pointY = [double]$parsedPoint.y
+        if ([double]::IsNaN($pointX) -or [double]::IsInfinity($pointX) -or
+            [double]::IsNaN($pointY) -or [double]::IsInfinity($pointY) -or
+            $pointX -lt 0 -or $pointX -gt 1 -or $pointY -lt 0 -or $pointY -gt 1) {
+            throw 'クリック位置が画像の範囲外です。'
+        }
+        $target.capture.clickPoint = [pscustomobject]@{
+            x = [Math]::Round($pointX, 6); y = [Math]::Round($pointY, 6)
+        }
+    }
     if (-not [string]::IsNullOrWhiteSpace($TargetCandidatesJson)) {
         $parsedCandidates = $null
         try { $parsedCandidates = $TargetCandidatesJson | ConvertFrom-Json } catch { throw '操作対象候補を読み取れません。' }
@@ -924,6 +976,7 @@ Export-ModuleMember -Function @(
     'New-MbStepCapture',
     'New-MbStepReview',
     'Get-MbStepById',
+    'Set-MbStepImageLayout',
     'Test-MbNormalizedRect',
     'Set-MbStepCapture',
     'Set-MbStepDraft',

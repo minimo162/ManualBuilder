@@ -41,7 +41,6 @@ $required = @(
     'src\Export-ManualBuilderExcel.ps1',
     'src\ManualBuilder.Word.psm1',
     'src\Export-ManualBuilderWord.ps1',
-    'src\ManualBuilder.Html.psm1',
     'src\ManualBuilder.Ocr.psm1',
     'src\ManualBuilder.Copilot.psm1',
     'src\ManualBuilder.CopilotJob.psm1',
@@ -82,7 +81,6 @@ $projectModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuil
 $webModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.Web.psm1'), [Text.Encoding]::UTF8)
 $excelModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.Excel.psm1'), [Text.Encoding]::UTF8)
 $wordModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.Word.psm1'), [Text.Encoding]::UTF8)
-$htmlModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.Html.psm1'), [Text.Encoding]::UTF8)
 $cssText = [IO.File]::ReadAllText((Join-Path $repoRoot 'web\assets\css\app.css'), [Text.Encoding]::UTF8)
 $jsText = [IO.File]::ReadAllText((Join-Path $repoRoot 'web\assets\js\app.js'), [Text.Encoding]::UTF8)
 $indexText = [IO.File]::ReadAllText((Join-Path $repoRoot 'web\index.html'), [Text.Encoding]::UTF8)
@@ -105,7 +103,7 @@ Add-Result (($serverText -match '\$projectReady = \$false') -and ($serverText -m
 Add-Result ($serverText -match '\$storageLayout\.RuntimePath') '二重起動情報をユーザーデータ配下へ置く'
 Add-Result ($serverText -match '\$storageLayout\.ExportJobsRoot') 'Office一時ジョブをユーザーデータ配下へ置く'
 Add-Result (($runCommandText -match '%~dp0src\\Start-ManualBuilderLauncher\.ps1') -and ($runCommandText -notmatch '(?im)^cd /d')) 'UNC共有フォルダーから更新ランチャーを起動できる'
-Add-Result ([string]$appVersionManifest.appVersion -eq '0.37.0') '配布用アプリバージョンを0.37.0へ更新する'
+Add-Result ([string]$appVersionManifest.appVersion -eq '0.38.9') '配布用アプリバージョンを0.38.9へ更新する'
 Add-Result ($workspaceModuleText -notmatch "ManualBuilder\.Project\.psm1'\) -Force") 'WorkspaceがProjectコマンドを強制再読込しない'
 Add-Result ($launcherModuleText -match "'ManualBuilder\\app'") 'アプリ実行コードをLocalApplicationDataへキャッシュする'
 Add-Result ($launcherModuleText -match "@\('src', 'web', 'run\.cmd', 'app-version\.json'\)") 'キャッシュ対象からプロジェクトデータを除外する'
@@ -139,30 +137,10 @@ Add-Result ($serverText -match '/api/videos/detach') '手順から動画を外�
 Add-Result (($captureModuleText -match "'videos'") -and ($projectModuleText -match "'videos'")) '動画を画像とは別に保存する'
 Add-Result ($projectModuleText -match 'videoId') '手順に動画の紐づけを持つ'
 Add-Result ($serverText -match "media-src 'self' blob:") '動画ダイアログのblob:再生をCSPで止めない'
-Add-Result ($serverText -match "/api/export/html'") 'HTML出力APIを実装する'
-Add-Result (($webModuleText -match 'data-open-export-dialog') -and ($jsText -match 'data-output-format="html"')) 'HTML出力の入口を画面へ置く'
-Add-Result ($htmlModuleText -notmatch '(?i)ComObject') 'HTML出力はCOMを使わない'
-Add-Result ($htmlModuleText -match 'New-MbAnnotatedImage') 'HTMLも注釈を画像へ焼き込む'
-Add-Result ($htmlModuleText -match '@media print') 'HTMLに印刷用の指定を入れる'
-Add-Result ($htmlModuleText -match 'HtmlEncode') 'HTMLへ出す文字列をエスケープする'
-Add-Result ($htmlModuleText -match "'_source'") 'HTML出力に元データを同梱する'
-Add-Result ($htmlModuleText -match "IO\.FileAttributes\]::Hidden") '同梱する元データを隠しフォルダーにする'
-Add-Result ($htmlModuleText -match "'_source/videos/'") '動画は元データの1本だけを参照する'
-Add-Result (($htmlModuleText -match 'マニュアルを開く\.cmd') -and ($htmlModuleText -match '編集する\.cmd')) '配布フォルダーへ操作用の.cmdを入れる'
-Add-Result ($htmlModuleText -match 'msedge\.exe') '共有フォルダーのHTMLをEdgeで開く（IEモードを避ける）'
-Add-Result ($htmlModuleText -match '-ImportFrom "%~dp0_source"') '「編集する.cmd」から元データを取り込む'
-Add-Result ($htmlModuleText -match 'GetEncoding\(932\)') '.cmdはcmdが読める文字コードで書く'
-Add-Result ($htmlModuleText -notmatch "yyyyMMdd_HHmmss") '出力フォルダー名に日付を付けない'
-Add-Result ($htmlModuleText -match 'Copy-MbHtmlManualFolder') '共有フォルダーへ反映する処理を持つ'
-Add-Result ($htmlModuleText -match '\.mb-publish-') '反映は別名でコピーしてから差し替える'
-Add-Result ($serverText -match "/api/export/html/publish'") '共有フォルダーへの反映APIを実装する'
-Add-Result ($serverText -match "FOLDER_EXISTS") '同じ名前のフォルダーは確認してから作り直す'
-Add-Result (($serverText -match '\[string\]\$ImportFrom') -and ($serverText -match '\[string\]\$PublishTo')) '「編集する.cmd」からの起動を受け取る'
-Add-Result ($serverText -match 'Import-MbCatalogProjectFolder') '配布フォルダーの元データを起動時に取り込む'
-Add-Result (($launcherText -match '\[string\]\$ImportFrom') -and ($launcherText -match '@startArguments')) 'ランチャーが取り込み指定を受け渡す'
-Add-Result ($workspaceModuleText -match 'Find-MbCatalogProjectById') '同じマニュアルを二重に取り込まない'
-Add-Result ($workspaceModuleText -match 'publishTargets') 'マニュアルごとの反映先を覚える'
-Add-Result ($jsText -match 'data-html-publish') '完了画面から共有フォルダーへ反映できる'
+Add-Result (-not (Test-Path -LiteralPath (Join-Path $repoRoot 'src\ManualBuilder.Html.psm1'))) 'HTMLファイル出力モジュールを廃止する'
+Add-Result (($serverText -notmatch '/api/export/html') -and ($jsText -notmatch 'data-output-format="html"')) 'HTML出力のAPIと画面導線を残さない'
+Add-Result (($serverText -notmatch 'Get-MbPublishTarget|Set-MbPublishTarget') -and ($jsText -notmatch 'data-html-publish')) '共有フォルダーへの自動反映を廃止する'
+Add-Result (($serverText -notmatch '\[string\]\$ImportFrom|\[string\]\$PublishTo') -and ($launcherText -notmatch '\[string\]\$ImportFrom|\[string\]\$PublishTo')) '配布済みHTMLからの自動取り込みを廃止する'
 Add-Result ($jsText -match 'data-export-video-note') '動画つきならExcelの完了画面で知らせる'
 Add-Result ($excelModuleText -match 'Get-MbExcelVideoPlan') '動画つきの手順をExcel出力でも扱う'
 Add-Result ($excelModuleText -match 'MbExcelVideoFolderName') 'Excelの動画を決まったフォルダーへまとめる'
@@ -184,21 +162,11 @@ Add-Result (($excelModuleText -match '\$videoCell\.Interior\.Color = \$colorAcce
 # 「フォルダーごとコピー」とだけ書いても次の操作へつながらないため、案内文はボタン名で指す。
 Add-Result (($jsText -match 'フォルダーを開く』?」から') -or ($jsText -match '「フォルダーを開く」から')) '配布の案内から次に押すボタンへつなぐ'
 Add-Result ($jsText -match "folderButton\.textContent = outputFolderName \? 'フォルダーを開く'") 'フォルダー出力のときはボタン名も「フォルダーを開く」にする'
-# New-MbAnnotatedImage は焼き込みが不要だと元画像のパスを返し、出力先へは書かない。
-# 戻り値を捨てると、注釈を付けていない手順の画像がすべてリンク切れになる。
-Add-Result ($htmlModuleText -notmatch '\[void\]\(New-MbAnnotatedImage') 'HTML出力で焼き込み結果の戻り値を捨てない'
-Add-Result ($htmlModuleText -match '\$renderedPath = New-MbAnnotatedImage') 'HTML出力は焼き込み結果のパスを見て画像を置く'
-Add-Result ($htmlModuleText -match '画像を出力できませんでした') '画像が出力できていなければ気付けるようにする'
-Add-Result (($htmlModuleText -match "Import-Module \(Join-Path \`$PSScriptRoot 'ManualBuilder\.Excel\.psm1'\)") -and
-    ($htmlModuleText -match "Import-Module \(Join-Path \`$PSScriptRoot 'ManualBuilder\.Capture\.psm1'\)")) 'HTMLモジュールが借りているコマンドを明示して読み込む'
 # OneDriveやウイルス対策が書いたばかりのファイルを掴んでいると、移動がアクセス拒否で失敗する。
 Add-Result ($excelModuleText -match 'function Move-MbDirectorySafely') 'フォルダーの移動を待って試し直せるようにする'
-Add-Result ($htmlModuleText -notmatch '\[IO\.Directory\]::Move') 'HTML出力の差し替えは再試行つきの移動を使う'
 Add-Result ($excelModuleText -notmatch '\[IO\.Directory\]::Move\(\$stagingDirectory') 'Excelのフォルダー出力も再試行つきの移動を使う'
-# 差し替えに失敗して元へ戻せなかった場合、退避先が前の内容の唯一の実体になる。
-Add-Result ($htmlModuleText -match '\$moveCompleted -and \$replacedMoved') '差し替えを終えたときだけ前のフォルダーを消す'
 Add-Result ($excelModuleText -match 'Set-MbExcelEdgeBorder -Range \$videoCell') '動画ボタンを白い余白で囲んで帯に見せない'
-Add-Result (($webModuleText -match 'data-open-export-dialog') -and ($jsText -match 'output-review-dialog') -and ($jsText -match 'data-output-format="excel"') -and ($jsText -match 'data-output-format="word"') -and ($jsText -match 'data-output-format="html"')) 'Excel・Word・HTMLを出力前確認へまとめる'
+Add-Result (($webModuleText -match 'data-open-export-dialog') -and ($jsText -match 'output-review-dialog') -and ($jsText -match 'data-output-format="excel"') -and ($jsText -match 'data-output-format="word"') -and ($jsText -notmatch 'data-output-format="html"')) 'Excel主出力とWord副出力だけを出力前確認へまとめる'
 Add-Result ($serverText -match '/api/steps/reorder') '手順並べ替えAPIを実装する'
 Add-Result ($serverText -match '/api/sheets/reorder') 'シート並べ替えAPIを実装する'
 Add-Result ($serverText -match '/api/steps/move') '手順のシート移動APIを実装する'
@@ -250,7 +218,10 @@ Add-Result (($excelModuleText -match '\$descriptionEnd = \[Math\]::Min\(\$conten
 Add-Result (($excelModuleText -match '\$maximumImageScale = 1\.5') -and ($excelModuleText -match 'MaximumDisplayScale 1\.5')) 'Excelで小さな元画像の拡大を最大1.5倍に抑える'
 Add-Result (($excelModuleText -match '\$compactImageWidthRatio = if .*?-ge 3\.0.*?0\.85') -and ($excelModuleText -match '\$compactImageHeightRatio = if .*?-ge 3\.0.*?0\.85') -and ($excelModuleText -match '\$renderTargetWidth = if .*?646.*?760') -and ($excelModuleText -match '\$renderTargetHeight = if .*?620.*?880')) 'Excelで極端に細長い画像を長辺方向85%へ抑える'
 Add-Result ($excelModuleText -match 'if \(\$hasNote\)') '補足がある場合だけExcelへ補足欄を出す'
-Add-Result ($excelModuleText -match '\$startRow = if \(\[string\]::IsNullOrWhiteSpace\(\$summaryText\)\) \{ 2 \} else \{ 3 \}') '空のシート概要で不要な行を残さない'
+Add-Result ($excelModuleText -match '使い方　シート名をクリックして開き') 'Excel目次に最初の読み方を表示する'
+Add-Result (($excelModuleText -match '\$sheetTitle\.Value2 = .*?\{0:D2\}') -and ($excelModuleText -match '全 \$stepCount 手順') -and ($excelModuleText -match '\$startRow = 3')) '各Excelシートでセクション番号と総手順数を表示する'
+Add-Result (($excelModuleText -match '\$descriptionLabel\.Value2 = ''操作''') -and ($excelModuleText -match '\$noteLabel\.Value2 = ''！ ポイント・注意''')) 'Excelの操作本文と注意情報を見分けやすくする'
+Add-Result (($excelModuleText -match 'Set-MbExcelPrintLayout') -and ($excelModuleText -match 'FitToPagesWide = 1') -and ($excelModuleText -match 'CenterFooter = ''&P / &N''') -and ($excelModuleText -match 'RepeatRows ''\$1:\$2''')) 'Excelを1ページ幅・見出し繰り返し・ページ番号つきで印刷できる'
 Add-Result (($excelModuleText -match '\$titleRange\.Interior\.Color = \$colorAccentDark') -and ($excelModuleText -match '\$sheetHeader\.Interior\.Color = \$colorWhite') -and ($excelModuleText -match '\$sheetHeader.*-Weight -4138')) 'Excelの濃紺を目次に限定して手順見出しを軽くする'
 Add-Result (($excelModuleText -match 'NumberFormat = .*STEP.*00') -and ($excelModuleText -match '\$headerBand\.Interior\.Color = \$colorWhite')) 'Excel手順カードへ白地の見出し階層を付ける'
 Add-Result ($excelModuleText -notmatch 'Weight 3') 'Excel罫線に未定義のWeight 3を使用しない'
@@ -259,8 +230,6 @@ Add-Result ($excelModuleText -notmatch '\[IO\.File\]::Replace\([^\r\n]*\$null') 
 Add-Result ($serverText -notmatch '\[IO\.File\]::Replace\([^\r\n]*\$null') 'サーバー進捗JSONを有効なバックアップパスで置換する'
 Add-Result (($launcherText -match 'Start-Process \$url') -and
     ($serverText -match 'Start-Process \$existingUrl')) '二重起動時に既存のManualBuilderをブラウザーで開き直す'
-Add-Result (($launcherText -match 'ManualBuilderを終了してから、もう一度「編集する」を実行してください') -and
-    ($serverText -match 'ManualBuilderを終了してから、もう一度「編集する」を実行してください')) '共有HTMLの編集時は既存画面で終了してから再実行するよう案内する'
 Add-Result ($projectModuleText -match "'Remove-MbSheet'") '承認済み動詞のシート削除コマンドを公開する'
 Add-Result ($projectModuleText -match "'Remove-MbStep'") '承認済み動詞の手順削除コマンドを公開する'
 Add-Result ($projectModuleText -match "'Set-MbStepAnnotations'") '注釈保存コマンドを公開する'
@@ -285,7 +254,7 @@ Add-Result (($webModuleText -match 'step-nav__status" role="img"') -and ($cssTex
 Add-Result (($webModuleText -match 'step-card--no-image') -and ($cssText -match '\.step-card--no-image \.image-placeholder')) '画像なし手順の空白を縮小する'
 Add-Result (($webModuleText -match 'data-add-image-to-step') -and ($jsText -match 'step-card--active \.image-placeholder')) '空の手順へ画像を直接追加できる'
 Add-Result (($jsText -match "replaceStepImage\(file, emptyCard\.dataset\.stepId, 'paste'\)") -and ($jsText -match "replaceStepImage\(supported\[0\], emptyCard\.dataset\.stepId, 'drop'\)")) '空の手順へ貼り付けとドロップで画像を設定する'
-Add-Result (($webModuleText -match 'aria-label="画像の操作"') -and ($cssText -match '\.image-edit-actions\s*\{[^}]*position:\s*absolute')) '画像上に編集操作を配置する'
+Add-Result (($webModuleText -match 'aria-label="画像の操作"') -and ($cssText -match '\.image-edit-actions\s*\{[^}]*position:\s*relative')) '比較画像を隠さない位置へ編集操作を配置する'
 Add-Result ($webModuleText -notmatch '次の工程で接続') '未実装を示す古い案内を表示しない'
 Add-Result ($webModuleText -match 'data-step-nav-drag-handle') '左ナビへ手順のドラッグ操作を表示する'
 Add-Result ($webModuleText -match 'data-sheet-nav-drag-handle') '左ナビへシートのドラッグ操作を表示する'
@@ -309,6 +278,8 @@ Add-Result ($webModuleText -match 'data-step-jump') '手順ナビゲーション
 Add-Result ($webModuleText -match 'data-open-annotation') '画像へ注釈編集ボタンを表示する'
 Add-Result ($webModuleText -match '赤枠・番号・切り抜き・矢印・黒塗り') '画像編集機能を見つけやすく表示する'
 Add-Result (($webModuleText -match '>赤枠・番号を追加<') -and ($webModuleText -match 'aria-label="画像の操作"')) '画像編集を明確な主操作として表示する'
+Add-Result (($webModuleText -match 'data-image-layout-option') -and ($serverText -match '/api/steps/image-layout') -and ($jsText -match 'saveStepImageLayout')) '画像の配置選択を保存する'
+Add-Result (($webModuleText -match 'data-add-result-image') -and ($serverText -match '/api/images/result') -and ($jsText -match 'setStepResultImage')) '手順へ比較画像を追加する'
 Add-Result ($webModuleText -match 'data-replace-image') '画像差し替え操作を手順カードへ表示する'
 Add-Result ($webModuleText -match 'data-undo-image-replace') '元画像へ戻す操作を手順カードへ表示する'
 Add-Result ($webModuleText -match 'replacement-image-file-input') '差し替え画像の選択入力を実装する'
@@ -480,6 +451,17 @@ Add-Result ($webModuleText -match 'data-copilot-review') '文章を整えるを�
 Add-Result ($jsText -match "copilotDraft.mode === 'review'") '下書きと校正で画面の出し分けをする'
 Add-Result ($serverText -notmatch 'PowerPoint') 'PowerPoint出力を持たない'
 Add-Result ($jsText -notmatch '(?i)powerpoint') '画面にPowerPoint出力が残っていない'
+
+$excelWorkerText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\Export-ManualBuilderExcel.ps1'), [Text.Encoding]::UTF8)
+Add-Result ($excelWorkerText.Contains("Import-Module (Join-Path `$PSScriptRoot 'ManualBuilder.Capture.psm1') -Force")) `
+    'Excel出力の子プロセスが操作前・操作後画像の解決関数を読み込む'
+Add-Result ($copilotModuleText.Contains('Clear-MbCopilotAttachmentState') -and
+    $copilotModuleText.Contains('残存した添付状態を完全に消すためCopilot画面を再読込します。')) `
+    'Copilot依頼前に前回の添付画像と上限警告を消す'
+$copilotWorkerText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\Invoke-ManualBuilderCopilotJob.ps1'), [Text.Encoding]::UTF8)
+Add-Result ($copilotWorkerText.Contains('$jobFileTag') -and
+    $copilotWorkerText.Contains("'mb-{0}-p{1:d2}-step-{2:d3}.jpg'")) `
+    'Copilotの再実行で同じ添付ファイル名を使わない'
 
 # 入口スクリプトが呼ぶ関数が、その場で解決できることを確かめる。
 #

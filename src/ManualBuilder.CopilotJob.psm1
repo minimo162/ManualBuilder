@@ -53,6 +53,8 @@ function Get-MbCopilotStepList {
             $order++
             $indexInSheet++
             $imageEntry = @($Project.images | Where-Object { [string]$_.id -eq [string]$step.imageId }) | Select-Object -First 1
+            $resultImageId = if ($step.PSObject.Properties.Name -contains 'resultImageId') { [string]$step.resultImageId } else { '' }
+            $resultImageEntry = @($Project.images | Where-Object { [string]$_.id -eq $resultImageId }) | Select-Object -First 1
             [void]$list.Add([pscustomobject]@{
                 id           = [string]$step.id
                 sheetId      = [string]$sheet.id
@@ -63,8 +65,11 @@ function Get-MbCopilotStepList {
                 description  = [string]$step.description
                 note         = [string]$step.note
                 imageId      = [string]$step.imageId
+                resultImageId = $resultImageId
                 imageWidth   = $(if ($null -ne $imageEntry) { [int]$imageEntry.width } else { 0 })
                 imageHeight  = $(if ($null -ne $imageEntry) { [int]$imageEntry.height } else { 0 })
+                resultImageWidth = $(if ($null -ne $resultImageEntry) { [int]$resultImageEntry.width } else { 0 })
+                resultImageHeight = $(if ($null -ne $resultImageEntry) { [int]$resultImageEntry.height } else { 0 })
                 annotations  = @($step.annotations)
                 crop         = $step.crop
                 clickLabel   = [string](Get-MbStepCaptureValue -Step $step -Name 'clickLabel')
@@ -77,6 +82,7 @@ function Get-MbCopilotStepList {
                 targetConfidence = [string](Get-MbStepCaptureValue -Step $step -Name 'targetConfidence')
                 targetCandidateId = [string](Get-MbStepCaptureValue -Step $step -Name 'targetCandidateId')
                 targetCandidates = @((Get-MbStepCaptureValue -Step $step -Name 'targetCandidates' -Default @()))
+                clickPoint       = Get-MbStepCaptureValue -Step $step -Name 'clickPoint' -Default $null
             })
         }
     }
@@ -101,6 +107,7 @@ function Get-MbCopilotPackets {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Steps,
         [int]$StepsPerPacket = 6,
+        [int]$MaxAttachmentsPerPacket = 0,
         [switch]$IncludeWritten,
         [ValidateSet('draft', 'review')][string]$Mode = 'draft'
     )
@@ -119,9 +126,25 @@ function Get-MbCopilotPackets {
         })
     }
     $packets = New-Object System.Collections.ArrayList
-    for ($i = 0; $i -lt $targets.Count; $i += $StepsPerPacket) {
-        $count = [Math]::Min($StepsPerPacket, $targets.Count - $i)
-        [void]$packets.Add(@($targets[$i..($i + $count - 1)]))
+    $current = New-Object System.Collections.ArrayList
+    $currentAttachmentCount = 0
+    foreach ($target in $targets) {
+        $attachmentCount = if ($Mode -eq 'review') { 0 } else {
+            1 + $(if (-not [string]::IsNullOrWhiteSpace([string]$target.resultImageId)) { 1 } else { 0 })
+        }
+        $wouldOverflowSteps = $current.Count -ge $StepsPerPacket
+        $wouldOverflowAttachments = $MaxAttachmentsPerPacket -gt 0 -and $current.Count -gt 0 -and
+            ($currentAttachmentCount + $attachmentCount) -gt $MaxAttachmentsPerPacket
+        if ($wouldOverflowSteps -or $wouldOverflowAttachments) {
+            [void]$packets.Add(@($current))
+            $current = New-Object System.Collections.ArrayList
+            $currentAttachmentCount = 0
+        }
+        [void]$current.Add($target)
+        $currentAttachmentCount += $attachmentCount
+    }
+    if ($current.Count -gt 0) {
+        [void]$packets.Add(@($current))
     }
     # パケットが1件だけでも、その中の手順をPowerShellのパイプラインで平坦化しない。
     # 呼び出し側は常に「パケットの配列」として件数と添付単位を扱う。
@@ -134,6 +157,7 @@ function New-MbCopilotStepPrompt {
         [Parameter(Mandatory = $true)]$Project,
         [Parameter(Mandatory = $true)][object[]]$PacketSteps,
         [Parameter(Mandatory = $true)][hashtable]$AttachmentNames,
+        [hashtable]$ResultAttachmentNames = @{},
         [object[]]$StyleSamples = @(),
         [int]$TotalSteps = 0,
         [string]$Marker = 'MB_END'
@@ -148,14 +172,19 @@ function New-MbCopilotStepPrompt {
     [void]$builder.AppendLine()
 
     [void]$builder.AppendLine('## 今回書いてほしい手順')
-    [void]$builder.AppendLine('添付画像は録画時刻順です。各画像を単独で決めず、直前・直後の画像と比較して、操作前の状態、操作、結果のつながりを確認してください。')
+    [void]$builder.AppendLine('各手順の「操作前」と「操作後の結果」がある場合は必ず比較し、何を押して何が表示されたかを確認してください。結果画像がない手順は、前後の手順から推測しすぎないでください。')
     [void]$builder.AppendLine('添付画像の番号付き枠は、DOM、UI Automation、OCR、または動画差分から得た操作対象の候補です。いずれも誤る可能性があり、確定した事実ではありません。')
     [void]$builder.AppendLine('候補の意味が画面と操作内容に一致するかを確認し、列挙された候補IDか none を選んでください。座標は生成しないでください。')
+    [void]$builder.AppendLine('click-point候補は実際に観測したクリック座標の小枠です。UIA候補が低信頼で横長の親要素を指し、click-pointが画面上の項目に合う場合はclick-pointを優先してください。')
     [void]$builder.AppendLine()
     foreach ($step in $PacketSteps) {
         $name = [string]$AttachmentNames[[string]$step.id]
         [void]$builder.AppendLine(('### ' + [string]$step.id))
-        [void]$builder.AppendLine(('添付画像: ' + $name))
+        [void]$builder.AppendLine(('添付画像（操作前）: ' + $name))
+        $resultName = [string]$ResultAttachmentNames[[string]$step.id]
+        if (-not [string]::IsNullOrWhiteSpace($resultName)) {
+            [void]$builder.AppendLine(('添付画像（操作後の結果）: ' + $resultName))
+        }
         [void]$builder.AppendLine(('シート: ' + [string]$step.sheetName + '（このシートの ' + [string]$step.indexInSheet + ' 番目）'))
         $timeCode = Format-MbTimeCode -Milliseconds ([int]$step.videoTimeMs)
         if (-not [string]::IsNullOrWhiteSpace($timeCode)) {
@@ -166,6 +195,11 @@ function New-MbCopilotStepPrompt {
         }
         if (-not [string]::IsNullOrWhiteSpace([string]$step.clickLabel)) {
             [void]$builder.AppendLine(('アプリが暫定選択した操作対象: ' + [string]$step.clickLabel))
+        }
+        if ($null -ne $step.clickPoint -and $step.clickPoint.PSObject.Properties.Name -contains 'x' -and
+            $step.clickPoint.PSObject.Properties.Name -contains 'y') {
+            [void]$builder.AppendLine(('観測したクリック位置（画像内0〜1）: x={0}, y={1}' -f
+                [double]$step.clickPoint.x, [double]$step.clickPoint.y))
         }
         $visualCandidates = @($step.targetCandidates)
         if ($visualCandidates.Count -gt 0) {
@@ -205,7 +239,8 @@ function New-MbCopilotStepPrompt {
 
     [void]$builder.AppendLine('## 書き方の決まり')
     [void]$builder.AppendLine('- 手順名は体言止めで20文字以内。')
-    [void]$builder.AppendLine('- 説明は「〜します。」の敬体。操作の文と、その結果どうなるかの文で、2文までにする。')
+    [void]$builder.AppendLine('- 説明は「〜します。」の敬体で、原則として操作を表す1文にする。')
+    [void]$builder.AppendLine('- 操作の成否を利用者が確認すべき変化だけ、結果を2文目に書く。「選択すると選択される」「入力すると表示される」など自明な結果は繰り返さない。')
     [void]$builder.AppendLine('- 補足は、間違えやすい点や前提がある場合だけ書く。無ければ空文字にする。')
     [void]$builder.AppendLine('- 番号付き候補を盲信しない。画像上の意味と一致する候補だけを選ぶ。正しい候補がなければ targetCandidateId を none、visualConfident を false にする。')
     [void]$builder.AppendLine('- 結果確認の画面やスクロール場面では、無理に操作対象を選ばず none を使う。')
@@ -397,16 +432,16 @@ function Get-MbCopilotCandidateBadgePoint {
         [Parameter(Mandatory = $true)]$Rect,
         [ValidateRange(0, 3)][int]$CandidateIndex
     )
-    $badgeStep = 0.04
-    $badgeOffset = $CandidateIndex * $badgeStep
-    $badgeY = if (([double]$Rect.y1 + (3 * $badgeStep)) -le 0.98) {
-        [double]$Rect.y1 + $badgeOffset
-    } else {
-        [double]$Rect.y1 - $badgeOffset
-    }
+    # 実画像では番号円の半径が約0.035になる。0.04刻みでは円どうしが重なり、
+    # 先頭番号も操作対象そのものを隠したため、枠の外側へ上下交互に0.08ずつ離す。
+    $badgeStep = 0.08
+    $band = [Math]::Floor($CandidateIndex / 2)
+    $direction = if (($CandidateIndex % 2) -eq 0) { -1.0 } else { 1.0 }
+    $badgeOffset = $direction * (0.04 + ($band * $badgeStep))
+    $badgeY = [double]$Rect.y1 + $badgeOffset
     return [pscustomobject]@{
-        x = [Math]::Max(0.02, [Math]::Min(0.98, [double]$Rect.x1))
-        y = [Math]::Max(0.02, [Math]::Min(0.98, $badgeY))
+        x = [Math]::Max(0.04, [Math]::Min(0.96, [double]$Rect.x1))
+        y = [Math]::Max(0.04, [Math]::Min(0.96, $badgeY))
     }
 }
 

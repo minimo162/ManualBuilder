@@ -234,7 +234,13 @@ function Copy-MbCopilotDraftSnapshotImages {
             if ([string]::IsNullOrWhiteSpace($imageId)) { continue }
             $needsDraft = [string]::IsNullOrWhiteSpace([string]$step.title) -or
                 [string]::IsNullOrWhiteSpace([string]$step.description)
-            if ($IncludeWritten -or $needsDraft) { [void]$targetImageIds.Add($imageId) }
+            if ($IncludeWritten -or $needsDraft) {
+                [void]$targetImageIds.Add($imageId)
+                if ($step.PSObject.Properties.Name -contains 'resultImageId' -and
+                    -not [string]::IsNullOrWhiteSpace([string]$step.resultImageId)) {
+                    [void]$targetImageIds.Add([string]$step.resultImageId)
+                }
+            }
         }
     }
 

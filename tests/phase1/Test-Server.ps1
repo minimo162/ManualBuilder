@@ -217,11 +217,25 @@ try {
     Assert-Mb (@($afterUndo.sheets[0].steps[0].annotations).Count -eq 4 -and [double]$afterUndo.sheets[0].steps[0].crop.width -eq 0.8) '元画像の注釈と切り抜きを復元する'
     Assert-Mb (@($afterUndo.images | Where-Object { $_.id -eq $replacementImageId }).Count -eq 0) '復元後の差し替え画像を整理する'
 
+    $resultResponse = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/images/result" -Method Post -Headers $replaceHeaders -ContentType 'image/png' -Body $replacementBytes -TimeoutSec 5
+    $resultJson = $resultResponse.Content | ConvertFrom-Json
+    Assert-Mb ([string]$resultJson.state -eq 'set' -and [string]$resultJson.imageLayout -eq 'side-by-side') '操作後画像の追加APIを実行できる'
+    $layoutResponse = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/steps/image-layout" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body @{
+        stepId = $imageStepId; layout = 'stacked'; order = 'after-before'
+    } -TimeoutSec 5
+    Assert-Mb (($layoutResponse.Content | ConvertFrom-Json).state -eq 'saved') '比較画像の配置保存APIを実行できる'
+    $afterLayout = [IO.File]::ReadAllText($projectPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    Assert-Mb ([string]$afterLayout.sheets[0].steps[0].imageLayout -eq 'stacked' -and [string]$afterLayout.sheets[0].steps[0].imageOrder -eq 'after-before') '比較画像の配置と順序をproject.jsonへ保存する'
+    $removeResultResponse = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/images/result/remove" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body @{ stepId = $imageStepId } -TimeoutSec 5
+    Assert-Mb (($removeResultResponse.Content | ConvertFrom-Json).state -eq 'removed') '操作後画像の取り外しAPIを実行できる'
+    $afterResultRemoval = [IO.File]::ReadAllText($projectPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    Assert-Mb ([string]::IsNullOrWhiteSpace([string]$afterResultRemoval.sheets[0].steps[0].resultImageId) -and [string]$afterResultRemoval.sheets[0].steps[0].imageLayout -eq 'before') '操作後画像の取り外しをproject.jsonへ保存する'
+
     $servedImage = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/images/${imageId}?token=$($headers['X-Manual-Token'])" -TimeoutSec 5
     Assert-Mb ($servedImage.StatusCode -eq 200 -and $servedImage.Headers['Content-Type'] -match 'image/png') '保存画像をセッショントークン付きで取得できる'
 
     $polled = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/capture/poll?sheetId=$sheetId&version=0" -Headers $headers -TimeoutSec 5
-    Assert-Mb ($polled.Content -match 'data-capture-version="3"') '監視追加を部分更新用スナップショットで取得できる'
+    Assert-Mb ($polled.Content -match 'data-capture-version="5"') '監視追加を部分更新用スナップショットで取得できる'
 
     $duplicate = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/images/import" -Method Post -Headers $imageHeaders -ContentType 'image/png' -Body $pngBytes -TimeoutSec 5
     Assert-Mb ($duplicate.Content -match 'data-import-status="duplicate"') '同じ画像の再取込みをスキップする'

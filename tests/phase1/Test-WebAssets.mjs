@@ -118,7 +118,6 @@ if (appJs) {
   const markers = [
     ['スクリーンショットの取り込み', '/api/images/import'],
     ['Excel出力', 'data-export-excel'],
-    ['HTML出力', 'data-export-html'],
     ['Word出力', 'data-export-word'],
     ['録画からの自動分割', 'data-video-auto'],
     ['操作の記録', 'recorder-dialog'],
@@ -127,6 +126,12 @@ if (appJs) {
   for (const [name, marker] of markers) {
     check(`${name} の呼び出しが残っている`, appJs.includes(marker));
   }
+  check('HTML出力の呼び出しが残っていない', !appJs.includes('data-export-html') && !appJs.includes('/api/export/html'));
+  check('Excelを標準、Wordを副形式として案内する', appJs.includes('Excelを標準形式、Wordを印刷向けの副形式'));
+  check('完成ファイルの共有は手動だと案内する', appJs.includes('完成ファイルを手動でコピーまたは送付してください'));
+  check('録画レビューで主要アプリをおすすめ選択する', appJs.includes('getRecommendedRecordedIndexes'));
+  check('録画レビューで保存・終了操作を一括除外できる', appJs.includes('excludeRecordedFinishingSequence'));
+  check('録画レビューで選択件数を表示する', appJs.includes('data-recorder-selection-summary'));
 }
 
 // ---------------------------------------------------------------
@@ -148,8 +153,11 @@ if (appJs) {
   check('出力前に完成状態を確認できる', appJs.includes('openOutputReviewDialog'));
   check('Copilotの不要候補をシート別の要確認として残す', appJs.includes('suggestedDeletes') && appJs.includes('selectCopilotDeleteCandidatesOnCurrentSheet'));
   check('Copilotの曖昧候補も要確認として残す', appJs.includes('suggestedReviews') && appJs.includes('data-visual-uncertain'));
+  check('赤枠候補なしを初期未選択の要確認にする', appJs.includes('!draft.targetCandidateId || draft.visualConfident === false'));
+  check('Copilotの反映件数と要確認件数を固定フッターへ表示する', appJs.includes('data-copilot-selection-summary') && appJs.includes('updateCopilotSelectionSummary'));
   check('Copilot候補へ既存の複数選択を混ぜない', /const selectCopilotDeleteCandidatesOnCurrentSheet[\s\S]{0,260}selectedStepIds\.clear\(\)/.test(appJs));
   check('Copilot結果を閉じる前に破棄確認する', appJs.includes('Copilotの提案と、この画面で編集した内容を破棄して閉じますか？'));
+  check('Copilot提案画像へ認証トークンを付ける', /const renderCopilotDrafts[\s\S]{0,260}const token = sessionHeaders\(\)\['X-Manual-Token'\]/.test(appJs));
   check('全シートの仕上げ状況を読み込む', appJs.includes('projectFinishItems') && appJs.includes('data-project-finish-data'));
   check('構造変更と出力の前に保存待ちする', appJs.includes('flushPendingStructuralSaves'));
   check('文章保存のHTTP応答完了まで待つ', appJs.includes('pendingStepSaveRequests') && appJs.includes('waitForPendingStepSaves'));

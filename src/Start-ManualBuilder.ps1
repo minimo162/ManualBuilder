@@ -6,10 +6,6 @@ param(
     [string]$DataRoot,
     [string]$ProjectPath,
     [string]$LegacyAppRoot,
-    # HTMLマニュアルに同梱した元データ（_source フォルダー）。起動時に取り込んでそのマニュアルを開く。
-    [string]$ImportFrom,
-    # そのHTMLマニュアルが置かれているフォルダー。「共有フォルダーへ反映」の宛先として覚える。
-    [string]$PublishTo,
     # ブラウザーは非表示タブのタイマーを1分に1回まで間引く（Chrome/Edgeの集中スロットリング）。
     # 撮影中はManualBuilderのタブが必ず裏へ回るため、30秒では正常なタブでも失効する。
     [ValidateRange(10, 600)][int]$HeartbeatTimeoutSec = 90,
@@ -34,7 +30,6 @@ Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Workspace.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Capture.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Web.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Excel.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Html.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.CopilotServer.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.RecorderServer.psm1') -Force
 
@@ -76,7 +71,6 @@ Initialize-MbCopilotServer -JobsRoot $script:CopilotJobsRoot -ScriptRoot $PSScri
 $script:RecordingJobsRoot = Join-Path $DataRoot 'recording-jobs'
 Initialize-MbRecorderServer -JobsRoot $script:RecordingJobsRoot -ScriptRoot $PSScriptRoot
 $script:ImageReplacementHistory = @{}
-$script:HtmlExportResult = $null
 $script:ProjectHomeVisible = -not $usesExplicitProjectPath
 $script:ActiveProjectKey = if ($usesExplicitProjectPath) { '' } else { 'default' }
 
@@ -116,20 +110,6 @@ function Show-MbExistingInstanceNotice {
         if (($existingUrl -match '^http://localhost:\d+/$') -and
             (Get-Process -Id ([int]$runtime.pid) -ErrorAction SilentlyContinue)) {
             Start-Process $existingUrl
-            if ($ImportFrom) {
-                $message = "起動中のManualBuilderをブラウザーで開きました。`r`nManualBuilderを終了してから、もう一度「編集する」を実行してください。"
-                try {
-                    Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
-                    [void][System.Windows.Forms.MessageBox]::Show(
-                        $message,
-                        'ManualBuilder',
-                        [System.Windows.Forms.MessageBoxButtons]::OK,
-                        [System.Windows.Forms.MessageBoxIcon]::Information
-                    )
-                } catch {
-                    Write-Host $message -ForegroundColor Yellow
-                }
-            }
             return $true
         }
     } catch {
@@ -915,13 +895,6 @@ function ConvertTo-MbCurrentProjectLibraryHtml {
         -LastOpenedProjectKey ([string]$settings.lastOpenedProjectKey)
 }
 
-function Get-MbCurrentPublishTarget {
-    # 「編集する.cmd」から起動したときに覚えた、共有フォルダー上の配布フォルダー。
-    if ($usesExplicitProjectPath) { return '' }
-    if ([string]::IsNullOrWhiteSpace($script:ActiveProjectKey)) { return '' }
-    try { return [string](Get-MbPublishTarget -DataRoot $DataRoot -ProjectKey $script:ActiveProjectKey) } catch { return '' }
-}
-
 function Test-MbOfficeExportActive {
     $excel = Read-MbExcelExportStatus
     $word = Read-MbWordExportStatus
@@ -943,8 +916,6 @@ function Reset-MbActiveProjectSession {
     $script:WordExportJob = $null
     $script:WordExportCancelRequestedAt = $null
     $script:WordExportCancelReason = ''
-                # マニュアルを切り替えたら、前のマニュアルの出力先を「共有フォルダーへ反映」の対象に残さない。
-    $script:HtmlExportResult = $null
     $script:CaptureVersion++
 }
 
@@ -996,7 +967,7 @@ function Invoke-MbRoute {
         }
         # 記録した操作の確認用サムネイル。imgタグはヘッダーを送れないため、
         # クエリのトークンが使える /images/ 配下に置く。
-        if ($path -match '^/images/recording/(?<name>event-\d{3}\.jpg)$') {
+        if ($path -match '^/images/recording/(?<name>event-\d{3}(?:-result)?\.jpg)$') {
             $recordedPath = Get-MbRecordedEventImagePath -FileName ([string]$Matches['name'])
             if ([string]::IsNullOrWhiteSpace($recordedPath)) {
                 Write-MbResponse $Context 'not found' 404 'text/plain; charset=utf-8'
@@ -1381,8 +1352,58 @@ function Invoke-MbRoute {
         return
     }
 
+    if ($path -eq '/api/images/result') {
+        if (-not $tabId) {
+            Write-MbResponse $Context 'tab id required' 400 'text/plain; charset=utf-8'
+            return
+        }
+        $role = Set-MbCaptureHeartbeat -TabId $tabId -SheetId ([string]$request.Headers['X-Sheet-Id'])
+        if ($role -ne 'owner') {
+            Write-MbResponse $Context 'このタブは閲覧専用です。撮影対象のタブで画像を追加してください。' 409 'text/plain; charset=utf-8'
+            return
+        }
+        $length = [long]$request.ContentLength64
+        if ($length -lt 1) { Write-MbResponse $Context '画像データが空です。' 400 'text/plain; charset=utf-8'; return }
+        if ($length -gt (20 * 1024 * 1024)) { Write-MbResponse $Context '画像は20MB以下にしてください。' 400 'text/plain; charset=utf-8'; return }
+        $memory = New-Object IO.MemoryStream
+        try {
+            $request.InputStream.CopyTo($memory)
+            $bytes = $memory.ToArray()
+        } finally { $memory.Dispose() }
+        try {
+            $source = [string]$request.Headers['X-Image-Source']
+            if ($source -notin @('paste', 'drop', 'file', 'recorder')) { $source = 'file' }
+            $stepId = [string]$request.Headers['X-Step-Id']
+            if ([string]::IsNullOrWhiteSpace($stepId)) { throw '対象手順が指定されていません。' }
+            $project = Get-MbProject -Path $ProjectPath
+            $result = Set-MbStepResultImage -Project $project -ProjectPath $ProjectPath -StepId $stepId -Bytes $bytes -Source $source
+            if ($result.Status -eq 'duplicate') {
+                Write-MbResponse $Context (([pscustomobject]@{ state = 'duplicate'; message = '同じ操作後画像が設定されています。'; stepId = $stepId } | ConvertTo-Json -Compress)) 200 'application/json; charset=utf-8'
+                return
+            }
+            $project = Save-MbProject -Project $project -Path $ProjectPath
+            if ($result.RemovedPath -and (Test-Path -LiteralPath $result.RemovedPath -PathType Leaf)) {
+                Remove-Item -LiteralPath $result.RemovedPath -Force -ErrorAction SilentlyContinue
+            }
+            $script:CaptureVersion++
+            $body = [pscustomobject]@{
+                state         = 'set'
+                message       = '操作後画像を追加しました。見せ方を選べます。'
+                stepId        = $stepId
+                resultImageId = [string]$result.Image.id
+                resultImageUrl = '/images/' + [string]$result.Image.id + '?token=' + $Token
+                imageLayout   = [string]$result.Step.imageLayout
+                imageOrder    = [string]$result.Step.imageOrder
+            } | ConvertTo-Json -Compress
+            Write-MbResponse $Context $body 200 'application/json; charset=utf-8'
+        } catch {
+            Write-MbResponse $Context (([pscustomobject]@{ state = 'failed'; message = $_.Exception.Message } | ConvertTo-Json -Compress)) 400 'application/json; charset=utf-8'
+        }
+        return
+    }
+
     if ($path -eq '/api/videos/attach') {
-        # 動画は手順へ添付するだけで、ブラウザーへは返さない。ExcelとHTMLの出力のときだけ読む。
+        # 動画は手順へ添付するだけで、ブラウザーへは返さない。Excel出力のときだけ読む。
         $bytes = $null
         try {
             $stepId = [string]$request.Headers['X-Step-Id']
@@ -1411,7 +1432,7 @@ function Invoke-MbRoute {
             $totalBytes = Get-MbVideoTotalBytes -Project $project
             $body = [pscustomobject]@{
                 state       = 'attached'
-                message     = '動画を添付しました。ExcelまたはHTMLで作成すると再生できます。'
+                message     = '動画を添付しました。Excelで作成すると再生できます。'
                 stepId      = $stepId
                 videoId     = [string]$result.Video.id
                 byteLength  = [long]$result.Video.byteLength
@@ -1465,78 +1486,6 @@ function Invoke-MbRoute {
     }
 
     $form = Read-MbForm -Request $request
-
-    if ($path -eq '/api/export/html') {
-        # COMを使わないため、Excel・Wordのような別プロセスと進捗の仕組みは要らない。
-        try {
-            if (Test-MbOfficeExportActive) { throw 'Office出力中です。完了または中止してからHTMLを作成してください。' }
-            $project = Get-MbProject -Path $ProjectPath
-            [void](Save-MbProject -Project $project -Path $ProjectPath)
-            $outputDirectory = Get-MbExcelOutputDirectory
-            if (-not (Test-Path -LiteralPath $outputDirectory)) { [void](New-Item -ItemType Directory -Path $outputDirectory -Force) }
-            $folderName = Get-MbHtmlExportFolderName -Project $project -OutputDirectory $outputDirectory
-            $overwrite = (Get-MbFormValue $form 'overwrite') -eq '1'
-            if (-not $overwrite -and (Test-Path -LiteralPath (Join-Path $outputDirectory $folderName))) {
-                # 日付を付けずに同じ名前で作るため、上書きしてよいかは必ず本人に確認する。
-                $body = [pscustomobject]@{
-                    state      = 'confirm'
-                    errorCode  = 'FOLDER_EXISTS'
-                    message    = '同じ名前のフォルダーがすでにあります。'
-                    folderName = $folderName
-                } | ConvertTo-Json -Compress
-                Write-MbResponse $Context $body 409 'application/json; charset=utf-8'
-                return
-            }
-            $result = Invoke-MbHtmlExport -Project $project -ProjectPath $ProjectPath -OutputDirectory $outputDirectory -Overwrite:$overwrite
-            $script:HtmlExportResult = $result
-            $megaBytes = [Math]::Round([long]$result.TotalBytes / 1MB, 1)
-            $publishTarget = Get-MbCurrentPublishTarget
-            $body = [pscustomobject]@{
-                state         = 'completed'
-                message       = if ([bool]$result.Replaced) { 'HTMLマニュアルを作り直しました。' } else { 'HTMLマニュアルを作成しました。' }
-                folderName    = [string]$result.FolderName
-                stepCount     = [int]$result.StepCount
-                imageCount    = [int]$result.ImageCount
-                videoCount    = [int]$result.VideoCount
-                totalMb       = $megaBytes
-                replaced      = [bool]$result.Replaced
-                publishTarget = $publishTarget
-            } | ConvertTo-Json -Compress
-            Write-MbLog "HTMLマニュアルを作成しました: $($result.FolderName) / $($result.StepCount)手順 / ${megaBytes}MB" 'OK'
-            Write-MbResponse $Context $body 200 'application/json; charset=utf-8'
-        } catch {
-            $body = [pscustomobject]@{ state = 'failed'; message = $_.Exception.Message } | ConvertTo-Json -Compress
-            Write-MbResponse $Context $body 400 'application/json; charset=utf-8'
-        }
-        return
-    }
-
-    if ($path -eq '/api/export/html/publish') {
-        # ローカルで作ったフォルダーを、そのまま共有フォルダーへコピーする。
-        # ManualBuilderが共有フォルダーへ書くのはここだけで、それも本人が押したときだけ。
-        try {
-            if (-not $script:HtmlExportResult) { throw '先に「HTMLで作成」を実行してください。' }
-            $target = Get-MbCurrentPublishTarget
-            if ([string]::IsNullOrWhiteSpace($target)) { throw '反映先がわかりません。配布フォルダーの「編集する.cmd」から起動すると覚えます。' }
-            $result = Copy-MbHtmlManualFolder -SourceFolder ([string]$script:HtmlExportResult.OutputPath) -DestinationFolder $target
-            $megaBytes = [Math]::Round([long]$result.TotalBytes / 1MB, 1)
-            $body = [pscustomobject]@{
-                state      = 'completed'
-                message    = '共有フォルダーへ反映しました。'
-                targetPath = [string]$result.DestinationPath
-                folderName = [string]$result.FolderName
-                replaced   = [bool]$result.Replaced
-                fileCount  = [int]$result.FileCount
-                totalMb    = $megaBytes
-            } | ConvertTo-Json -Compress
-            Write-MbLog "共有フォルダーへ反映しました: $($result.DestinationPath)" 'OK'
-            Write-MbResponse $Context $body 200 'application/json; charset=utf-8'
-        } catch {
-            $body = [pscustomobject]@{ state = 'failed'; message = $_.Exception.Message } | ConvertTo-Json -Compress
-            Write-MbResponse $Context $body 400 'application/json; charset=utf-8'
-        }
-        return
-    }
 
     if ($path -eq '/api/projects/export') {
         $packagePath = Join-Path ([IO.Path]::GetTempPath()) ('ManualBuilder-export-' + [guid]::NewGuid().ToString('N') + '.zip')
@@ -1689,25 +1638,6 @@ function Invoke-MbRoute {
         }
         return
     }
-    if ($path -eq '/api/export/html/open') {
-        try {
-            if (-not $script:HtmlExportResult) { throw '作成したHTMLマニュアルがありません。' }
-            $mode = Get-MbFormValue $form 'mode'
-            if ($mode -notin @('file', 'folder')) { throw '開く対象が不正です。' }
-            $root = [IO.Path]::GetFullPath((Get-MbExcelOutputDirectory)).TrimEnd([IO.Path]::DirectorySeparatorChar)
-            $target = if ($mode -eq 'file') { [string]$script:HtmlExportResult.IndexPath } else { [string]$script:HtmlExportResult.OutputPath }
-            $target = [IO.Path]::GetFullPath($target)
-            if (-not $target.StartsWith($root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw '出力先の場所を確認できません。' }
-            if (-not (Test-Path -LiteralPath $target)) { throw '作成したHTMLマニュアルが見つかりません。' }
-            Start-Process -FilePath $target
-            Write-MbResponse $Context '{"state":"opened"}' 200 'application/json; charset=utf-8'
-        } catch {
-            $body = [pscustomobject]@{ state = 'failed'; message = $_.Exception.Message } | ConvertTo-Json -Compress
-            Write-MbResponse $Context $body 400 'application/json; charset=utf-8'
-        }
-        return
-    }
-
     $project = Get-MbProject -Path $ProjectPath
 
     switch ($path) {
@@ -1827,6 +1757,31 @@ function Invoke-MbRoute {
             }
             return
         }
+        '/api/steps/image-layout' {
+            try {
+                [void](Set-MbStepImageLayout -Project $project -StepId (Get-MbFormValue $form 'stepId') `
+                    -Layout (Get-MbFormValue $form 'layout') -Order (Get-MbFormValue $form 'order'))
+                [void](Save-MbProject -Project $project -Path $ProjectPath)
+                Write-MbResponse $Context '{"state":"saved"}' 200 'application/json; charset=utf-8'
+            } catch {
+                Write-MbResponse $Context (([pscustomobject]@{ state = 'failed'; message = $_.Exception.Message } | ConvertTo-Json -Compress)) 400 'application/json; charset=utf-8'
+            }
+            return
+        }
+        '/api/images/result/remove' {
+            try {
+                $result = Remove-MbStepResultImage -Project $project -ProjectPath $ProjectPath -StepId (Get-MbFormValue $form 'stepId')
+                [void](Save-MbProject -Project $project -Path $ProjectPath)
+                if ($result.RemovedPath -and (Test-Path -LiteralPath $result.RemovedPath -PathType Leaf)) {
+                    Remove-Item -LiteralPath $result.RemovedPath -Force -ErrorAction SilentlyContinue
+                }
+                $script:CaptureVersion++
+                Write-MbResponse $Context '{"state":"removed"}' 200 'application/json; charset=utf-8'
+            } catch {
+                Write-MbResponse $Context (([pscustomobject]@{ state = 'failed'; message = $_.Exception.Message } | ConvertTo-Json -Compress)) 400 'application/json; charset=utf-8'
+            }
+            return
+        }
         '/api/images/replace/undo' {
             try {
                 $stepId = Get-MbFormValue $form 'stepId'
@@ -1885,6 +1840,7 @@ function Invoke-MbRoute {
                     if ($removedStep) { break }
                 }
                 $removedImageId = if ($removedStep) { [string]$removedStep.imageId } else { '' }
+                $removedResultImageId = if ($removedStep -and $removedStep.PSObject.Properties.Name -contains 'resultImageId') { [string]$removedStep.resultImageId } else { '' }
                 $removedVideoId = if ($removedStep) { [string]$removedStep.videoId } else { '' }
                 $historyImageId = ''
                 if ($script:ImageReplacementHistory.ContainsKey($stepId)) {
@@ -1894,6 +1850,7 @@ function Invoke-MbRoute {
                 Remove-MbStep -Project $project -StepId $stepId
                 $unusedImagePaths = @(
                     Remove-MbUnusedImage -Project $project -ProjectPath $ProjectPath -ImageId $removedImageId
+                    Remove-MbUnusedImage -Project $project -ProjectPath $ProjectPath -ImageId $removedResultImageId
                     Remove-MbUnusedImage -Project $project -ProjectPath $ProjectPath -ImageId $historyImageId
                     Remove-MbUnusedVideo -Project $project -ProjectPath $ProjectPath -VideoId $removedVideoId
                 ) | Where-Object { $_ }
@@ -1973,36 +1930,6 @@ try {
         Write-MbLog "既存プロジェクトをユーザーのローカル保存先へコピーしました: $ProjectPath" 'OK'
         Write-MbLog "移行元は削除していません: $($storageState.LegacyProjectPath)" 'INFO'
     }
-    if (-not [string]::IsNullOrWhiteSpace($ImportFrom)) {
-        # 「編集する.cmd」からの起動。配布したHTMLマニュアルの元データを取り込んで、そのまま編集できるようにする。
-        if ($usesExplicitProjectPath) { throw '明示プロジェクト指定中は元データを取り込めません。' }
-        $imported = Import-MbCatalogProjectFolder -DataRoot $DataRoot -SourceFolder $ImportFrom
-        $script:ProjectPath = [string]$imported.Path
-        $ProjectPath = $script:ProjectPath
-        $script:ActiveProjectKey = [string]$imported.Key
-        $script:ProjectHomeVisible = $false
-        Set-MbLastOpenedProject -DataRoot $DataRoot -ProjectKey ([string]$imported.Key)
-        if ([string]$imported.Status -in @('imported', 'imported-newer', 'imported-conflict')) {
-            Write-MbLog "配布フォルダーの元データを取り込みました: $($imported.Project.title)" 'OK'
-            if ([string]$imported.Status -eq 'imported-newer') {
-                Write-MbLog '共有側がローカルより新しいため、古いローカル版を残して「共有版」として開きます。' 'WARN'
-            } elseif ([string]$imported.Status -eq 'imported-conflict') {
-                Write-MbLog '同じ版数で内容が異なるため、両方を残して「共有版」として開きます。' 'WARN'
-            }
-        } else {
-            Write-MbLog "このPCにある同じマニュアルを開きます: $($imported.Project.title)" 'INFO'
-        }
-        if (-not [string]::IsNullOrWhiteSpace($PublishTo)) {
-            try {
-                $publishFullPath = [IO.Path]::GetFullPath($PublishTo).TrimEnd([IO.Path]::DirectorySeparatorChar)
-                Set-MbPublishTarget -DataRoot $DataRoot -ProjectKey ([string]$imported.Key) -Path $publishFullPath
-                Write-MbLog "反映先を覚えました: $publishFullPath" 'INFO'
-            } catch {
-                Write-MbLog "反映先を覚えられませんでした: $($_.Exception.Message)" 'WARN'
-            }
-        }
-    }
-
     $initialProject = Get-MbProject -Path $ProjectPath
     $projectReady = $true
     $orphanedImagePaths = @(
