@@ -95,6 +95,38 @@ try {
     [void](Save-MbProject -Project $loaded -Path $projectPath)
     Assert-Mb (Test-Path -LiteralPath "$projectPath.bak") '2回目の保存で直前バックアップが残る'
 
+    # 固定名の.bakが一時的に使用中でも、本体の保存を止めない。
+    # 固有名の退避は、本体が壊れた場合の復旧にも使う。
+    $lockedProjectPath = Join-Path $testRoot 'locked-project.json'
+    $lockedProject = New-MbProject
+    $lockedProject.title = '初回'
+    $lockedProject = Save-MbProject -Project $lockedProject -Path $lockedProjectPath
+    $lockedProject.title = '更新前'
+    $lockedProject = Save-MbProject -Project $lockedProject -Path $lockedProjectPath
+    $backupLock = $null
+    try {
+        $backupLock = [IO.File]::Open(($lockedProjectPath + '.bak'), [IO.FileMode]::Open,
+            [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        $lockedProject.title = '更新後'
+        $lockedProject = Save-MbProject -Project $lockedProject -Path $lockedProjectPath
+    } finally {
+        if ($null -ne $backupLock) { $backupLock.Dispose() }
+    }
+    $savedWhileBackupLocked = [IO.File]::ReadAllText($lockedProjectPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    Assert-Mb ([string]$savedWhileBackupLocked.title -eq '更新後') '固定バックアップが使用中でもプロジェクト本体を保存する'
+    $recoveryFiles = @([IO.Directory]::GetFiles($testRoot, '.locked-project.json.recovery-*.bak'))
+    Assert-Mb ($recoveryFiles.Count -eq 1) '正式バックアップを更新できない場合は固有名の退避を残す'
+
+    [IO.File]::WriteAllText($lockedProjectPath, '{broken', (New-Object Text.UTF8Encoding($false)))
+    $recoveredProject = Get-MbProject -Path $lockedProjectPath
+    Assert-Mb ([string]$recoveredProject.title -eq '更新前') '主ファイル破損時は最新の固有名退避から復旧する'
+    $restoredFromDisk = [IO.File]::ReadAllText($lockedProjectPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    Assert-Mb ([string]$restoredFromDisk.title -eq '更新前') '復旧したプロジェクトを本体へ書き戻す'
+    $fixedBackup = [IO.File]::ReadAllText(($lockedProjectPath + '.bak'), [Text.Encoding]::UTF8) | ConvertFrom-Json
+    Assert-Mb ([string]$fixedBackup.title -eq '初回') '壊れた本体を正式バックアップへ昇格させない'
+    Assert-Mb (@(Get-ChildItem -LiteralPath $testRoot -Filter '.project-damaged-*.tmp' -File).Count -eq 0) `
+        '復旧後に破損本体の一時退避を残さない'
+
     # 保存先の作成に失敗しても、ディスクへ書けていないrevisionをメモリだけ進めない。
     $revisionBeforeFailedSave = [int]$loaded.revision
     $updatedAtBeforeFailedSave = [string]$loaded.updatedAt

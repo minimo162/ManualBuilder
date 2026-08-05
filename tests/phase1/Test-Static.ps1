@@ -103,7 +103,7 @@ Add-Result (($serverText -match '\$projectReady = \$false') -and ($serverText -m
 Add-Result ($serverText -match '\$storageLayout\.RuntimePath') '二重起動情報をユーザーデータ配下へ置く'
 Add-Result ($serverText -match '\$storageLayout\.ExportJobsRoot') 'Office一時ジョブをユーザーデータ配下へ置く'
 Add-Result (($runCommandText -match '%~dp0src\\Start-ManualBuilderLauncher\.ps1') -and ($runCommandText -notmatch '(?im)^cd /d')) 'UNC共有フォルダーから更新ランチャーを起動できる'
-Add-Result ([string]$appVersionManifest.appVersion -eq '0.38.9') '配布用アプリバージョンを0.38.9へ更新する'
+Add-Result ([string]$appVersionManifest.appVersion -eq '0.39.0') '配布用アプリバージョンを0.39.0へ更新する'
 Add-Result ($workspaceModuleText -notmatch "ManualBuilder\.Project\.psm1'\) -Force") 'WorkspaceがProjectコマンドを強制再読込しない'
 Add-Result ($launcherModuleText -match "'ManualBuilder\\app'") 'アプリ実行コードをLocalApplicationDataへキャッシュする'
 Add-Result ($launcherModuleText -match "@\('src', 'web', 'run\.cmd', 'app-version\.json'\)") 'キャッシュ対象からプロジェクトデータを除外する'
@@ -427,6 +427,11 @@ Add-Result (($recorderModuleText -match 'RawViewWalker') -and
     ($recorderModuleText -match 'New-MbClickPointTargetInfo')) '近傍点とクリック位置フォールバックでUIA非対応画面も示す'
 Add-Result (($projectModuleText -match 'Move-MbStepsToSheet') -and ($projectModuleText -match 'Remove-MbSteps') -and
     ($webModuleText -match 'data-step-select') -and ($jsText -match 'runBulkStepAction')) '手順を複数選択してまとめて移動・削除する'
+Add-Result (($projectModuleText -match '\$recoveryPrefix') -and
+    ($projectModuleText -match 'foreach \(\$delay in @\(0, 25, 50, 100, 200, 400\)\)') -and
+    ($projectModuleText -match '\$successfulRecoveryPath')) 'プロジェクト保存は固有バックアップと再試行で一時ロックを避ける'
+Add-Result (($projectModuleText -match '\$damagedPath') -and
+    ($projectModuleText -match '\[IO\.File\]::Move\(\$Path, \$damagedPath\)')) '破損本体を正式バックアップへ昇格させず復旧する'
 Add-Result ($recorderModuleText -match '\$rectWidth -gt 0\.82') 'ページ全体に近い矩形を最終段でも除外する'
 Add-Result (($recorderModuleText -match '\[IO\.File\]::Replace\(\$temporary, \$StatusPath') -and
     ($recorderModuleText -match '\$delaysMs')) '操作記録の進捗JSONを完成後に差し替え、短いロックは再試行する'

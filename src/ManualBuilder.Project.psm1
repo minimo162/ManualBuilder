@@ -345,6 +345,8 @@ function Save-MbProject {
     $directory = Split-Path -Parent $Path
     $tempPath = Join-Path $directory ('.project-' + [guid]::NewGuid().ToString('N') + '.tmp')
     $backupPath = "$Path.bak"
+    $projectFileName = [IO.Path]::GetFileName($Path)
+    $recoveryPrefix = ".$projectFileName.recovery-"
     $utf8 = New-Object System.Text.UTF8Encoding($false)
 
     $Project.revision = $previousRevision + 1
@@ -358,7 +360,64 @@ function Save-MbProject {
         $json = $Project | ConvertTo-Json -Depth 12 -ErrorAction Stop
         [IO.File]::WriteAllText($tempPath, $json, $utf8)
         if (Test-Path -LiteralPath $Path) {
-            [IO.File]::Replace($tempPath, $Path, $backupPath, $true)
+            # 固定の.bakをFile.Replaceへ直接渡すと、ウイルス対策などが一瞬開いただけで
+            # 本体の保存まで失敗する。置換ごとに固有の退避先を使い、短いロックは再試行する。
+            $saved = $false
+            $successfulRecoveryPath = ''
+            $lastWriteError = $null
+            foreach ($delay in @(0, 25, 50, 100, 200, 400)) {
+                if ([int]$delay -gt 0) { Start-Sleep -Milliseconds ([int]$delay) }
+                $attemptRecoveryPath = Join-Path $directory ($recoveryPrefix +
+                    [DateTime]::UtcNow.Ticks.ToString('D19') + '-' + [guid]::NewGuid().ToString('N') + '.bak')
+                try {
+                    [IO.File]::Replace($tempPath, $Path, $attemptRecoveryPath, $true)
+                    $saved = $true
+                    $successfulRecoveryPath = $attemptRecoveryPath
+                    break
+                } catch {
+                    $lastWriteError = $_
+                    $retryable = $_.Exception -is [IO.IOException] -or $_.Exception -is [UnauthorizedAccessException]
+                    if (-not $retryable -or -not (Test-Path -LiteralPath $tempPath -PathType Leaf)) { throw }
+                }
+            }
+            if (-not $saved) { throw $lastWriteError }
+
+            # 本体は保存済みなので、従来名の.bak更新が失敗しても保存失敗にはしない。
+            # 固有名の退避を復旧候補として残す。
+            $backupPublished = $false
+            $staleBackupPath = Join-Path $directory ('.project-stale-' + [guid]::NewGuid().ToString('N') + '.tmp')
+            try {
+                if (Test-Path -LiteralPath $backupPath -PathType Leaf) {
+                    [IO.File]::Replace($successfulRecoveryPath, $backupPath, $staleBackupPath, $true)
+                } else {
+                    [IO.File]::Move($successfulRecoveryPath, $backupPath)
+                }
+                $backupPublished = $true
+            } catch {
+                # $successfulRecoveryPathを消さずに残す。
+            } finally {
+                Remove-Item -LiteralPath $staleBackupPath -Force -ErrorAction SilentlyContinue
+            }
+            if ($backupPublished) {
+                # 正式な.bakを更新できたら、過去の固有名退避は不要。
+                foreach ($candidate in @([IO.Directory]::GetFiles($directory))) {
+                    $candidateName = [IO.Path]::GetFileName($candidate)
+                    if ($candidateName.StartsWith($recoveryPrefix, [StringComparison]::OrdinalIgnoreCase) -and
+                        $candidateName.EndsWith('.bak', [StringComparison]::OrdinalIgnoreCase)) {
+                        Remove-Item -LiteralPath $candidate -Force -ErrorAction SilentlyContinue
+                    }
+                }
+            } else {
+                # 長いロックが続いても退避が増え続けないよう、最新3世代だけ残す。
+                $recoveryCandidates = @([IO.Directory]::GetFiles($directory) | Where-Object {
+                    $name = [IO.Path]::GetFileName($_)
+                    $name.StartsWith($recoveryPrefix, [StringComparison]::OrdinalIgnoreCase) -and
+                    $name.EndsWith('.bak', [StringComparison]::OrdinalIgnoreCase)
+                } | Sort-Object { [IO.Path]::GetFileName($_) } -Descending)
+                foreach ($oldRecovery in @($recoveryCandidates | Select-Object -Skip 3)) {
+                    Remove-Item -LiteralPath $oldRecovery -Force -ErrorAction SilentlyContinue
+                }
+            }
         } else {
             [IO.File]::Move($tempPath, $Path)
         }
@@ -395,14 +454,48 @@ function Get-MbProject {
     # 本体が壊れている場合だけ、Save-MbProjectが残した直前のバックアップから復旧を試みる。
     # 検証に通ったものだけを採用し、通らなければ従来どおり安全停止する。
     $backupPath = "$Path.bak"
-    if (Test-Path -LiteralPath $backupPath) {
+    $backupCandidates = New-Object System.Collections.ArrayList
+    $backupDirectory = Split-Path -Parent $Path
+    $projectFileName = [IO.Path]::GetFileName($Path)
+    $recoveryPrefix = ".$projectFileName.recovery-"
+    $recoveryFiles = New-Object System.Collections.ArrayList
+    if (Test-Path -LiteralPath $backupDirectory -PathType Container) {
+        foreach ($candidatePath in @([IO.Directory]::GetFiles($backupDirectory))) {
+            $candidateName = [IO.Path]::GetFileName($candidatePath)
+            if ($candidateName.StartsWith($recoveryPrefix, [StringComparison]::OrdinalIgnoreCase) -and
+                $candidateName.EndsWith('.bak', [StringComparison]::OrdinalIgnoreCase)) {
+                [void]$recoveryFiles.Add((Get-Item -LiteralPath $candidatePath))
+            }
+        }
+    }
+    foreach ($recoveryFile in @($recoveryFiles | Sort-Object Name -Descending)) {
+        [void]$backupCandidates.Add($recoveryFile)
+    }
+    if (Test-Path -LiteralPath $backupPath -PathType Leaf) {
+        [void]$backupCandidates.Add((Get-Item -LiteralPath $backupPath))
+    }
+    foreach ($backupFile in @($backupCandidates)) {
         try {
-            $backupRaw = [IO.File]::ReadAllText($backupPath, [Text.Encoding]::UTF8)
+            $backupRaw = [IO.File]::ReadAllText([string]$backupFile.FullName, [Text.Encoding]::UTF8)
             $backupProject = $backupRaw | ConvertFrom-Json
             $backupProject = Repair-MbProject -Project $backupProject
             Test-MbProject -Project $backupProject
             try {
-                return Save-MbProject -Project $backupProject -Path $Path
+                # 壊れた本体をそのままReplaceのバックアップへ昇格させない。
+                # いったん同じフォルダーへ退避し、新規ファイルとして復元する。
+                $damagedPath = Join-Path $backupDirectory ('.project-damaged-' + [guid]::NewGuid().ToString('N') + '.tmp')
+                [IO.File]::Move($Path, $damagedPath)
+                try {
+                    $restoredProject = Save-MbProject -Project $backupProject -Path $Path
+                    Remove-Item -LiteralPath $damagedPath -Force -ErrorAction SilentlyContinue
+                    return $restoredProject
+                } catch {
+                    if (-not (Test-Path -LiteralPath $Path -PathType Leaf) -and
+                        (Test-Path -LiteralPath $damagedPath -PathType Leaf)) {
+                        [IO.File]::Move($damagedPath, $Path)
+                    }
+                    throw
+                }
             } catch {
                 return $backupProject
             }
