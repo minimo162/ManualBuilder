@@ -136,10 +136,21 @@ function Start-MbCopilotEdge {
 
     $port = [int]$Settings.cdp_port
     if (Test-MbDevTools -Port $port) { return }
-    $edge = Get-MbEdgePath
-    if (-not (Test-Path -LiteralPath $ProfileDirectory)) {
-        [void](New-Item -ItemType Directory -Path $ProfileDirectory -Force)
-    }
+
+    # アプリ起動時の事前準備と、利用者が下書きを押した直後の要求が重なることがある。
+    # 同じプロファイルを2プロセスから同時起動せず、先に起動した側の完了を待つ。
+    $mutex = New-Object System.Threading.Mutex($false, ("Local\ManualBuilder-CopilotEdge-{0}" -f $port))
+    $acquired = $false
+    try {
+        try { $acquired = $mutex.WaitOne([TimeSpan]::FromSeconds(35)) }
+        catch [System.Threading.AbandonedMutexException] { $acquired = $true }
+        if (-not $acquired) { throw 'Copilot用Edgeの起動待ちがタイムアウトしました。' }
+        if (Test-MbDevTools -Port $port) { return }
+
+        $edge = Get-MbEdgePath
+        if (-not (Test-Path -LiteralPath $ProfileDirectory)) {
+            [void](New-Item -ItemType Directory -Path $ProfileDirectory -Force)
+        }
 
     $arguments = @(
         "--remote-debugging-port=$port",
@@ -162,22 +173,26 @@ function Start-MbCopilotEdge {
     }
     $arguments += [string]$Settings.copilot_url
 
-    Write-MbCopilotLog "Edgeを起動します: port=$port display=$display" 'INFO'
-    try {
-        if ($display -eq 'minimized') {
-            Start-Process -FilePath $edge -ArgumentList $arguments -WindowStyle Minimized | Out-Null
-        } else {
-            Start-Process -FilePath $edge -ArgumentList $arguments | Out-Null
+        Write-MbCopilotLog "Edgeを起動します: port=$port display=$display" 'INFO'
+        try {
+            if ($display -eq 'minimized') {
+                Start-Process -FilePath $edge -ArgumentList $arguments -WindowStyle Minimized | Out-Null
+            } else {
+                Start-Process -FilePath $edge -ArgumentList $arguments | Out-Null
+            }
+        } catch {
+            if ($display -ne 'minimized') { throw }
+            Write-MbCopilotLog ('画面外での起動に失敗したため最小化で起動し直します: ' + $_.Exception.Message) 'WARN'
+            $fallback = @($arguments | Where-Object { $_ -notlike '--window-position=*' -and $_ -notlike '--window-size=*' })
+            Start-Process -FilePath $edge -ArgumentList $fallback -WindowStyle Minimized | Out-Null
         }
-    } catch {
-        if ($display -ne 'minimized') { throw }
-        Write-MbCopilotLog ('画面外での起動に失敗したため最小化で起動し直します: ' + $_.Exception.Message) 'WARN'
-        $fallback = @($arguments | Where-Object { $_ -notlike '--window-position=*' -and $_ -notlike '--window-size=*' })
-        Start-Process -FilePath $edge -ArgumentList $fallback -WindowStyle Minimized | Out-Null
-    }
 
-    if (-not (Wait-MbDevTools -Port $port -TimeoutSeconds 30)) {
-        throw "Edgeを操作できる状態にできませんでした（ポート $port）。このアプリ専用のEdgeウィンドウをすべて閉じてから、もう一度実行してください。"
+        if (-not (Wait-MbDevTools -Port $port -TimeoutSeconds 30)) {
+            throw "Edgeを操作できる状態にできませんでした（ポート $port）。このアプリ専用のEdgeウィンドウをすべて閉じてから、もう一度実行してください。"
+        }
+    } finally {
+        if ($acquired) { try { $mutex.ReleaseMutex() } catch { } }
+        $mutex.Dispose()
     }
 }
 
@@ -597,31 +612,55 @@ function Test-MbCopilotImageConsentText {
 }
 
 function Get-MbAttachmentSnapshot {
-    param([Parameter(Mandatory = $true)][string]$WsUrl, [Parameter(Mandatory = $true)]$Settings)
+    param(
+        [Parameter(Mandatory = $true)][string]$WsUrl,
+        [Parameter(Mandatory = $true)]$Settings,
+        [string[]]$ExpectedNames = @()
+    )
 
     $itemSelectors = @([string[]](Get-MbCopilotSelector -Settings $Settings -Name 'attachment_item_any'))
     $nameSelectors = @([string[]](Get-MbCopilotSelector -Settings $Settings -Name 'attachment_name_any'))
     $template = @'
 (() => {
-  const itemSels=__ITEM_SELS__, nameSels=__NAME_SELS__;
+  const itemSels=__ITEM_SELS__, nameSels=__NAME_SELS__, expected=__EXPECTED__;
   const visible=e=>{if(!e)return false;const r=e.getBoundingClientRect();return r.width>0&&r.height>0;};
+  const safeAll=(d,s)=>{try{return Array.from(d.querySelectorAll(s));}catch(e){return[];}};
+  const norm=v=>String(v||'').replace(/\s+/g,' ').trim();
+  const matchesExpected=text=>expected.some(name=>{
+    const bare=name.replace(/\.[^.]+$/,'');
+    return text.includes(name)||(bare.length>=8&&text.includes(bare));
+  });
   const docs=[document];for(const f of document.querySelectorAll('iframe')){try{if(f.contentDocument)docs.push(f.contentDocument);}catch(e){}}
-  const dialogTexts=docs.flatMap(d=>Array.from(d.querySelectorAll('[role="dialog"],[aria-modal="true"]')))
-    .filter(visible).map(d=>String(d.innerText||d.textContent||'').replace(/\s+/g,' ').trim().slice(0,1000)).filter(Boolean);
+  const dialogTexts=docs.flatMap(d=>safeAll(d,'[role="dialog"],[aria-modal="true"]'))
+    .filter(visible).map(d=>norm(d.innerText||d.textContent).slice(0,1000)).filter(Boolean);
   let nodes=[],used='';
-  for(const s of itemSels){const found=docs.flatMap(d=>Array.from(d.querySelectorAll(s))).filter(visible);if(found.length){nodes=found;used=s;break;}}
+  for(const s of itemSels){const found=docs.flatMap(d=>safeAll(d,s)).filter(visible);if(found.length){nodes=found;used=s;break;}}
+  // M365側のクラス名が変わっても、表示されたファイル名を根拠に添付カードを探す。
+  if(expected.length){
+    const fallback=docs.flatMap(d=>safeAll(d,'[class*="ttachment"],[data-testid*="attachment"],span,button'))
+      .filter(visible).filter(n=>{const t=norm(n.innerText||n.textContent);return t.length>0&&t.length<600&&matchesExpected(t);})
+      .sort((a,b)=>norm(a.innerText||a.textContent).length-norm(b.innerText||b.textContent).length);
+    for(const node of fallback){if(!nodes.some(existing=>existing===node||existing.contains(node)||node.contains(existing)))nodes.push(node);}
+    if(!used&&fallback.length)used='filename-fallback';
+  }
   const items=nodes.map(n=>{
     let name='';
     for(const s of nameSels){const e=n.querySelector(s);if(e&&(e.innerText||'').trim()){name=(e.innerText||'').trim();break;}}
+    const nodeText=norm(n.innerText||n.textContent);
+    if(!name&&expected.length)name=expected.find(x=>nodeText.includes(x)||(x.replace(/\.[^.]+$/,'').length>=8&&nodeText.includes(x.replace(/\.[^.]+$/,''))))||'';
     if(!name)name=(n.getAttribute('aria-label')||n.title||(n.innerText||'').trim().split('\n')[0]||'').trim();
-    const live=(n.getAttribute('aria-label')||'')+' '+((n.querySelector('[aria-live]')||{innerText:''}).innerText||'');
+    const live=(n.getAttribute('aria-label')||'')+' '+((n.querySelector('[aria-live]')||{innerText:''}).innerText||'')+' '+nodeText;
     const busy=n.getAttribute('aria-busy')==='true'||!!n.querySelector('[role="progressbar"]');
     return {name,live:live.trim(),busy};
   });
-  return JSON.stringify({count:items.length,items,usedItemSelector:used,dialogTexts});
+  const fileInputs=docs.flatMap(d=>safeAll(d,'input[type="file"]')).map(input=>({
+    count:input.files?input.files.length:0,
+    names:input.files?Array.from(input.files).map(f=>f.name):[]
+  }));
+  return JSON.stringify({count:items.length,items,usedItemSelector:used,dialogTexts,fileInputs});
 })()
 '@
-    $js = $template.Replace('__ITEM_SELS__', (ConvertTo-Json @($itemSelectors) -Compress)).Replace('__NAME_SELS__', (ConvertTo-Json @($nameSelectors) -Compress))
+    $js = $template.Replace('__ITEM_SELS__', (ConvertTo-Json @($itemSelectors) -Compress)).Replace('__NAME_SELS__', (ConvertTo-Json @($nameSelectors) -Compress)).Replace('__EXPECTED__', (ConvertTo-Json @($ExpectedNames) -Compress))
     try {
         $raw = Invoke-MbCdpEval -WebSocketUrl $WsUrl -Expression $js -TimeoutSeconds 15
         $snapshot = $raw | ConvertFrom-Json
@@ -630,7 +669,7 @@ function Get-MbAttachmentSnapshot {
         Add-Member -InputObject $snapshot -NotePropertyName consentText -NotePropertyValue $(if ($consentDialog.Count -gt 0) { [string]$consentDialog[0] } else { '' }) -Force
         return $snapshot
     } catch {
-        return [pscustomobject]@{ count = 0; items = @(); usedItemSelector = ''; dialogTexts = @(); consentRequired = $false; consentText = '' }
+        return [pscustomobject]@{ count = 0; items = @(); usedItemSelector = ''; dialogTexts = @(); fileInputs = @(); consentRequired = $false; consentText = '' }
     }
 }
 
@@ -720,7 +759,7 @@ function Invoke-MbCopilotAttachFiles {
             return [pscustomobject]@{ ok = $false; cancelled = $true; elapsedMs = [int]$watch.ElapsedMilliseconds }
         }
         Start-Sleep -Milliseconds 500
-        $snapshot = Get-MbAttachmentSnapshot -WsUrl $WsUrl -Settings $Settings
+        $snapshot = Get-MbAttachmentSnapshot -WsUrl $WsUrl -Settings $Settings -ExpectedNames $expected
         if ($snapshot.consentRequired -eq $true) {
             throw 'Copilotで画像利用の確認が必要です。［Copilotの画面を開く］を押し、内容を確認して［確認して続行］を選んでから、もう一度実行してください。'
         }
@@ -779,20 +818,25 @@ function Invoke-MbFocusChatInput {
     return ($raw | ConvertFrom-Json)
 }
 
-function Get-MbChatInputTextLength {
+function Get-MbChatInputSnapshot {
     param([Parameter(Mandatory = $true)][string]$WsUrl, [Parameter(Mandatory = $true)]$Settings)
     $template = @'
 (() => {
   const sels=__INPUT_SELS__;
   const visible=e=>{if(!e)return false;const r=e.getBoundingClientRect(),cs=e.ownerDocument.defaultView.getComputedStyle(e);return r.width>0&&r.height>0&&cs.display!=='none'&&cs.visibility!=='hidden';};
   const docs=[document];for(const f of document.querySelectorAll('iframe')){try{if(f.contentDocument)docs.push(f.contentDocument)}catch(e){}}
-  for(const d of docs)for(const s of sels){const el=d.querySelector(s);if(visible(el))return JSON.stringify({len:(el.innerText||el.value||'').length});}
-  return JSON.stringify({len:-1});
+  for(const d of docs)for(const s of sels){const el=d.querySelector(s);if(visible(el)){const text=String(el.innerText||el.value||'');return JSON.stringify({len:text.length,tail:text.slice(-500),selector:s});}}
+  return JSON.stringify({len:-1,tail:'',selector:''});
 })()
 '@
     $js = $template.Replace('__INPUT_SELS__', (Get-MbChatInputSelectorsJson -Settings $Settings))
     $raw = Invoke-MbCdpEval -WebSocketUrl $WsUrl -Expression $js -TimeoutSeconds 15
-    return ([int](($raw | ConvertFrom-Json).len))
+    return ($raw | ConvertFrom-Json)
+}
+
+function Get-MbChatInputTextLength {
+    param([Parameter(Mandatory = $true)][string]$WsUrl, [Parameter(Mandatory = $true)]$Settings)
+    return [int](Get-MbChatInputSnapshot -WsUrl $WsUrl -Settings $Settings).len
 }
 
 function Invoke-MbKeyEvent {
@@ -862,10 +906,18 @@ function Invoke-MbInsertPrompt {
         }
     }
     Start-Sleep -Milliseconds 300
-    $inputLength = Get-MbChatInputTextLength -WsUrl $WsUrl -Settings $Settings
+    $inputSnapshot = Get-MbChatInputSnapshot -WsUrl $WsUrl -Settings $Settings
+    $inputLength = [int]$inputSnapshot.len
     if ($inputLength -lt [int]($Prompt.Length * 0.9)) {
         throw ('依頼文の入力を確認できませんでした（期待 {0} 文字 / 実際 {1} 文字）。' -f $Prompt.Length, $inputLength)
     }
+    # 文字数だけでなく最後の指示まで入ったことを確かめる。途中まで二重入力された状態を
+    # 同じ長さとして誤認し、画像だけを送信する事故を防ぐ。
+    $tailAnchor = Get-MbCopilotPromptTailAnchor
+    if ($Prompt.EndsWith($tailAnchor) -and -not ([string]$inputSnapshot.tail).Contains($tailAnchor)) {
+        throw '依頼文の末尾までCopilotの入力欄へ入りませんでした。送信せずに停止しました。'
+    }
+    Write-MbCopilotLog ("依頼文の入力を確認しました chars=$inputLength selector=$([string]$inputSnapshot.selector)") 'INFO'
 }
 
 function Invoke-MbClickSend {

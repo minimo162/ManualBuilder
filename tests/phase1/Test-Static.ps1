@@ -46,6 +46,7 @@ $required = @(
     'src\ManualBuilder.Copilot.psm1',
     'src\ManualBuilder.CopilotJob.psm1',
     'src\ManualBuilder.CopilotServer.psm1',
+    'src\Initialize-ManualBuilderCopilot.ps1',
     'src\Invoke-ManualBuilderCopilotJob.ps1',
     'src\ManualBuilder.Recorder.psm1',
     'src\ManualBuilder.RecorderServer.psm1',
@@ -104,7 +105,7 @@ Add-Result (($serverText -match '\$projectReady = \$false') -and ($serverText -m
 Add-Result ($serverText -match '\$storageLayout\.RuntimePath') '二重起動情報をユーザーデータ配下へ置く'
 Add-Result ($serverText -match '\$storageLayout\.ExportJobsRoot') 'Office一時ジョブをユーザーデータ配下へ置く'
 Add-Result (($runCommandText -match '%~dp0src\\Start-ManualBuilderLauncher\.ps1') -and ($runCommandText -notmatch '(?im)^cd /d')) 'UNC共有フォルダーから更新ランチャーを起動できる'
-Add-Result ([string]$appVersionManifest.appVersion -eq '0.36.5') '配布用アプリバージョンを0.36.5へ更新する'
+Add-Result ([string]$appVersionManifest.appVersion -eq '0.37.0') '配布用アプリバージョンを0.37.0へ更新する'
 Add-Result ($workspaceModuleText -notmatch "ManualBuilder\.Project\.psm1'\) -Force") 'WorkspaceがProjectコマンドを強制再読込しない'
 Add-Result ($launcherModuleText -match "'ManualBuilder\\app'") 'アプリ実行コードをLocalApplicationDataへキャッシュする'
 Add-Result ($launcherModuleText -match "@\('src', 'web', 'run\.cmd', 'app-version\.json'\)") 'キャッシュ対象からプロジェクトデータを除外する'
@@ -376,6 +377,8 @@ Add-Result ($serverText -match '/api/copilot/draft/apply') '採用した下書�
 Add-Result ($webModuleText -match 'data-copilot-draft') 'Copilotでの下書きをメニューから選べる'
 Add-Result ($jsText -match 'copilot-draft-dialog') 'Copilot下書きの確認画面を実装する'
 Add-Result ($copilotModuleText -match 'm365\.cloud\.microsoft') '普段使うM365 Copilotの画面を操作する'
+Add-Result (($serverText -match 'Start-MbCopilotWarmup') -and ($copilotServerText -match 'Initialize-ManualBuilderCopilot\.ps1')) 'アプリ起動と同時にCopilotを非同期で事前準備する'
+Add-Result (($copilotModuleText -match 'ManualBuilder-CopilotEdge-') -and ($copilotModuleText -match 'Get-MbChatInputSnapshot')) 'Copilot起動の競合を防ぎ依頼文末尾まで確認する'
 Add-Result ($copilotModuleText -notmatch '(?i)api[_-]?key') 'APIキーを持たない'
 Add-Result ($copilotJobText -match '\$rendered = New-MbAnnotatedImage') '焼き込み結果の戻り値を捨てない'
 Add-Result ($copilotServerText -match 'Resolve-MbOperationRect') '赤枠を読み取った文字へ寄せる'

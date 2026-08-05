@@ -32,12 +32,18 @@
     minStillMs: 700,
     // 直前に採用した場面とこの距離以下なら同じ画面とみなして採用しない。
     sceneDistance: 0.030,
+    // ヘッダーが共通の業務画面は平均差が小さくても、本文の複数ブロックが変わる。
+    // この数以上の明確な変化があれば、平均差だけで重複扱いしない。
+    sceneBlockChangeThreshold: 0.025,
+    sceneMinChangedBlocks: 8,
     // 静止し始めてからこれだけ後のコマを代表にする。フェードインの途中を避ける。
     settleMs: 250,
     // 変化ブロックとみなす閾値（0〜1）。
     blockChangeThreshold: 0.055,
     subtleBlockChangeThreshold: 0.030,
     minCandidateBlocks: 2,
+    // カーソルやフォーカスの一瞬の点滅を操作対象として確定しない。
+    operationPersistenceSamples: 2,
     // 変化した塊が全体のこの割合を超えたら画面全体の切り替わりとみなし、位置を出さない。
     maxLocalizedRatio: 0.35,
     // 安全弁。長い録画で手順が無制限に増えないようにする。
@@ -76,6 +82,12 @@
     let total = 0;
     for (let i = 0; i < a.length; i += 1) total += Math.abs(a[i] - b[i]);
     return total / a.length;
+  };
+
+  const isSameScene = (a, b, options) => {
+    const settings = { ...DEFAULTS, ...(options || {}) };
+    if (signatureDistance(a, b) >= settings.sceneDistance) return false;
+    return changedBlocks(a, b, settings.sceneBlockChangeThreshold).length < settings.sceneMinChangedBlocks;
   };
 
   // 変化したブロックの添字。
@@ -243,18 +255,28 @@
     let previousSignature = null;
     for (const run of runs) {
       if (run.durationMs < settings.minStillMs) continue;
-      // 静止し始めた直後は描画が終わっていないことがあるので少し後ろへずらす。
-      // ただし区間の半分より後ろへは行かない（次の操作の直前を拾わないため）。
-      const offset = Math.min(settings.settleMs, run.durationMs / 2);
-      const targetMs = run.startMs + offset;
-      // 目標時刻を過ぎた最初のコマを使う。目標より手前を選ぶと、
-      // 描画が終わっていない瞬間を代表にしてしまう。
-      let index = run.endIndex;
+      // 区間の入口を固定で採ると、フェードやレイアウト確定前のコマが混ざる。
+      // 入口を避けたうえで、区間内の他コマとの距離が最小の「多数派のコマ」を代表にする。
+      const earliestMs = run.startMs + Math.min(settings.settleMs, run.durationMs / 3);
+      const latestMs = run.endMs - Math.min(settings.settleMs / 2, run.durationMs / 4);
+      let eligible = [];
       for (let i = run.startIndex; i <= run.endIndex; i += 1) {
-        if (samples[i].timeMs >= targetMs) { index = i; break; }
+        if (samples[i].timeMs >= earliestMs && samples[i].timeMs <= latestMs) eligible.push(i);
+      }
+      if (eligible.length === 0) eligible = [Math.round((run.startIndex + run.endIndex) / 2)];
+      const centerMs = (run.startMs + run.endMs) / 2;
+      let index = eligible[0];
+      let bestScore = Number.POSITIVE_INFINITY;
+      for (const candidateIndex of eligible) {
+        let score = 0;
+        for (let i = run.startIndex; i <= run.endIndex; i += 1) {
+          score += signatureDistance(samples[candidateIndex].signature, samples[i].signature);
+        }
+        score += Math.abs(samples[candidateIndex].timeMs - centerMs) * 1e-9;
+        if (score < bestScore) { bestScore = score; index = candidateIndex; }
       }
       const signature = samples[index].signature;
-      if (previousSignature && signatureDistance(previousSignature, signature) < settings.sceneDistance) {
+      if (previousSignature && isSameScene(previousSignature, signature, settings)) {
         continue;
       }
       previousSignature = signature;
@@ -273,6 +295,37 @@
   const planScenes = (samples, options) => {
     const runs = detectStillRuns(samples, options);
     return selectScenes(samples, runs, options);
+  };
+
+  const rectIntersectionOverUnion = (a, b) => {
+    if (!a || !b) return 0;
+    const width = Math.max(0, Math.min(a.x2, b.x2) - Math.max(a.x1, b.x1));
+    const height = Math.max(0, Math.min(a.y2, b.y2) - Math.max(a.y1, b.y1));
+    const intersection = width * height;
+    const areaA = Math.max(0, a.x2 - a.x1) * Math.max(0, a.y2 - a.y1);
+    const areaB = Math.max(0, b.x2 - b.x1) * Math.max(0, b.y2 - b.y1);
+    const union = areaA + areaB - intersection;
+    return union > 0 ? intersection / union : 0;
+  };
+
+  // 近い時刻の複数コマに同じ領域が現れた場合だけ候補を返す。
+  // 1コマだけのカーソル残像・押下アニメーション・遷移ノイズはここで捨てる。
+  const selectPersistentCandidates = (candidateFrames, options) => {
+    const settings = { ...DEFAULTS, ...(options || {}) };
+    const required = Math.max(1, Number(settings.operationPersistenceSamples) || 1);
+    if (!candidateFrames || candidateFrames.length < required) return [];
+    const recent = candidateFrames.slice(-required);
+    const latest = recent[recent.length - 1] || [];
+    return latest.filter((candidate) => {
+      let current = candidate;
+      for (let frameIndex = recent.length - 2; frameIndex >= 0; frameIndex -= 1) {
+        const match = (recent[frameIndex] || []).find((previous) =>
+          rectIntersectionOverUnion(current.rect, previous.rect) >= 0.25);
+        if (!match) return false;
+        current = match;
+      }
+      return true;
+    });
   };
 
   // ---------------------------------------------------------------
@@ -334,11 +387,14 @@
   const locateOperation = async (player, readSignature, baseline, fromMs, toMs, settings) => {
     if (!(toMs > fromMs)) return [];
     const step = settings.fineIntervalMs;
+    const candidateFrames = [];
     for (let t = fromMs + step; t < toMs; t += step) {
       await seekTo(player, t / 1000);
       const signature = readSignature(player);
       const candidates = locateChangeCandidates(baseline, signature, settings);
-      if (candidates.length > 0) return candidates;
+      candidateFrames.push(candidates);
+      const persistent = selectPersistentCandidates(candidateFrames, settings);
+      if (persistent.length > 0) return persistent;
       // 圧縮ノイズやカーソルだけが先に変わることがある。局所候補が得られない
       // 最初の差で打ち切らず、次の静止場面まで探索を続ける。
     }
@@ -432,6 +488,7 @@
     DEFAULTS,
     createSignature,
     signatureDistance,
+    isSameScene,
     changedBlocks,
     largestCluster,
     connectedClusters,
@@ -442,6 +499,8 @@
     detectStillRuns,
     selectScenes,
     planScenes,
+    rectIntersectionOverUnion,
+    selectPersistentCandidates,
     extractScenes
   };
 
