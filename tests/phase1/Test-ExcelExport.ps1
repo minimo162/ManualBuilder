@@ -69,6 +69,9 @@ try {
     Update-MbStep -Project $project -StepId $first.Step.id -Title '=不正な式ではなくタイトル' `
         -Description '申請メニューを選択し、必要事項を入力します。' -Note '赤枠で入力欄を示しています。'
     Set-MbStepAnnotations -Project $project -StepId $first.Step.id -AnnotationsJson '[{"id":"annotation-00000000000000000000000000000031","type":"rect","x1":0.1,"y1":0.1,"x2":0.55,"y2":0.55,"label":0},{"id":"annotation-00000000000000000000000000000032","type":"number","x1":0.2,"y1":0.25,"x2":0.2,"y2":0.25,"label":1}]'
+    [void](Set-MbStepResultImage -Project $project -ProjectPath $projectPath -StepId $first.Step.id `
+        -Bytes (New-MbTestPngBytes -Color ([Drawing.Color]::LightCyan)) -Source file)
+    Assert-Mb ([string]$first.Step.imageLayout -eq 'side-by-side') '操作後画像つきの手順を左右比較で準備する'
 
     $wide = Add-MbImageStep -Project $project -ProjectPath $projectPath -SheetId $project.sheets[0].id `
         -Bytes (New-MbTestPngBytes -Color ([Drawing.Color]::PaleGreen) -Width 1920 -Height 500) -Source file
@@ -121,15 +124,28 @@ try {
         try { $workbookXml = $reader.ReadToEnd() } finally { $reader.Dispose() }
         Assert-Mb ($workbookXml -match '目次') '目次シートを出力する'
         Assert-Mb ($workbookXml -match '経費・申請・国内' -and $workbookXml -match '経費・申請・国内 \(2\)') '禁止文字と重複を処理したシート名を出力する'
+        Assert-Mb ($workbookXml -match '_xlnm\.Print_Titles') '印刷時に目次・セクション見出しを繰り返す'
+        $sharedStringsEntry = $archive.GetEntry('xl/sharedStrings.xml')
+        Assert-Mb ($null -ne $sharedStringsEntry) 'Excel内の表示文言を確認できる'
+        $sharedStringsReader = New-Object IO.StreamReader($sharedStringsEntry.Open(), [Text.Encoding]::UTF8)
+        try { $sharedStringsXml = $sharedStringsReader.ReadToEnd() } finally { $sharedStringsReader.Dispose() }
+        Assert-Mb ($sharedStringsXml -match '使い方' -and $sharedStringsXml -match 'シート名をクリックして開き') '目次にマニュアルの読み方を表示する'
+        Assert-Mb ($sharedStringsXml -match '開く　経費・申請・国内' -and $sharedStringsXml -match '← 目次へ戻る') '目次と各セクションの往復操作を明示する'
+        Assert-Mb ($sharedStringsXml -match '>操作<' -and $sharedStringsXml -match 'ポイント・注意') '操作本文と注意情報を明確に分ける'
+        Assert-Mb ($sharedStringsXml -match '全 4 手順' -and $sharedStringsXml -match '全 1 手順') '各セクションに総手順数を表示する'
         $drawingEntries = @($archive.Entries | Where-Object { $_.FullName -like 'xl/drawings/drawing*.xml' })
         $mediaEntries = @($archive.Entries | Where-Object { $_.FullName -like 'xl/media/*' })
         Assert-Mb ($drawingEntries.Count -ge 2 -and $mediaEntries.Count -ge 5) '各シートへスクリーンショットを埋め込む'
         $hasCompactCard = $false
         $hasExpandedCard = $false
+        $hasLandscapeFitToWidth = $false
+        $hasPageNumberFooter = $false
         $worksheetEntries = @($archive.Entries | Where-Object { $_.FullName -match '^xl/worksheets/sheet\d+\.xml$' })
         foreach ($worksheetEntry in $worksheetEntries) {
             $worksheetReader = New-Object IO.StreamReader($worksheetEntry.Open(), [Text.Encoding]::UTF8)
             try { $worksheetXml = $worksheetReader.ReadToEnd() } finally { $worksheetReader.Dispose() }
+            if ($worksheetXml -match '<pageSetup[^>]*orientation="landscape"' -and $worksheetXml -match 'fitToPage="1"') { $hasLandscapeFitToWidth = $true }
+            if ($worksheetXml -match '&amp;P / &amp;N') { $hasPageNumberFooter = $true }
             foreach ($merge in [regex]::Matches($worksheetXml, '<mergeCell ref="A(\d+):G(\d+)"')) {
                 $span = ([int]$merge.Groups[2].Value - [int]$merge.Groups[1].Value) + 1
                 if ($span -eq 7) { $hasCompactCard = $true }
@@ -138,6 +154,8 @@ try {
         }
         Assert-Mb $hasCompactCard '横長画像のExcelカードを7行へ縮める'
         Assert-Mb $hasExpandedCard '縦長画像または長文のExcelカードを26行以上へ広げる'
+        Assert-Mb $hasLandscapeFitToWidth '手順シートを横向き1ページ幅で印刷できる'
+        Assert-Mb $hasPageNumberFooter '印刷時のフッターにページ番号を表示する'
         $hasReadableImageExtent = $false
         foreach ($drawingEntry in $drawingEntries) {
             $drawingReader = New-Object IO.StreamReader($drawingEntry.Open(), [Text.Encoding]::UTF8)

@@ -106,6 +106,22 @@ $tiny = [pscustomobject]@{ title = ''; class = 'Window'; left = 0; top = 0; widt
 $tinyRegion = Get-MbCaptureRegion -Window $tiny -Target $null
 Add-Result ([int]$tinyRegion.width -gt 16) '極端に小さいウィンドウでは画面全体へ退避する'
 
+# クリック後画像は同じイベント番号へ -result を付け、操作前画像を上書きしない。
+$resultRoot = Join-Path $env:TEMP ('ManualBuilder-RecorderResult-' + [guid]::NewGuid().ToString('N'))
+$resultBitmap = $null
+try {
+    [void](New-Item -ItemType Directory -Path $resultRoot -Force)
+    $resultBitmap = New-Object Drawing.Bitmap -ArgumentList @(80, 60)
+    $resultCapture = [pscustomobject]@{ bitmap = $resultBitmap; origin = [pscustomobject]@{ left = 0; top = 0; width = 80; height = 60 } }
+    $resultWindow = [pscustomobject]@{ title = '詳細'; left = 0; top = 0; width = 80; height = 60 }
+    $resultName = Save-MbRecordingResultImage -Capture $resultCapture -Index 7 -EventsDirectory $resultRoot -Window $resultWindow
+    Add-Result ($resultName -eq 'event-007-result.jpg') 'クリック後画像を同じ操作へ関連付ける名前で保存する'
+    Add-Result (Test-Path -LiteralPath (Join-Path $resultRoot $resultName) -PathType Leaf) 'クリック後画像の実体を保存する'
+} finally {
+    if ($resultBitmap) { $resultBitmap.Dispose() }
+    Remove-Item -LiteralPath $resultRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 # ---------------------------------------------------------------------
 # 操作対象の矩形を画像の中の位置へ直す
 # ---------------------------------------------------------------------
@@ -322,6 +338,37 @@ Add-Result ([Math]::Abs([double]$pointFallback.left - 392.0) -lt 0.001 -and
 $edgeFallback = New-MbClickPointTargetInfo -X 101 -Y 101 -Window $window
 Add-Result ([double]$edgeFallback.left -ge 100.0 -and [double]$edgeFallback.top -ge 100.0) 'クリック位置の枠をウィンドウ外へ出さない'
 
+$wideSplitButton = [pscustomobject]@{
+    name = '名前'; controlType = 'ControlType.SplitButton'; provider = 'UIA-CACHE'
+    left = 340.0; top = 140.0; width = 360.0; height = 28.0
+}
+$widePoint = New-MbClickPointTargetInfo -X 470 -Y 155 -Window $window
+$widePrimary = Select-MbRecordingPrimaryTarget -Target $wideSplitButton -PointTarget $widePoint -Window $window
+Add-Result ([bool]$widePrimary.isFallback -and [Math]::Abs([double]$widePrimary.width - 56.0) -lt 0.001) '横長のUIA親要素は既定赤枠をクリック点へ寄せる'
+Add-Result ([string]$widePrimary.name -eq '名前') 'クリック点へ寄せても取得した対象名を文章化用に残す'
+Add-Result ([string](Get-MbRecorderTargetEvidence -Target $widePrimary).confidence -eq 'medium' -and
+    [string](Get-MbRecorderTargetEvidence -Target $wideSplitButton).confidence -eq 'low') `
+    'クリック座標を中信頼、横長UIAを低信頼としてCopilotへ渡す'
+
+$observedExplorerSplitButton = [pscustomobject]@{
+    name = '名前'; controlType = 'ControlType.SplitButton'; provider = 'UIA'
+    left = 340.0; top = 140.0; width = 194.0; height = 28.0
+}
+$observedPrimary = Select-MbRecordingPrimaryTarget -Target $observedExplorerSplitButton -PointTarget `
+    (New-MbClickPointTargetInfo -X 470 -Y 155 -Window $window) -Window $window
+Add-Result ([bool]$observedPrimary.isFallback) '実機で観測した幅24%のExplorer誤候補もクリック点へ寄せる'
+
+$smallButton = [pscustomobject]@{
+    name = '保存'; controlType = 'ControlType.Button'; provider = 'UIA-CACHE'
+    left = 430.0; top = 340.0; width = 90.0; height = 32.0
+}
+$smallPrimary = Select-MbRecordingPrimaryTarget -Target $smallButton -PointTarget $pointFallback -Window $window
+Add-Result (-not [bool]$smallPrimary.isFallback -and [string]$smallPrimary.name -eq '保存') '妥当なUIAボタンはクリック点へ置き換えない'
+
+$normalizedPoint = ConvertTo-MbNormalizedClickPoint -Region $capturedRegion -X 500 -Y 400
+Add-Result ([Math]::Abs([double]$normalizedPoint.x - 0.5) -lt 0.001 -and
+    [Math]::Abs([double]$normalizedPoint.y - 0.5) -lt 0.001) 'クリック座標を記録画像内の位置へ正規化する'
+
 # ---------------------------------------------------------------------
 # 記録用EdgeのDOM座標
 # ---------------------------------------------------------------------
@@ -403,6 +450,10 @@ Add-Result ($typingKeys -contains 0x08) 'BackSpaceを見る'
 Add-Result ($typingKeys -notcontains 0x11) 'Ctrlだけでは入力とみなさない'
 Add-Result ($typingKeys -notcontains 0x10) 'Shiftだけでは入力とみなさない'
 Add-Result ($typingKeys -notcontains 0x09) 'Tabだけでは入力とみなさない'
+Add-Result (-not (Test-MbTextChangingShortcutKey -VirtualKey 0x4C)) 'Ctrl+Lの移動を入力内容の変更とみなさない'
+Add-Result (-not (Test-MbTextChangingShortcutKey -VirtualKey 0x46)) 'Ctrl+Fの検索開始を入力内容の変更とみなさない'
+Add-Result (Test-MbTextChangingShortcutKey -VirtualKey 0x56) 'Ctrl+Vの貼り付けは入力内容の変更として残す'
+Add-Result (Test-MbTextChangingShortcutKey -VirtualKey 0x5A) 'Ctrl+ZのUndoは入力内容の変更として残す'
 
 # タッチパッドの短いタップは次の巡回時には離されていることがある。
 # その場合も GetAsyncKeyState の下位ビットから押下を拾う。
@@ -431,6 +482,69 @@ if (-not $capability.available) {
 # ---------------------------------------------------------------------
 Import-Module (Join-Path $srcRoot 'ManualBuilder.RecorderServer.psm1') -Force
 
+# 記録一覧で操作前／操作後を関連付け、取り込み後も別画像として保持する。
+$importRoot = Join-Path $env:TEMP ('ManualBuilder-RecorderImport-' + [guid]::NewGuid().ToString('N'))
+$beforeBitmap = $null; $afterBitmap = $null
+try {
+    $eventDirectory = Join-Path $importRoot 'events'
+    [void](New-Item -ItemType Directory -Path $eventDirectory -Force)
+    $beforePath = Join-Path $eventDirectory 'event-001.jpg'
+    $afterPath = Join-Path $eventDirectory 'event-001-result.jpg'
+    $beforeBitmap = New-Object Drawing.Bitmap -ArgumentList @(64, 40)
+    $afterBitmap = New-Object Drawing.Bitmap -ArgumentList @(64, 40)
+    $beforeGraphics = [Drawing.Graphics]::FromImage($beforeBitmap)
+    $afterGraphics = [Drawing.Graphics]::FromImage($afterBitmap)
+    try {
+        $beforeGraphics.Clear([Drawing.Color]::White)
+        $afterGraphics.Clear([Drawing.Color]::LightBlue)
+        $beforeBitmap.Save($beforePath, [Drawing.Imaging.ImageFormat]::Jpeg)
+        $afterBitmap.Save($afterPath, [Drawing.Imaging.ImageFormat]::Jpeg)
+    } finally { $beforeGraphics.Dispose(); $afterGraphics.Dispose() }
+    $eventsPath = Join-Path $importRoot 'events.jsonl'
+    $eventJson = [pscustomobject]@{
+        index = 1; kind = 'click'; timeMs = 1000; image = 'event-001.jpg'
+        windowTitle = '詳細'; targetName = '詳細を表示'; targetType = 'ControlType.Button'
+        rect = [pscustomobject]@{ x1 = 0.1; y1 = 0.1; x2 = 0.3; y2 = 0.2 }
+    } | ConvertTo-Json -Compress -Depth 5
+    [IO.File]::WriteAllText($eventsPath, $eventJson + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+    $job = [pscustomobject]@{ EventsPath = $eventsPath; EventsDirectory = $eventDirectory; NarrationPath = (Join-Path $importRoot 'narration.jsonl') }
+    & (Get-Module ManualBuilder.RecorderServer) { param($Job) $script:MbRecordingJob = $Job } $job
+    $listedEvents = @(Get-MbRecordedEvents)
+    Add-Result ([string]$listedEvents[0].resultImage -eq 'event-001-result.jpg') '確認一覧でクリック後画像を同じ操作へ関連付ける'
+
+    $importProject = New-MbProject
+    $importProjectPath = Join-Path $importRoot 'project.json'
+    $importProject = Save-MbProject -Project $importProject -Path $importProjectPath
+    $imported = Import-MbRecordedEvents -Project $importProject -ProjectPath $importProjectPath -SheetId $importProject.sheets[0].id
+    $importedStep = @($importProject.sheets[0].steps)[0]
+    Add-Result ([int]$imported.added -eq 1) '操作後画像つきの記録を手順へ取り込む'
+    Add-Result (-not [string]::IsNullOrWhiteSpace([string]$importedStep.resultImageId)) '取り込み後も操作後画像を手順へ保持する'
+    Add-Result ([string]$importedStep.imageId -ne [string]$importedStep.resultImageId) '操作前画像と操作後画像を混同しない'
+    Add-Result ([string]$importedStep.imageLayout -eq 'side-by-side') '操作後画像つきの記録を左右比較で取り込む'
+} finally {
+    & (Get-Module ManualBuilder.RecorderServer) { $script:MbRecordingJob = $null }
+    if ($beforeBitmap) { $beforeBitmap.Dispose() }
+    if ($afterBitmap) { $afterBitmap.Dispose() }
+    Remove-Item -LiteralPath $importRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+$practicalEvents = @(
+    [pscustomobject]@{ index = 1; timeMs = 1000; kind = 'click'; targetType = 'ControlType.Edit'; targetName = '検索'; windowTitle = 'Explorer' },
+    [pscustomobject]@{ index = 2; timeMs = 2400; kind = 'input'; targetType = 'ControlType.Edit'; targetName = '検索'; windowTitle = 'Explorer' },
+    [pscustomobject]@{ index = 3; timeMs = 4000; kind = 'click'; targetType = 'ControlType.Button'; targetName = '並べ替え'; windowTitle = 'Explorer' },
+    [pscustomobject]@{ index = 4; timeMs = 4700; kind = 'click'; targetType = 'ControlType.MenuItem'; targetName = '更新日時'; windowTitle = 'Explorer' }
+)
+$mergedPracticalEvents = @(Merge-MbRecordedEditInteractions -Events $practicalEvents)
+Add-Result ($mergedPracticalEvents.Count -eq 3) '入力欄のクリックと直後の入力を1手順へまとめる'
+Add-Result ([int]$mergedPracticalEvents[0].index -eq 2) '入力済み画面を持つ入力手順を残す'
+Add-Result ([int]$mergedPracticalEvents[1].index -eq 3 -and [int]$mergedPracticalEvents[2].index -eq 4) `
+    '並べ替えメニューと選択肢は別々の操作として残す'
+$slowEditEvents = @(
+    [pscustomobject]@{ index = 1; timeMs = 1000; kind = 'click'; targetType = 'ControlType.Edit'; targetName = '検索'; windowTitle = 'Explorer' },
+    [pscustomobject]@{ index = 2; timeMs = 8000; kind = 'input'; targetType = 'ControlType.Edit'; targetName = '検索'; windowTitle = 'Explorer' }
+)
+Add-Result (@(Merge-MbRecordedEditInteractions -Events $slowEditEvents).Count -eq 2) '間を置いた入力欄クリックは独立操作として残す'
+
 $focusRect = [pscustomobject]@{ x1 = 0.7; y1 = 0.7; x2 = 0.8; y2 = 0.75 }
 $focusCrop = Get-MbRecorderTargetCrop -Rect $focusRect -TargetType 'ControlType.Button'
 Add-Result ($null -ne $focusCrop -and [double]$focusCrop.width -eq 0.55 -and [double]$focusCrop.height -eq 0.55) '特定できた操作対象の周辺を初期表示する'
@@ -441,10 +555,13 @@ Add-Result ($null -eq $fallbackCrop) '対象不明のクリックは自動で切
 $candidateProject = New-MbProject
 $candidateStep = Add-MbStep -Project $candidateProject -SheetId $candidateProject.sheets[0].id
 [void](Set-MbStepCapture -Project $candidateProject -StepId $candidateStep.id -TargetCandidateId 'missing' `
-    -TargetCandidatesJson '[{"id":"dom-1","source":"DOM","confidence":"medium","label":"送信","targetType":"ControlType.Button","rect":{"x1":0.4,"y1":0.4,"x2":0.6,"y2":0.5}},{"id":"dom-1","source":"UIA","confidence":"low","label":"重複","targetType":"ControlType.Text","rect":{"x1":0.4,"y1":0.4,"x2":0.6,"y2":0.5}}]')
+    -TargetCandidatesJson '[{"id":"dom-1","source":"DOM","confidence":"medium","label":"送信","targetType":"ControlType.Button","rect":{"x1":0.4,"y1":0.4,"x2":0.6,"y2":0.5}},{"id":"dom-1","source":"UIA","confidence":"low","label":"重複","targetType":"ControlType.Text","rect":{"x1":0.4,"y1":0.4,"x2":0.6,"y2":0.5}}]' `
+    -ClickPointJson '{"x":0.52,"y":0.48}')
 $candidateStep = Get-MbStepById -Project $candidateProject -StepId $candidateStep.id
 Add-Result (@($candidateStep.capture.targetCandidates).Count -eq 1) '重複する候補IDを保存しない'
 Add-Result ([string]$candidateStep.capture.targetCandidateId -eq 'dom-1') '現在候補が一覧外なら保存済みの先頭候補へ戻す'
+Add-Result ([Math]::Abs([double]$candidateStep.capture.clickPoint.x - 0.52) -lt 0.001 -and
+    [Math]::Abs([double]$candidateStep.capture.clickPoint.y - 0.48) -lt 0.001) 'クリック位置を手順へ引き継ぐ'
 
 $bulkProject = New-MbProject
 $sourceSheet = $bulkProject.sheets[0]

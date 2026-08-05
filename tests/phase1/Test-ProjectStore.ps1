@@ -31,6 +31,7 @@ try {
     Assert-Mb (@($step.annotations).Count -eq 0) '新しい手順の注釈一覧が空である'
     Assert-Mb ([double]$step.crop.width -eq 1 -and [double]$step.crop.height -eq 1) '新しい手順の切り抜き範囲が画像全体である'
     Assert-Mb (-not [bool]$step.review.required) '新しい手順は要確認ではない'
+    Assert-Mb ([string]$step.imageLayout -eq 'before' -and [string]$step.imageOrder -eq 'before-after') '新しい手順は操作前画像だけを表示する'
     [void](Set-MbStepReview -Project $project -StepId $step.id -Action 'review' -Reason 'Copilotの判断に自信がありません。')
     $project = Save-MbProject -Project $project -Path $projectPath
 
@@ -49,9 +50,12 @@ try {
     Assert-Mb (-not [bool]$loadedStep.review.required -and [string]::IsNullOrWhiteSpace([string]$loadedStep.review.action)) '明示操作で要確認を解除できる'
     $loadedStep.PSObject.Properties.Remove('crop')
     $loadedStep.PSObject.Properties.Remove('review')
+    $loadedStep.PSObject.Properties.Remove('imageLayout')
+    $loadedStep.PSObject.Properties.Remove('imageOrder')
     [void](Save-MbProject -Project $loaded -Path $projectPath)
     Assert-Mb ([double]$loadedStep.crop.width -eq 1 -and [double]$loadedStep.crop.height -eq 1) '既存プロジェクトへ画像全体の切り抜き範囲を補完する'
     Assert-Mb (-not [bool]$loadedStep.review.required) '既存プロジェクトへ要確認の既定値を補完する'
+    Assert-Mb ([string]$loadedStep.imageLayout -eq 'before' -and [string]$loadedStep.imageOrder -eq 'before-after') '既存プロジェクトへ画像配置の既定値を補完する'
 
     $temporaryStep = Add-MbStep -Project $loaded -SheetId $sheet2.id
     Update-MbStep -Project $loaded -StepId $temporaryStep.id -Title '並べ替え対象' -Description '' -Note ''

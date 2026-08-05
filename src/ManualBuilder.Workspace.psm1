@@ -407,134 +407,7 @@ function Import-MbCatalogProjectPackage {
 }
 
 function New-MbEmptyWorkspaceSettings {
-    return [pscustomobject]@{ schemaVersion = 1; lastOpenedProjectKey = ''; publishTargets = [pscustomobject]@{} }
-}
-
-function Find-MbCatalogProjectById {
-    param(
-        [Parameter(Mandatory = $true)][string]$DataRoot,
-        [Parameter(Mandatory = $true)][string]$ProjectId
-    )
-    # 同じマニュアルを何度取り込んでも増えないよう、project.json の id で既存を探す。
-    if ([string]$ProjectId -notmatch '^project-[a-f0-9]{32}$') { return $null }
-    $root = Get-MbProjectCollectionRoot -DataRoot $DataRoot
-    if (-not (Test-Path -LiteralPath $root -PathType Container)) { return $null }
-    foreach ($directory in @(Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue)) {
-        if (-not (Test-MbProjectKey -ProjectKey $directory.Name)) { continue }
-        $projectPath = Join-Path $directory.FullName 'project.json'
-        if (-not (Test-Path -LiteralPath $projectPath -PathType Leaf)) { continue }
-        try {
-            $candidate = [IO.File]::ReadAllText($projectPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
-            if ([string]$candidate.id -eq $ProjectId) {
-                return [pscustomobject]@{ Key = $directory.Name; Path = $projectPath; Revision = [int]$candidate.revision }
-            }
-        } catch { }
-    }
-    return $null
-}
-
-function Import-MbCatalogProjectFolder {
-    param(
-        [Parameter(Mandatory = $true)][string]$DataRoot,
-        [Parameter(Mandatory = $true)][string]$SourceFolder
-    )
-    # HTML出力に同梱した _source フォルダーを、そのまま取り込む。
-    # ZIP取り込みと違い、同じマニュアルなら新しく作らず既存を返す。
-    $fullSource = [IO.Path]::GetFullPath($SourceFolder)
-    if (-not (Test-Path -LiteralPath $fullSource -PathType Container)) { throw '取り込む元データのフォルダーが見つかりません。' }
-    $sourceProjectPath = Join-Path $fullSource 'project.json'
-    if (-not (Test-Path -LiteralPath $sourceProjectPath -PathType Leaf)) { throw '元データに project.json がありません。' }
-
-    $sourceProject = Get-MbProject -Path $sourceProjectPath
-    Test-MbCatalogProjectFiles -Project $sourceProject -ProjectPath $sourceProjectPath
-
-    $sourceRevision = [int]$sourceProject.revision
-    $sourceContentHash = (Get-FileHash -LiteralPath $sourceProjectPath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
-    $existing = Find-MbCatalogProjectById -DataRoot $DataRoot -ProjectId ([string]$sourceProject.id)
-    $importStatus = 'imported'
-    $forkProjectId = ''
-    if ($existing) {
-        $localContentHash = (Get-FileHash -LiteralPath ([string]$existing.Path) -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
-        $contentMatches = $sourceContentHash.Equals($localContentHash, [StringComparison]::OrdinalIgnoreCase)
-        $localRevision = [int]$existing.Revision
-
-        # 同じ内容、またはローカル側が明確に新しい場合は、従来どおり既存を開く。
-        # 共有側が新しい（または同じrevisionなのに内容が違う）場合に既存を開くと、
-        # その後の「共有フォルダーへ反映」で古いローカル版を上書きしてしまう。
-        if ($contentMatches -or $sourceRevision -lt $localRevision) {
-            return [pscustomobject]@{
-                Status         = 'existing'
-                Key            = [string]$existing.Key
-                Path           = [string]$existing.Path
-                Project        = (Get-MbProject -Path ([string]$existing.Path))
-                SourceRevision = $sourceRevision
-                LocalRevision  = $localRevision
-            }
-        }
-
-        # 共有版を安全な別項目として取り込む。同じ共有版を何度開いても増えないよう、
-        # 元データのハッシュから安定したプロジェクトIDを作る。
-        $forkProjectId = 'project-' + $sourceContentHash.Substring(0, 32)
-        if ($forkProjectId -eq [string]$sourceProject.id) {
-            $forkProjectId = 'project-' + $sourceContentHash.Substring(32, 32)
-        }
-        $existingFork = Find-MbCatalogProjectById -DataRoot $DataRoot -ProjectId $forkProjectId
-        if ($existingFork) {
-            return [pscustomobject]@{
-                Status         = 'existing'
-                Key            = [string]$existingFork.Key
-                Path           = [string]$existingFork.Path
-                Project        = (Get-MbProject -Path ([string]$existingFork.Path))
-                SourceRevision = $sourceRevision
-                LocalRevision  = [int]$existingFork.Revision
-            }
-        }
-        $importStatus = if ($sourceRevision -gt $localRevision) { 'imported-newer' } else { 'imported-conflict' }
-    }
-
-    $newKey = 'project-' + [guid]::NewGuid().ToString('N')
-    $projectsRoot = Get-MbProjectCollectionRoot -DataRoot $DataRoot
-    [void](New-Item -ItemType Directory -Path $projectsRoot -Force)
-    $destinationDirectory = Join-Path $projectsRoot $newKey
-    $stagingDirectory = Join-Path $projectsRoot ('.import-' + [guid]::NewGuid().ToString('N'))
-    try {
-        [void](New-Item -ItemType Directory -Path $stagingDirectory)
-        foreach ($name in @('project.json', 'images', 'videos')) {
-            $path = Join-Path $fullSource $name
-            if (Test-Path -LiteralPath $path) {
-                Copy-Item -LiteralPath $path -Destination $stagingDirectory -Recurse -Force -ErrorAction Stop
-            }
-        }
-        $stagedPath = Join-Path $stagingDirectory 'project.json'
-        $staged = Get-MbProject -Path $stagedPath
-        $now = [DateTime]::UtcNow.ToString('o')
-        if ($forkProjectId) {
-            $staged.id = $forkProjectId
-            $suffix = ' - 共有版'
-            $baseLength = [Math]::Max(0, 100 - $suffix.Length)
-            $baseTitle = [string]$staged.title
-            if ($baseTitle.Length -gt $baseLength) { $baseTitle = $baseTitle.Substring(0, $baseLength).TrimEnd() }
-            $staged.title = $baseTitle + $suffix
-        }
-        $staged.createdAt = $now
-        $staged.updatedAt = $now
-        if (Test-Path -LiteralPath "$stagedPath.bak" -PathType Leaf) { Remove-Item -LiteralPath "$stagedPath.bak" -Force }
-        $staged = Save-MbProject -Project $staged -Path $stagedPath
-        Test-MbCatalogProjectFiles -Project $staged -ProjectPath $stagedPath
-        [IO.Directory]::Move($stagingDirectory, $destinationDirectory)
-        return [pscustomobject]@{
-            Status         = $importStatus
-            Key            = $newKey
-            Path           = (Join-Path $destinationDirectory 'project.json')
-            Project        = $staged
-            SourceRevision = $sourceRevision
-            LocalRevision  = 0
-        }
-    } finally {
-        if (Test-Path -LiteralPath $stagingDirectory -PathType Container) {
-            Remove-Item -LiteralPath $stagingDirectory -Recurse -Force -ErrorAction SilentlyContinue
-        }
-    }
+    return [pscustomobject]@{ schemaVersion = 1; lastOpenedProjectKey = '' }
 }
 
 function Get-MbWorkspaceSettings {
@@ -546,17 +419,7 @@ function Get-MbWorkspaceSettings {
         if ([int]$settings.schemaVersion -ne 1) { throw '設定形式が不正です。' }
         $key = [string]$settings.lastOpenedProjectKey
         if ($key -and -not (Test-MbProjectKey -ProjectKey $key)) { $key = '' }
-        # 配布先（共有フォルダーへ反映するときのコピー先）。旧設定には無いので補う。
-        $targets = [pscustomobject]@{}
-        if ($settings.PSObject.Properties.Name -contains 'publishTargets' -and $null -ne $settings.publishTargets) {
-            foreach ($property in @($settings.publishTargets.PSObject.Properties)) {
-                if (-not (Test-MbProjectKey -ProjectKey ([string]$property.Name))) { continue }
-                $value = [string]$property.Value
-                if ([string]::IsNullOrWhiteSpace($value)) { continue }
-                $targets | Add-Member -NotePropertyName ([string]$property.Name) -NotePropertyValue $value -Force
-            }
-        }
-        return [pscustomobject]@{ schemaVersion = 1; lastOpenedProjectKey = $key; publishTargets = $targets }
+        return [pscustomobject]@{ schemaVersion = 1; lastOpenedProjectKey = $key }
     } catch {
         return New-MbEmptyWorkspaceSettings
     }
@@ -584,43 +447,12 @@ function Save-MbWorkspaceSettings {
     }
 }
 
-function Get-MbPublishTarget {
-    param(
-        [Parameter(Mandatory = $true)][string]$DataRoot,
-        [Parameter(Mandatory = $true)][string]$ProjectKey
-    )
-    $settings = Get-MbWorkspaceSettings -DataRoot $DataRoot
-    # 空のpscustomobjectでは Properties.Name が取れないため、名前で直接引く。
-    $property = $settings.publishTargets.PSObject.Properties[$ProjectKey]
-    if (-not $property) { return '' }
-    return [string]$property.Value
-}
-
-function Set-MbPublishTarget {
-    param(
-        [Parameter(Mandatory = $true)][string]$DataRoot,
-        [Parameter(Mandatory = $true)][string]$ProjectKey,
-        [AllowEmptyString()][string]$Path
-    )
-    if (-not (Test-MbProjectKey -ProjectKey $ProjectKey)) { throw 'マニュアルIDが不正です。' }
-    $settings = Get-MbWorkspaceSettings -DataRoot $DataRoot
-    if ([string]::IsNullOrWhiteSpace($Path)) {
-        if ($settings.publishTargets.PSObject.Properties[$ProjectKey]) {
-            $settings.publishTargets.PSObject.Properties.Remove($ProjectKey)
-        }
-    } else {
-        $settings.publishTargets | Add-Member -NotePropertyName $ProjectKey -NotePropertyValue ([string]$Path) -Force
-    }
-    Save-MbWorkspaceSettings -DataRoot $DataRoot -Settings $settings
-}
-
 function Set-MbLastOpenedProject {
     param(
         [Parameter(Mandatory = $true)][string]$DataRoot,
         [Parameter(Mandatory = $true)][string]$ProjectKey
     )
     if (-not (Test-MbProjectKey -ProjectKey $ProjectKey)) { throw 'マニュアルIDが不正です。' }
-    # 配布先などの他の設定を消さないよう、読み込んでから書き戻す。
     $settings = Get-MbWorkspaceSettings -DataRoot $DataRoot
     $settings.lastOpenedProjectKey = $ProjectKey
     Save-MbWorkspaceSettings -DataRoot $DataRoot -Settings $settings
@@ -638,9 +470,5 @@ Export-ModuleMember -Function @(
     'Export-MbCatalogProjectPackage',
     'Import-MbCatalogProjectPackage',
     'Get-MbWorkspaceSettings',
-    'Set-MbLastOpenedProject',
-    'Get-MbPublishTarget',
-    'Set-MbPublishTarget',
-    'Find-MbCatalogProjectById',
-    'Import-MbCatalogProjectFolder'
+    'Set-MbLastOpenedProject'
 )

@@ -63,6 +63,18 @@ $emptyStep = New-MbTestStep -AnnotationCount 0
 $emptyHtml = ConvertTo-MbStepCardHtml -Step $emptyStep -Number 1 -Total 1 -Token 'testtoken'
 Assert-Mb ((Get-MbAnnotationsJson -Html $emptyHtml) -eq '[]') '注釈が0件のときは空配列を出力する'
 
+$resultStep = New-MbTestStep -AnnotationCount 0
+$resultStep | Add-Member -NotePropertyName resultImageId -NotePropertyValue ('image-' + ([guid]::NewGuid().ToString('N')))
+$resultStep | Add-Member -NotePropertyName imageLayout -NotePropertyValue 'side-by-side'
+$resultStep | Add-Member -NotePropertyName imageOrder -NotePropertyValue 'after-before'
+$resultHtml = ConvertTo-MbStepCardHtml -Step $resultStep -Number 1 -Total 1 -Token 'testtoken'
+Assert-Mb ($resultHtml -match 'step-visual-item--before' -and $resultHtml -match 'step-visual-item--after') '操作前と操作後を同じ手順カードに表示する'
+Assert-Mb ($resultHtml -match [regex]::Escape([string]$resultStep.resultImageId)) '結果画像を操作前画像と別に参照する'
+Assert-Mb ($resultHtml -match 'step-visual-layout--side-by-side step-visual-layout--reverse') '選んだ左右配置と前後順を表示へ反映する'
+Assert-Mb (([regex]::Matches($resultHtml, 'data-image-layout-option=')).Count -eq 4) '4種類の画像配置を選べる'
+Assert-Mb ($resultHtml -match 'data-swap-image-order' -and $resultHtml -match 'data-remove-result-image') '比較画像の順序変更と取り外しができる'
+Assert-Mb ($emptyHtml -match 'data-add-result-image') '1枚の手順から比較画像を追加できる'
+
 Write-Host ''
 Write-Host '--- 撮影監視の状態表示 ---' -ForegroundColor Cyan
 

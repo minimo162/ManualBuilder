@@ -28,6 +28,9 @@
     // このブロック差分（0〜1）以下なら画面は止まっているとみなす。
     // 動画のノイズとマウスカーソルの移動を吸収できる程度に取る。
     staticThreshold: 0.010,
+    // 平均差が小さくても、チェックや小ボタンなど複数ブロックの状態変化は区切る。
+    staticBlockChangeThreshold: 0.045,
+    minStaticChangeBlocks: 3,
     // これより短い静止は手順にしない。メニューが開く途中などの通過点を弾く。
     minStillMs: 700,
     // 直前に採用した場面とこの距離以下なら同じ画面とみなして採用しない。
@@ -35,7 +38,7 @@
     // ヘッダーが共通の業務画面は平均差が小さくても、本文の複数ブロックが変わる。
     // この数以上の明確な変化があれば、平均差だけで重複扱いしない。
     sceneBlockChangeThreshold: 0.025,
-    sceneMinChangedBlocks: 8,
+    sceneMinChangedBlocks: 3,
     // 静止し始めてからこれだけ後のコマを代表にする。フェードインの途中を避ける。
     settleMs: 250,
     // 変化ブロックとみなす閾値（0〜1）。
@@ -44,6 +47,10 @@
     minCandidateBlocks: 2,
     // カーソルやフォーカスの一瞬の点滅を操作対象として確定しない。
     operationPersistenceSamples: 2,
+    // 小さな領域でも区間中ずっと動くスピナー・進捗表示は静止画として採用しない。
+    animatedBlockChangeThreshold: 0.035,
+    minAnimatedBlocks: 4,
+    maxAnimatedPairRatio: 0.45,
     // 変化した塊が全体のこの割合を超えたら画面全体の切り替わりとみなし、位置を出さない。
     maxLocalizedRatio: 0.35,
     // 安全弁。長い録画で手順が無制限に増えないようにする。
@@ -231,10 +238,15 @@
     if (!samples || samples.length === 0) return runs;
     let startIndex = 0;
     for (let i = 1; i <= samples.length; i += 1) {
-      const moved = i < samples.length && (
-        signatureDistance(samples[i - 1].signature, samples[i].signature) > settings.staticThreshold ||
-        signatureDistance(samples[startIndex].signature, samples[i].signature) > settings.staticThreshold
-      );
+      const moved = i < samples.length && (() => {
+        const previous = samples[i - 1].signature;
+        const current = samples[i].signature;
+        const start = samples[startIndex].signature;
+        return signatureDistance(previous, current) > settings.staticThreshold ||
+          signatureDistance(start, current) > settings.staticThreshold ||
+          changedBlocks(previous, current, settings.staticBlockChangeThreshold).length >= settings.minStaticChangeBlocks ||
+          changedBlocks(start, current, settings.staticBlockChangeThreshold).length >= settings.minStaticChangeBlocks;
+      })();
       if (moved || i === samples.length) {
         runs.push({ startIndex, endIndex: i - 1 });
         startIndex = i;
@@ -248,6 +260,18 @@
     });
   };
 
+  const isAnimatedRun = (samples, run, options) => {
+    const settings = { ...DEFAULTS, ...(options || {}) };
+    const pairCount = Math.max(0, run.endIndex - run.startIndex);
+    if (pairCount < 3) return false;
+    let movingPairs = 0;
+    for (let i = run.startIndex + 1; i <= run.endIndex; i += 1) {
+      const changed = changedBlocks(samples[i - 1].signature, samples[i].signature, settings.animatedBlockChangeThreshold);
+      if (changed.length >= settings.minAnimatedBlocks) movingPairs += 1;
+    }
+    return (movingPairs / pairCount) > settings.maxAnimatedPairRatio;
+  };
+
   // 静止区間から採用する場面を選ぶ。
   const selectScenes = (samples, runs, options) => {
     const settings = { ...DEFAULTS, ...(options || {}) };
@@ -255,6 +279,7 @@
     let previousSignature = null;
     for (const run of runs) {
       if (run.durationMs < settings.minStillMs) continue;
+      if (isAnimatedRun(samples, run, settings)) continue;
       // 区間の入口を固定で採ると、フェードやレイアウト確定前のコマが混ざる。
       // 入口を避けたうえで、区間内の他コマとの距離が最小の「多数派のコマ」を代表にする。
       const earliestMs = run.startMs + Math.min(settings.settleMs, run.durationMs / 3);
@@ -497,6 +522,7 @@
     locateChangeCandidates,
     planSampleTimes,
     detectStillRuns,
+    isAnimatedRun,
     selectScenes,
     planScenes,
     rectIntersectionOverUnion,

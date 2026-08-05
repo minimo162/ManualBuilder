@@ -154,6 +154,46 @@ function Add-MbImageStep {
     return [pscustomobject]@{ Status = 'added'; Step = $step; Image = $asset.Image }
 }
 
+function Set-MbStepResultImage {
+    param(
+        [Parameter(Mandatory = $true)][object]$Project,
+        [Parameter(Mandatory = $true)][string]$ProjectPath,
+        [Parameter(Mandatory = $true)][string]$StepId,
+        [Parameter(Mandatory = $true)][byte[]]$Bytes,
+        [ValidateSet('paste', 'drop', 'file', 'recorder')][string]$Source = 'file'
+    )
+    $step = Get-MbStepById -Project $Project -StepId $StepId
+    if (-not $step) { throw '対象手順が見つかりません。' }
+    if ([string]::IsNullOrWhiteSpace([string]$step.imageId)) { throw '先に1枚目の画像を追加してください。' }
+    $asset = Add-MbImageAsset -Project $Project -ProjectPath $ProjectPath -Bytes $Bytes -Source $Source
+    if ([string]$step.resultImageId -eq [string]$asset.Image.id) {
+        return [pscustomobject]@{ Status = 'duplicate'; Step = $step; Image = $asset.Image; RemovedPath = $null }
+    }
+    $previousImageId = [string]$step.resultImageId
+    $step.resultImageId = [string]$asset.Image.id
+    if ([string]$step.imageLayout -eq 'before') { $step.imageLayout = 'side-by-side' }
+    $step.updatedAt = [DateTime]::UtcNow.ToString('o')
+    $removedPath = Remove-MbUnusedImage -Project $Project -ProjectPath $ProjectPath -ImageId $previousImageId
+    return [pscustomobject]@{ Status = 'set'; Step = $step; Image = $asset.Image; RemovedPath = $removedPath }
+}
+
+function Remove-MbStepResultImage {
+    param(
+        [Parameter(Mandatory = $true)][object]$Project,
+        [Parameter(Mandatory = $true)][string]$ProjectPath,
+        [Parameter(Mandatory = $true)][string]$StepId
+    )
+    $step = Get-MbStepById -Project $Project -StepId $StepId
+    if (-not $step) { throw '対象手順が見つかりません。' }
+    $removedImageId = [string]$step.resultImageId
+    $step.resultImageId = $null
+    $step.imageLayout = 'before'
+    $step.imageOrder = 'before-after'
+    $step.updatedAt = [DateTime]::UtcNow.ToString('o')
+    $removedPath = Remove-MbUnusedImage -Project $Project -ProjectPath $ProjectPath -ImageId $removedImageId
+    return [pscustomobject]@{ Step = $step; RemovedPath = $removedPath }
+}
+
 function Set-MbStepImage {
     param(
         [Parameter(Mandatory = $true)][object]$Project,
@@ -230,6 +270,8 @@ function Remove-MbUnusedImage {
     foreach ($sheet in @($Project.sheets)) {
         foreach ($step in @($sheet.steps)) {
             if ([string]$step.imageId -eq $ImageId) { return $null }
+            if ($step.PSObject.Properties.Name -contains 'resultImageId' -and
+                [string]$step.resultImageId -eq $ImageId) { return $null }
         }
     }
 
@@ -251,6 +293,10 @@ function Remove-MbUnreferencedImages {
         foreach ($step in @($sheet.steps)) {
             $imageId = [string]$step.imageId
             if (-not [string]::IsNullOrWhiteSpace($imageId)) { $referenced[$imageId] = $true }
+            if ($step.PSObject.Properties.Name -contains 'resultImageId') {
+                $resultImageId = [string]$step.resultImageId
+                if (-not [string]::IsNullOrWhiteSpace($resultImageId)) { $referenced[$resultImageId] = $true }
+            }
         }
     }
 
@@ -265,9 +311,9 @@ function Remove-MbUnreferencedImages {
     return @($paths)
 }
 
-# --- 動画（ExcelとHTMLの出力から再生する） ---------------------------------
+# --- 動画（Excel出力から再生する） -----------------------------------------
 # 動画はブラウザーへ配信しない。手順カードにはコマから作った静止画を出し、
-# 動画本体はExcelとHTMLの出力のときだけファイルとして読む。
+# 動画本体はExcel出力のときだけファイルとして読む。
 # これにより単一スレッドのHttpListenerで大きな配信が走らず、Range要求も不要になる。
 
 $script:MbVideoMaxBytes = 30 * 1024 * 1024
@@ -492,7 +538,10 @@ function Resolve-MbScreenshotDirectory {
 Export-ModuleMember -Function @(
     'Get-MbImageKind',
     'Get-MbImageFilePath',
+    'Add-MbImageAsset',
     'Add-MbImageStep',
+    'Set-MbStepResultImage',
+    'Remove-MbStepResultImage',
     'Set-MbStepImage',
     'Restore-MbStepImage',
     'Remove-MbUnusedImage',

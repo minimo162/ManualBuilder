@@ -1,5 +1,5 @@
 ﻿# Phase 1 video attachment storage test.
-# 動画はExcelとHTMLの出力から再生する。ここでは保存・重複排除・付け外し・後片付けを確かめる。
+# 動画はExcel出力から再生する。ここでは保存・重複排除・付け外し・後片付けを確かめる。
 
 [CmdletBinding()]
 param()

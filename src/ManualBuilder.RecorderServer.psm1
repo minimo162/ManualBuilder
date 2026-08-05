@@ -223,6 +223,35 @@ function Stop-MbRecordingJob {
 }
 
 # 記録した操作を読み出す。取り込む前に一覧を見せて選んでもらうために使う。
+function Merge-MbRecordedEditInteractions {
+    param(
+        [AllowEmptyCollection()][object[]]$Events = @(),
+        [int]$MaxGapMs = 5000
+    )
+
+    $result = New-Object System.Collections.ArrayList
+    $items = @($Events)
+    for ($i = 0; $i -lt $items.Count; $i++) {
+        $current = $items[$i]
+        $next = if (($i + 1) -lt $items.Count) { $items[$i + 1] } else { $null }
+        $isEditFocusClick = $null -ne $current -and [string]$current.kind -eq 'click' -and
+            [string]$current.targetType -eq 'ControlType.Edit'
+        if ($isEditFocusClick -and $null -ne $next -and [string]$next.kind -eq 'input') {
+            $sameWindow = [string]$current.windowTitle -eq [string]$next.windowTitle
+            $sameField = -not [string]::IsNullOrWhiteSpace([string]$current.targetName) -and
+                [string]$current.targetName -eq [string]$next.targetName
+            $gapMs = [int]$next.timeMs - [int]$current.timeMs
+            if ($sameWindow -and $sameField -and $gapMs -ge 0 -and $gapMs -le $MaxGapMs) {
+                # 入力済み画面を持つ次のイベントだけで、どの欄に何を入力したかを示せる。
+                # フォーカスを当てるだけのクリックはマニュアルの1手順に数えない。
+                continue
+            }
+        }
+        [void]$result.Add($current)
+    }
+    return @($result)
+}
+
 function Get-MbRecordedEvents {
     if ($null -eq $script:MbRecordingJob) { return @() }
     $eventsPath = [string]$script:MbRecordingJob.EventsPath
@@ -234,15 +263,20 @@ function Get-MbRecordedEvents {
         $record = $null
         try { $record = $line | ConvertFrom-Json } catch { continue }
         if ($null -eq $record) { continue }
+        $resultFileName = ('event-{0:d3}-result.jpg' -f [int]$record.index)
+        $resultPath = Join-Path ([string]$script:MbRecordingJob.EventsDirectory) $resultFileName
+        if (Test-Path -LiteralPath $resultPath -PathType Leaf) {
+            $record | Add-Member -NotePropertyName resultImage -NotePropertyValue $resultFileName -Force
+        }
         [void]$events.Add($record)
     }
-    return @($events)
+    return @(Merge-MbRecordedEditInteractions -Events @($events))
 }
 
 function Get-MbRecordedEventImagePath {
     param([Parameter(Mandatory = $true)][string]$FileName)
     if ($null -eq $script:MbRecordingJob) { return '' }
-    if ($FileName -notmatch '^event-\d{3}\.jpg$') { return '' }
+    if ($FileName -notmatch '^event-\d{3}(?:-result)?\.jpg$') { return '' }
     $path = Join-Path ([string]$script:MbRecordingJob.EventsDirectory) $FileName
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return '' }
     return $path
@@ -405,6 +439,25 @@ function Import-MbRecordedEvents {
         }
         $stepId = [string]$result.Step.id
 
+        # クリック後の安定画面は、操作箇所を示す画像とは別の正式な画像資産にする。
+        # 取得に失敗した古い録画も、そのまま取り込める。
+        if ($record.PSObject.Properties.Name -contains 'resultImage' -and
+            -not [string]::IsNullOrWhiteSpace([string]$record.resultImage)) {
+            $resultImagePath = Get-MbRecordedEventImagePath -FileName ([string]$record.resultImage)
+            if (-not [string]::IsNullOrWhiteSpace($resultImagePath)) {
+                try {
+                    $resultAsset = Add-MbImageAsset -Project $Project -ProjectPath $ProjectPath `
+                        -Bytes ([IO.File]::ReadAllBytes($resultImagePath)) -Source 'recorder'
+                    $result.Step.resultImageId = [string]$resultAsset.Image.id
+                    $result.Step.imageLayout = 'side-by-side'
+                    $result.Step.imageOrder = 'before-after'
+                    $result.Step.updatedAt = [DateTime]::UtcNow.ToString('o')
+                } catch {
+                    # 結果画像だけ壊れていても、クリック前画像の手順は取り込む。
+                }
+            }
+        }
+
         $rect = $null
         if ($record.PSObject.Properties.Name -contains 'rect') { $rect = $record.rect }
         $annotation = @()
@@ -479,11 +532,16 @@ function Import-MbRecordedEvents {
         $candidatesJson = if ($recordedCandidates.Count -gt 0) {
             ConvertTo-Json -InputObject @($recordedCandidates) -Depth 8 -Compress
         } else { '' }
+        $clickPointJson = if ($record.PSObject.Properties.Name -contains 'clickPoint' -and $null -ne $record.clickPoint) {
+            ConvertTo-Json -InputObject ([pscustomobject]@{
+                x = [double]$record.clickPoint.x; y = [double]$record.clickPoint.y
+            }) -Compress
+        } else { '' }
         [void](Set-MbStepCapture -Project $Project -StepId $stepId -Kind $kind `
             -VideoTimeMs ([int]$record.timeMs) -ClickLabel $targetName `
             -WindowTitle ([string]$record.windowTitle) -Narration $spoken -TargetType $targetType `
             -TargetSource $targetSource -TargetConfidence $targetConfidence `
-            -TargetCandidateId $candidateId -TargetCandidatesJson $candidatesJson)
+            -TargetCandidateId $candidateId -TargetCandidatesJson $candidatesJson -ClickPointJson $clickPointJson)
         $added++
     }
     return [pscustomobject]@{ added = $added; skipped = $skipped }
@@ -540,6 +598,7 @@ Export-ModuleMember -Function @(
     'Read-MbRecordingStatus',
     'Stop-MbRecordingJob',
     'Get-MbRecordedEvents',
+    'Merge-MbRecordedEditInteractions',
     'Get-MbRecordedEventImagePath',
     'Import-MbRecordedEvents',
     'Get-MbRecorderTargetCrop',

@@ -90,11 +90,36 @@ console.log('isSameScene');
 {
   const base = makeSignature(0.5);
   const tinyLocal = makeSignature(0.5);
+  const smallControl = makeSignature(0.5);
   const changedContent = makeSignature(0.5);
   for (let i = 0; i < 2; i += 1) tinyLocal[i] += 0.04;
+  for (let i = 0; i < 4; i += 1) smallControl[i] += 0.04;
   for (let i = 0; i < 12; i += 1) changedContent[i] += 0.04;
   check('カーソル程度の局所差は同じ場面とみなす', scenes.isSameScene(base, tinyLocal, {}));
+  check('小さなボタンやチェック状態の変化は別場面にする', !scenes.isSameScene(base, smallControl, {}));
   check('平均差が小さくても本文の複数領域が変われば別場面にする', !scenes.isSameScene(base, changedContent, {}));
+}
+
+// ---------------------------------------------------------------
+console.log('継続する局所アニメーションを除く');
+{
+  const samples = [];
+  for (let frame = 0; frame < 8; frame += 1) {
+    const signature = makeSignature(0.5);
+    for (let block = 0; block < 6; block += 1) signature[(frame * 6 + block) % signature.length] = 0.54;
+    samples.push({ timeMs: frame * 300, signature });
+  }
+  const runs = scenes.detectStillRuns(samples, {});
+  check('局所アニメーションは全体差だけでは静止区間に見える', runs.length === 1 && runs[0].durationMs >= 700);
+  check('区間中ずっと動くスピナー相当を場面にしない', scenes.planScenes(samples, {}).length === 0);
+
+  const settledSamples = [];
+  for (let frame = 0; frame < 8; frame += 1) {
+    const signature = makeSignature(0.5);
+    if (frame > 0) for (let block = 0; block < 6; block += 1) signature[block] = 0.58;
+    settledSamples.push({ timeMs: frame * 300, signature });
+  }
+  check('一度変化した後に安定する画面は残す', scenes.planScenes(settledSamples, {}).length === 1);
 }
 
 // ---------------------------------------------------------------
@@ -244,6 +269,22 @@ console.log('detectStillRuns の境界と緩やかな変化');
   check('閾値未満ずつ続く変化を長い静止と誤認しない',
     gradualRuns.every((run) => run.durationMs < scenes.DEFAULTS.minStillMs),
     JSON.stringify(gradualRuns.map((run) => run.durationMs)));
+}
+
+// ---------------------------------------------------------------
+console.log('detectStillRuns は小さく明確な状態変化を区切る');
+{
+  const unchecked = makeSignature(0.5);
+  const checked = makeSignature(0.5);
+  for (let i = 0; i < 4; i += 1) checked[i] = 0.58;
+  const samples = [
+    [0, unchecked], [300, unchecked], [600, unchecked], [900, unchecked], [1200, unchecked],
+    [1500, checked], [1800, checked], [2100, checked], [2400, checked], [2700, checked]
+  ].map(([timeMs, signature]) => ({ timeMs, signature }));
+  const runs = scenes.detectStillRuns(samples, {});
+  const selected = scenes.selectScenes(samples, runs, {});
+  check('チェック相当の局所変化で2つの静止区間に分ける', runs.length === 2, JSON.stringify(runs));
+  check('操作前と操作後の両方を場面として残す', selected.length === 2, String(selected.length));
 }
 
 // ---------------------------------------------------------------

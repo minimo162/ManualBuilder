@@ -273,6 +273,21 @@ try {
     Assert-Mb ([Math]::Abs($rectDisplayedThickness - (7 * $fullAnnotationUnit)) -le 1.5) '赤枠を共通表示寸法の太さへ合わせる'
     Assert-Mb ([Math]::Abs($arrowDisplayedThickness - (8 * $fullAnnotationUnit)) -le 1.5) '赤矢印を共通表示寸法の太さへ合わせる'
 
+    $comparisonPath = Join-Path $testRoot 'before-after.png'
+    [void](New-MbBeforeAfterImage -BeforePath $sourcePath -AfterPath $croppedPath -DestinationPath $comparisonPath)
+    Assert-Mb (Test-Path -LiteralPath $comparisonPath -PathType Leaf) 'Excel用に操作前と操作後を1枚へまとめる'
+    $comparison = [Drawing.Image]::FromFile($comparisonPath)
+    try {
+        Assert-Mb ($comparison.Height -gt $comparison.Width) '比較画像で操作前と操作後を縦に並べる'
+    } finally { $comparison.Dispose() }
+
+    $horizontalComparisonPath = Join-Path $testRoot 'before-after-horizontal.png'
+    [void](New-MbBeforeAfterImage -BeforePath $sourcePath -AfterPath $croppedPath -DestinationPath $horizontalComparisonPath -Orientation horizontal -Order after-before)
+    $horizontalComparison = [Drawing.Image]::FromFile($horizontalComparisonPath)
+    try {
+        Assert-Mb ($horizontalComparison.Width -gt $horizontalComparison.Height) '比較画像で操作前と操作後を左右に並べる'
+    } finally { $horizontalComparison.Dispose() }
+
     Write-Host ''
     Write-Host 'Excel utility tests passed.' -ForegroundColor Cyan
 } finally {

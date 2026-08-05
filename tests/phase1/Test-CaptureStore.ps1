@@ -85,6 +85,16 @@ try {
     if ($replacementPath -and (Test-Path -LiteralPath $replacementPath)) { Remove-Item -LiteralPath $replacementPath -Force }
     Assert-Mb (@($project.images).Count -eq 1) '復元後の未参照画像を整理できる'
 
+    $resultBytes = New-MbTestPng -Color ([Drawing.Color]::SeaGreen)
+    $resultImage = Set-MbStepResultImage -Project $project -ProjectPath $projectPath -StepId $step.id -Bytes $resultBytes -Source file
+    Assert-Mb ($resultImage.Status -eq 'set' -and -not [string]::IsNullOrWhiteSpace([string]$step.resultImageId)) '手順へ操作後画像を追加できる'
+    Assert-Mb ([string]$step.imageLayout -eq 'side-by-side') '操作後画像の追加時は左右比較を初期値にする'
+    [void](Set-MbStepImageLayout -Project $project -StepId $step.id -Layout stacked -Order after-before)
+    Assert-Mb ([string]$step.imageLayout -eq 'stacked' -and [string]$step.imageOrder -eq 'after-before') '比較画像の配置と前後順を保存できる'
+    $removedResult = Remove-MbStepResultImage -Project $project -ProjectPath $projectPath -StepId $step.id
+    Assert-Mb ([string]::IsNullOrWhiteSpace([string]$step.resultImageId) -and [string]$step.imageLayout -eq 'before') '操作後画像を外すと操作前だけへ戻る'
+    if ($removedResult.RemovedPath -and (Test-Path -LiteralPath $removedResult.RemovedPath)) { Remove-Item -LiteralPath $removedResult.RemovedPath -Force }
+
     $imagePath = Get-MbImageFilePath -Project $project -ProjectPath $projectPath -ImageId $result.Image.id
     Assert-Mb (Test-Path -LiteralPath $imagePath -PathType Leaf) '画像実体をプロジェクト内へ保存する'
     $project = Save-MbProject -Project $project -Path $projectPath

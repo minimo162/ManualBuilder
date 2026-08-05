@@ -39,6 +39,9 @@ function Get-MbCopilotDefaultSettings {
         request_timeout      = 600
         max_prompt_chars     = 60000
         attach_wait_seconds  = 90
+        # 画面上の上限は3枚だが、実機では3枚同時だと添付完了を返さないことがある。
+        # 安定して約1秒で完了した2枚を安全上限として使う。
+        max_images_per_request = 2
         # 1回の依頼で渡す手順の数。画像はこの数だけ添付される。
         # 多いほど前後の文脈が効くが、添付とトークンの上限に当たりやすくなる。
         steps_per_packet     = 6
@@ -216,8 +219,25 @@ function Get-MbCdpTargets {
     return $targets.ToArray()
 }
 
+function Select-MbCopilotPageCandidate {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Candidates,
+        [switch]$PreferConsent
+    )
+    if (@($Candidates).Count -eq 0) { return $null }
+    if ($PreferConsent) {
+        $consent = @($Candidates | Where-Object { $_.consentRequired -eq $true }) | Select-Object -First 1
+        if ($null -ne $consent) { return $consent }
+    }
+    $usable = @($Candidates | Where-Object { $_.ready -eq $true -and $_.consentRequired -ne $true }) | Select-Object -First 1
+    if ($null -ne $usable) { return $usable }
+    $unblocked = @($Candidates | Where-Object { $_.consentRequired -ne $true }) | Select-Object -First 1
+    if ($null -ne $unblocked) { return $unblocked }
+    return @($Candidates)[0]
+}
+
 function Get-MbCopilotPage {
-    param([Parameter(Mandatory = $true)]$Settings)
+    param([Parameter(Mandatory = $true)]$Settings, [switch]$PreferConsent)
 
     $port = [int]$Settings.cdp_port
     $url = [string]$Settings.copilot_url
@@ -237,7 +257,25 @@ function Get-MbCopilotPage {
                 (([string]$_.url) -like 'http*')
             })
         }
-        if ($pages.Count -gt 0) { return $pages[0] }
+        if ($pages.Count -gt 0) {
+            if ($pages.Count -eq 1) { return $pages[0] }
+            $inspected = New-Object System.Collections.ArrayList
+            foreach ($candidatePage in $pages) {
+                $state = Get-MbCopilotScreenState -WsUrl ([string]$candidatePage.webSocketDebuggerUrl) -Settings $Settings
+                $snapshot = Get-MbAttachmentSnapshot -WsUrl ([string]$candidatePage.webSocketDebuggerUrl) -Settings $Settings
+                [void]$inspected.Add([pscustomobject]@{
+                    page = $candidatePage
+                    ready = ($state.ready -eq $true)
+                    consentRequired = ($snapshot.consentRequired -eq $true)
+                })
+            }
+            $selected = Select-MbCopilotPageCandidate -Candidates @($inspected) -PreferConsent:$PreferConsent
+            if ($null -ne $selected) {
+                Write-MbCopilotLog ("Copilotタブを選択しました ready=$($selected.ready) consent=$($selected.consentRequired) id=$([string]$selected.page.id)") 'INFO'
+                return $selected.page
+            }
+            return $pages[0]
+        }
 
         foreach ($method in @('Put', 'Get')) {
             try {
@@ -633,6 +671,8 @@ function Get-MbAttachmentSnapshot {
   const docs=[document];for(const f of document.querySelectorAll('iframe')){try{if(f.contentDocument)docs.push(f.contentDocument);}catch(e){}}
   const dialogTexts=docs.flatMap(d=>safeAll(d,'[role="dialog"],[aria-modal="true"]'))
     .filter(visible).map(d=>norm(d.innerText||d.textContent).slice(0,1000)).filter(Boolean);
+  const alertTexts=docs.flatMap(d=>safeAll(d,'[role="alert"],.fui-MessageBar,[data-testid*="messagebar" i]'))
+    .filter(visible).map(d=>norm(d.innerText||d.textContent).slice(0,1000)).filter(Boolean);
   let nodes=[],used='';
   for(const s of itemSels){const found=docs.flatMap(d=>safeAll(d,s)).filter(visible);if(found.length){nodes=found;used=s;break;}}
   // M365側のクラス名が変わっても、表示されたファイル名を根拠に添付カードを探す。
@@ -657,7 +697,7 @@ function Get-MbAttachmentSnapshot {
     count:input.files?input.files.length:0,
     names:input.files?Array.from(input.files).map(f=>f.name):[]
   }));
-  return JSON.stringify({count:items.length,items,usedItemSelector:used,dialogTexts,fileInputs});
+  return JSON.stringify({count:items.length,items,usedItemSelector:used,dialogTexts,alertTexts,fileInputs});
 })()
 '@
     $js = $template.Replace('__ITEM_SELS__', (ConvertTo-Json @($itemSelectors) -Compress)).Replace('__NAME_SELS__', (ConvertTo-Json @($nameSelectors) -Compress)).Replace('__EXPECTED__', (ConvertTo-Json @($ExpectedNames) -Compress))
@@ -669,8 +709,16 @@ function Get-MbAttachmentSnapshot {
         Add-Member -InputObject $snapshot -NotePropertyName consentText -NotePropertyValue $(if ($consentDialog.Count -gt 0) { [string]$consentDialog[0] } else { '' }) -Force
         return $snapshot
     } catch {
-        return [pscustomobject]@{ count = 0; items = @(); usedItemSelector = ''; dialogTexts = @(); fileInputs = @(); consentRequired = $false; consentText = '' }
+        return [pscustomobject]@{ count = 0; items = @(); usedItemSelector = ''; dialogTexts = @(); alertTexts = @(); fileInputs = @(); consentRequired = $false; consentText = '' }
     }
+}
+
+function Test-MbCopilotImageLimitText {
+    param([AllowNull()][string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
+    $normalized = [regex]::Replace($Text, '\s+', ' ').Trim()
+    return $normalized -match '(?i)(?:画像.{0,40}(?:上限|最大\s*\d+)|(?:too many|maximum|max(?:imum)?\s*\d+).{0,40}images?)'
 }
 
 function Test-MbAttachmentNameMatch {
@@ -682,7 +730,78 @@ function Test-MbAttachmentNameMatch {
     # 画面側で末尾が省略されることがあるため、拡張子を外した先頭一致も許す。
     $bare = [IO.Path]::GetFileNameWithoutExtension($e)
     if ($bare.Length -ge 8 -and $a -like ($bare + '*')) { return $true }
+    $actualBare = [IO.Path]::GetFileNameWithoutExtension($a).Trim().TrimEnd([char]0x2026, '.')
+    if ($actualBare.Length -ge 8 -and $bare.StartsWith($actualBare, [StringComparison]::OrdinalIgnoreCase)) { return $true }
     return $false
+}
+
+function Clear-MbCopilotAttachmentState {
+    param(
+        [Parameter(Mandatory = $true)][string]$WsUrl,
+        [Parameter(Mandatory = $true)]$Settings
+    )
+
+    $itemSelectors = @([string[]](Get-MbCopilotSelector -Settings $Settings -Name 'attachment_item_any'))
+    $template = @'
+(() => {
+  const itemSels=__ITEM_SELS__;
+  const visible=e=>{if(!e)return false;const r=e.getBoundingClientRect(),s=e.ownerDocument.defaultView.getComputedStyle(e);return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden';};
+  const safeAll=(d,s)=>{try{return Array.from(d.querySelectorAll(s));}catch(e){return[];}};
+  const norm=v=>String(v||'').replace(/\s+/g,' ').trim();
+  const docs=[document];for(const f of document.querySelectorAll('iframe')){try{if(f.contentDocument)docs.push(f.contentDocument);}catch(e){}}
+  let cards=[];
+  for(const s of itemSels){const found=docs.flatMap(d=>safeAll(d,s)).filter(visible);if(found.length){cards=found;break;}}
+  let removed=0;
+  for(const card of cards){
+    const buttons=safeAll(card,'button,[role="button"]').filter(visible);
+    const preferred=buttons.find(b=>/(?:削除|取り消し|remove|delete|close|閉じる)/i.test(norm(b.getAttribute('aria-label')||b.title||b.textContent)));
+    const button=preferred||(buttons.length===1?buttons[0]:null);
+    if(button){button.click();removed++;}
+  }
+  let dismissed=0;
+  const alerts=docs.flatMap(d=>safeAll(d,'[role="alert"],.fui-MessageBar,[data-testid*="messagebar" i]')).filter(visible);
+  for(const alert of alerts){
+    const text=norm(alert.innerText||alert.textContent);
+    if(!/(?:画像.{0,40}(?:上限|最大\s*\d+)|(?:too many|maximum|max(?:imum)?\s*\d+).{0,40}images?)/i.test(text))continue;
+    const buttons=safeAll(alert,'button,[role="button"]').filter(visible);
+    const button=buttons.find(b=>/(?:閉じる|dismiss|close)/i.test(norm(b.getAttribute('aria-label')||b.title||b.textContent)))||(buttons.length===1?buttons[0]:null);
+    if(button){button.click();dismissed++;}
+  }
+  return JSON.stringify({cards:cards.length,removed,dismissed});
+})()
+'@
+    $js = $template.Replace('__ITEM_SELS__', (ConvertTo-Json @($itemSelectors) -Compress))
+    $raw = Invoke-MbCdpEval -WebSocketUrl $WsUrl -Expression $js -TimeoutSeconds 15
+    $action = $raw | ConvertFrom-Json
+
+    $reloaded = $false
+    if ([int]$action.cards -gt 0 -or [int]$action.dismissed -gt 0) {
+        # カードが消えてもinput[type=file]内部の古いFileListが短時間残り、
+        # 直後の添付が完了しないことがある。残存状態を見つけたときだけ
+        # チャットURLを再読込し、DOMと内部状態をまとめて作り直す。
+        Write-MbCopilotLog '残存した添付状態を完全に消すためCopilot画面を再読込します。' 'INFO'
+        $null = Invoke-MbCdpMethod -WebSocketUrl $WsUrl -Method 'Page.navigate' `
+            -Params @{ url = [string]$Settings.copilot_url } -TimeoutSeconds 20
+        Start-Sleep -Milliseconds 1200
+        $gate = Wait-MbCopilotScreenReady -WsUrl $WsUrl -Settings $Settings -TimeoutSeconds 45
+        if (-not $gate.ok) { throw ([string]$gate.message) }
+        $null = Set-MbCopilotModel -WsUrl $WsUrl -Settings $Settings
+        $reloaded = $true
+    }
+
+    $snapshot = $null
+    for ($attempt = 0; $attempt -lt 12; $attempt++) {
+        Start-Sleep -Milliseconds 250
+        $snapshot = Get-MbAttachmentSnapshot -WsUrl $WsUrl -Settings $Settings
+        if ([int]$snapshot.count -eq 0) { break }
+    }
+    if ($null -eq $snapshot) { $snapshot = Get-MbAttachmentSnapshot -WsUrl $WsUrl -Settings $Settings }
+    if ([int]$snapshot.count -gt 0) {
+        throw ("前回のCopilot添付画像を消せませんでした（残り {0} 件）。新しいチャットを開いて再実行してください。" -f [int]$snapshot.count)
+    }
+    $limitAlerts = @($snapshot.alertTexts | Where-Object { Test-MbCopilotImageLimitText -Text ([string]$_) })
+    Write-MbCopilotLog ("Copilot添付欄を初期化しました cards=$([int]$action.cards) removed=$([int]$action.removed) dismissed=$([int]$action.dismissed) reloaded=$reloaded remainingAlerts=$($limitAlerts.Count)") 'INFO'
+    return [pscustomobject]@{ limitAlerts = @($limitAlerts); removed = [int]$action.removed; dismissed = [int]$action.dismissed; reloaded = $reloaded }
 }
 
 function Invoke-MbCopilotAttachFiles {
@@ -699,6 +818,10 @@ function Invoke-MbCopilotAttachFiles {
     $expected = @($Files | ForEach-Object { [IO.Path]::GetFileName($_) })
     $selector = [string](Get-MbCopilotSelector -Settings $Settings -Name 'file_input')
     $fallback = [string](Get-MbCopilotSelector -Settings $Settings -Name 'file_input_fallback')
+    # 前回の上限超過や中止で添付カードと警告が残ることがある。
+    # 新しい依頼へ足し込まないよう、ファイル入力を触る前に必ず空へ戻す。
+    $cleared = Clear-MbCopilotAttachmentState -WsUrl $WsUrl -Settings $Settings
+    $baselineLimitAlerts = @($cleared.limitAlerts | ForEach-Object { [regex]::Replace([string]$_, '\s+', ' ').Trim() })
 
     # nodeIdは接続ごとの値なので、探索と設定を同じ接続で行う（約束事3）。
     $socket = $null
@@ -762,6 +885,17 @@ function Invoke-MbCopilotAttachFiles {
         $snapshot = Get-MbAttachmentSnapshot -WsUrl $WsUrl -Settings $Settings -ExpectedNames $expected
         if ($snapshot.consentRequired -eq $true) {
             throw 'Copilotで画像利用の確認が必要です。［Copilotの画面を開く］を押し、内容を確認して［確認して続行］を選んでから、もう一度実行してください。'
+        }
+        $limitAlert = @($snapshot.alertTexts | Where-Object {
+            $text = [regex]::Replace([string]$_, '\s+', ' ').Trim()
+            (Test-MbCopilotImageLimitText -Text $text) -and ($baselineLimitAlerts -notcontains $text)
+        } | Select-Object -First 1)
+        if ($limitAlert.Count -gt 0) {
+            throw ('Copilotへ一度に添付できる画像数を超えました。より小さい単位へ分けて再実行します。詳細: ' + [string]$limitAlert[0])
+        }
+        $failedAlert = @($snapshot.alertTexts | Where-Object { $_ -and $failPattern.IsMatch([string]$_) } | Select-Object -First 1)
+        if ($failedAlert.Count -gt 0) {
+            throw ('画像の添付に失敗しました: ' + [string]$failedAlert[0])
         }
         $mine = @($snapshot.items | Where-Object {
             $actual = [string]$_.name
@@ -1224,7 +1358,7 @@ function Show-MbCopilotWindow {
     if (-not (Test-MbDevTools -Port $port)) {
         Start-MbCopilotEdge -Settings $Settings -ProfileDirectory $ProfileDirectory
     }
-    $page = Get-MbCopilotPage -Settings $Settings
+    $page = Get-MbCopilotPage -Settings $Settings -PreferConsent
     $socket = $null
     try {
         $version = Invoke-RestMethod -UseBasicParsing -Uri "http://127.0.0.1:$port/json/version" -TimeoutSec 5
@@ -1265,5 +1399,7 @@ Export-ModuleMember -Function @(
     'Repair-MbJsonText',
     'Get-MbStepAnswerJson',
     'Get-MbCopilotPromptTailAnchor'
+    'Test-MbCopilotImageLimitText'
+    'Test-MbAttachmentNameMatch'
 )
 
