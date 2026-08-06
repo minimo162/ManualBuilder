@@ -182,6 +182,7 @@ $secondSheet.name = '未完成シート'
 $multiSheetProject.sheets = @($multiSheetProject.sheets[0], $secondSheet)
 $multiSheetHtml = ConvertTo-MbWorkspaceHtml -Project $multiSheetProject -Token 'testtoken'
 Assert-Mb (([regex]::Matches($multiSheetHtml, 'data-sheet-delete')).Count -eq 1) '選択シートの削除を取り消し対応の操作として表示する'
+Assert-Mb ($multiSheetHtml -match 'data-sheet-duplicate[^>]*>シートを複製') '選択シートを再利用できる複製操作を表示する'
 $finishMatch = [regex]::Match($multiSheetHtml, '<textarea hidden data-project-finish-data>(.*?)</textarea>')
 Assert-Mb $finishMatch.Success '全シートの仕上げ情報を画面へ埋め込む'
 $finishItems = ([Net.WebUtility]::HtmlDecode($finishMatch.Groups[1].Value) | ConvertFrom-Json)

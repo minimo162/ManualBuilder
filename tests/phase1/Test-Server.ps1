@@ -291,6 +291,15 @@ try {
     $afterTargetSeed = [IO.File]::ReadAllText($projectPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
     $targetBeforeBulk = @($afterTargetSeed.sheets | Where-Object { $_.id -eq $targetSheetId })[0]
     $targetExistingStepId = [string]$targetBeforeBulk.steps[0].id
+    $sheetDuplicated = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/sheets/duplicate" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body @{ sheetId = $targetSheetId } -TimeoutSec 5
+    Assert-Mb ($sheetDuplicated.Content -match 'id="workspace"' -and $sheetDuplicated.Content -match 'のコピー') 'シート複製APIを実行できる'
+    $afterSheetDuplicate = [IO.File]::ReadAllText($projectPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    $duplicatedSheetId = [string]$afterSheetDuplicate.selectedSheetId
+    $duplicatedSheet = @($afterSheetDuplicate.sheets | Where-Object { $_.id -eq $duplicatedSheetId })[0]
+    Assert-Mb ($duplicatedSheetId -ne $targetSheetId -and @($duplicatedSheet.steps).Count -eq 1) '複製シートを選択し手順を維持する'
+    Assert-Mb ([string]$duplicatedSheet.steps[0].id -ne $targetExistingStepId) '複製した手順へ新しいIDを割り当てる'
+    [void](Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/sheets/delete" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body @{ sheetId = $duplicatedSheetId } -TimeoutSec 5)
+
     $bulkStepIds = @($reimportedStepId, $bulkSecondStepId)
     $bulkMovedResponse = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/steps/move-many" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body @{
         stepIds = ($bulkStepIds -join ',')

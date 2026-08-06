@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const appVersion = '0.40.0';
+  const appVersion = '0.41.0';
   // 番号注釈はSVG属性で指定するためCSS変数を参照できない。
   // 編集画面とExcel・Word出力（New-MbAnnotatedImage）で同じ見た目にするため、基準フォントを揃える。
   const ANNOTATION_NUMBER_FONT = '"BIZ UDPGothic", "BIZ UDPゴシック", "BIZ UDGothic", "BIZ UDゴシック", Meiryo, "Yu Gothic UI", "MS Pゴシック", sans-serif';
@@ -2689,6 +2689,39 @@
   });
 
   document.body.addEventListener('click', (event) => {
+    const sheetDuplicateButton = event.target.closest('[data-sheet-duplicate]');
+    if (sheetDuplicateButton) {
+      const menu = sheetDuplicateButton.closest('details');
+      if (menu) menu.open = false;
+      sheetDuplicateButton.disabled = true;
+      saveStatus('saving', 'シートを複製中…');
+      void (async () => {
+        try {
+          await flushPendingStructuralSaves({ waitForText: true });
+          const response = await fetch('/api/sheets/duplicate', {
+            method: 'POST',
+            headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }),
+            body: new URLSearchParams({ sheetId: sheetDuplicateButton.dataset.sheetId || '' })
+          });
+          const html = await response.text();
+          if (!response.ok) throw new Error(html || ('HTTP ' + response.status));
+          const workspace = document.getElementById('workspace');
+          if (!workspace) throw new Error('編集画面を更新できません。');
+          workspace.outerHTML = html;
+          const nextWorkspace = document.getElementById('workspace');
+          if (nextWorkspace && window.htmx?.process) window.htmx.process(nextWorkspace);
+          selectedStepIds.clear();
+          initializeWorkspaceView();
+          sendHeartbeat();
+          showToast('シートを複製しました。名前と内容を確認してください。', 'success');
+        } catch (error) {
+          sheetDuplicateButton.disabled = false;
+          saveStatus('error', 'シートを複製できません');
+          showToast(error?.message || 'シートを複製できませんでした。');
+        }
+      })();
+      return;
+    }
     const sheetDeleteButton = event.target.closest('[data-sheet-delete]');
     if (sheetDeleteButton) {
       const menu = sheetDeleteButton.closest('details');

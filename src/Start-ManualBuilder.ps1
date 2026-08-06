@@ -1847,6 +1847,15 @@ function Invoke-MbRoute {
             Write-MbResponse $Context (Save-MbAndRenderWorkspace -Project $project -TabId $tabId)
             return
         }
+        '/api/sheets/duplicate' {
+            try {
+                [void](Copy-MbSheet -Project $project -SheetId (Get-MbFormValue $form 'sheetId'))
+                Write-MbResponse $Context (Save-MbAndRenderWorkspace -Project $project -TabId $tabId)
+            } catch {
+                Write-MbResponse $Context $_.Exception.Message 400 'text/plain; charset=utf-8'
+            }
+            return
+        }
         '/api/sheets/select' {
             Select-MbSheet -Project $project -SheetId (Get-MbFormValue $form 'sheetId')
             Write-MbResponse $Context (Save-MbAndRenderWorkspace -Project $project -TabId $tabId)
