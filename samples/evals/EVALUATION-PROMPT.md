@@ -14,7 +14,7 @@
 
 1. 正解の各場面を、時刻、画面状態、操作対象から生成場面へ1対1で対応付けます。
 2. 場面の再現率・適合率・順序を採点します。同じ画面へ戻る A→B→A は3場面として扱います。
-3. `expectedRect`がある場合は操作対象との重なりを見ます。全件がIoU 0.35以上であることを合格条件にします。
+3. `expectedRect`がある場合は操作対象との重なりを見ます。確定注釈はIoU 0.35以上、Copilotへ渡す粗い候補はIoU 0.35以上または正解対象の中心を含むことを合格条件にし、厳密IoUの件数も別途報告します。
 4. 文章は完全一致でなく、`requiredConcepts`の充足、簡潔さ、具体性、映像との整合性で採点します。
 5. `forbiddenClaims`、映像にない完了・保存・送信、対象や操作の取り違えは事実誤認です。
 6. 重大な事実誤認が1件でもあれば不合格です。文章品質は全場面を総合して5点中4点以上を合格とします。
@@ -26,9 +26,13 @@
 
 ```json
 {
-  "scenarioId": "expense-application",
-  "pass": true,
-  "sceneMetrics": {
+  "schemaVersion": 1,
+  "fixtureVersion": "1.1.0",
+  "reviewerId": "blind-reviewer-a",
+  "reviews": [{
+    "scenarioId": "expense-application",
+    "pass": true,
+    "sceneMetrics": {
     "expected": 5,
     "actual": 5,
     "matched": 5,
@@ -37,20 +41,21 @@
     "orderCorrect": true,
     "rectsPassing": 4,
     "rectsEvaluated": 4
-  },
-  "writingScoreOutOf5": 4,
-  "criticalFactualErrors": [],
-  "missingConcepts": [],
-  "unsupportedClaims": [],
-  "goldIssues": [],
-  "findings": [
-    {
-      "severity": "minor",
-      "sceneOrder": 2,
-      "message": "操作対象は正しいが、説明が少し冗長です。"
-    }
-  ],
-  "summary": "場面分割と操作順は正しく、文章も事実に沿っています。"
+    },
+    "writingScoreOutOf5": 4,
+    "criticalFactualErrors": [],
+    "missingConcepts": [],
+    "unsupportedClaims": [],
+    "goldIssues": [],
+    "findings": [
+      {
+        "severity": "minor",
+        "sceneOrder": 2,
+        "message": "操作対象は正しいが、説明が少し冗長です。"
+      }
+    ],
+    "summary": "場面分割と操作順は正しく、文章も事実に沿っています。"
+  }]
 }
 ```
 
@@ -64,5 +69,5 @@
 
 同義表現、自然な言い換え、語尾の違いだけでは減点しません。場面ごとの品質を確認したうえで、最も弱い場面も考慮して全体点を決めます。
 
-`pass`は、場面数と順序が正しく、`expectedRect`全件がIoU 0.35以上、重大な事実誤認が0件、
+`pass`は、場面数と順序が正しく、`expectedRect`全件で確定注釈または粗い候補の基準を満たし、重大な事実誤認が0件、
 文章品質が4点以上の場合だけ`true`にします。

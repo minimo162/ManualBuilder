@@ -36,6 +36,20 @@ if errorlevel 1 goto :failed
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-EvalFixtures.ps1"
 if errorlevel 1 goto :failed
 
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-CopilotEvalProject.ps1"
+if errorlevel 1 goto :failed
+
+rem Blind Copilot review aggregation is implemented in dependency-free Python.
+where python >nul 2>&1
+if errorlevel 1 (
+  echo [SKIP] Python not found. Skipping the Copilot evaluation aggregator tests.
+) else (
+  python "%~dp0Test-CopilotEvalAggregator.py"
+  if errorlevel 1 goto :failed
+  python "%~dp0Test-ProductProjectEval.py"
+  if errorlevel 1 goto :failed
+)
+
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-WebRender.ps1"
 if errorlevel 1 goto :failed
 

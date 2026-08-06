@@ -22,6 +22,11 @@ Import-Module (Join-Path $srcRoot 'ManualBuilder.CopilotJob.psm1') -Force
 Import-Module (Join-Path $srcRoot 'ManualBuilder.Ocr.psm1') -Force
 Import-Module (Join-Path $srcRoot 'ManualBuilder.CopilotServer.psm1') -Force
 
+$copilotWorkerText = [IO.File]::ReadAllText((Join-Path $srcRoot 'Invoke-ManualBuilderCopilotJob.ps1'), [Text.Encoding]::UTF8)
+Add-Result ($copilotWorkerText -match '\$maximumAttempts\s*=\s*2' -and
+    $copilotWorkerText -match '回答形式を読み取れないため再試行') `
+    'Copilotの一時的な空回答を同じパケットで1回だけ再試行する'
+
 # ---------------------------------------------------------------------
 # Copilotの画像利用確認
 # ---------------------------------------------------------------------
@@ -345,6 +350,14 @@ Add-Result ($visualDrafts[0].visualConfident -eq $true -and [string]$visualDraft
 Add-Result ([string]$visualDrafts[0].clickLabel -eq '取消') 'Copilotが選んだ候補の名前を確認画面へ返す'
 Add-Result ([Math]::Abs([double]$visualDrafts[0].targetRect.x1 - 0.5) -lt 0.001 -and
     -not [string]::IsNullOrWhiteSpace([string]$visualDrafts[0].imageId)) '選んだ赤枠と元画像を確認画面へ返す'
+$ordinalVisualBody = '{"steps":[{"id":"' + $targetId + '","targetCandidateId":"候補2","zoom":"focus","visualConfident":true,"visualReason":"候補2が取消ボタンと一致","title":"取消","description":"取消を選択します。"}]}'
+$ordinalVisualDrafts = ConvertFrom-MbCopilotStepAnswer -Answer (Get-MbStepAnswerJson -Text $ordinalVisualBody) -PacketSteps $packet
+Add-Result ([string]$ordinalVisualDrafts[0].targetCandidateId -eq 'video-diff-2' -and $ordinalVisualDrafts[0].visualConfident) `
+    'Copilotが返した候補番号を列挙済みIDへ正規化する'
+$reasonOnlyVisualBody = '{"steps":[{"id":"' + $targetId + '","targetCandidateId":"","zoom":"focus","visualConfident":true,"visualReason":"候補1は申請ボタンと一致します","title":"申請","description":"申請を選択します。"}]}'
+$reasonOnlyVisualDrafts = ConvertFrom-MbCopilotStepAnswer -Answer (Get-MbStepAnswerJson -Text $reasonOnlyVisualBody) -PacketSteps $packet
+Add-Result ([string]$reasonOnlyVisualDrafts[0].targetCandidateId -eq 'video-diff-1' -and $reasonOnlyVisualDrafts[0].visualConfident) `
+    '候補を明示した根拠と確信があれば欠けた候補IDを補う'
 $unknownVisualBody = '{"steps":[{"id":"' + $targetId + '","targetCandidateId":"made-up","zoom":"focus","visualConfident":true,"title":"申請","description":"申請を選択します。"}]}'
 $unknownVisualDrafts = ConvertFrom-MbCopilotStepAnswer -Answer (Get-MbStepAnswerJson -Text $unknownVisualBody) -PacketSteps $packet
 Add-Result ([string]::IsNullOrWhiteSpace([string]$unknownVisualDrafts[0].targetCandidateId) -and -not $unknownVisualDrafts[0].visualConfident) '一覧にない候補IDを拒否する'

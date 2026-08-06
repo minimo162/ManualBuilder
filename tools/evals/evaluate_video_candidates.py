@@ -259,9 +259,16 @@ def main() -> int:
     parser.add_argument("--root", type=Path, default=Path("samples/evals"))
     parser.add_argument("--output", type=Path)
     parser.add_argument("--frames-output", type=Path)
+    parser.add_argument(
+        "--split", choices=("development", "holdout"), default="development",
+        help="Evaluate only the requested data split (default: development).",
+    )
     args = parser.parse_args()
     manifest = json.loads((args.root / "gold" / "manifest.json").read_text(encoding="utf-8"))
-    scenarios = [evaluate_scenario(args.root, scenario, args.frames_output) for scenario in manifest["scenarios"]]
+    selected = [scenario for scenario in manifest["scenarios"] if scenario.get("split", "development") == args.split]
+    if not selected:
+        raise SystemExit(f"No scenarios found for split: {args.split}")
+    scenarios = [evaluate_scenario(args.root, scenario, args.frames_output) for scenario in selected]
     candidate_scene_total = sum(item["candidateSceneTotal"] for item in scenarios)
     top1_rect_hits = sum(item["top1RectHits"] for item in scenarios)
     top4_rect_hits = sum(item["top4RectHits"] for item in scenarios)
@@ -269,12 +276,12 @@ def main() -> int:
     no_rect_false_positives = sum(item["noRectFalsePositives"] for item in scenarios)
     result = {
         "evaluationScope": {
-            "fixtureType": "synthetic-in-sample",
+            "fixtureType": f"synthetic-{args.split}",
             "scenarioCount": len(scenarios),
-            "isHoldout": False,
+            "split": args.split,
+            "isHoldout": args.split == "holdout",
             "overfittingRisk": (
-                "These three synthetic fixtures are development fixtures, not a holdout set. "
-                "A perfect score does not establish accuracy on real recordings, other codecs, "
+                "Synthetic fixtures do not establish accuracy on natural human recordings, other codecs, "
                 "frame rates, resolutions, applications, animations, or capture conditions."
             ),
         },
