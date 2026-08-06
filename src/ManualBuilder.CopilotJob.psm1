@@ -243,13 +243,16 @@ function New-MbCopilotStepPrompt {
     [void]$builder.AppendLine('- 操作の成否を利用者が確認すべき変化だけ、結果を2文目に書く。「選択すると選択される」「入力すると表示される」など自明な結果は繰り返さない。')
     [void]$builder.AppendLine('- 補足は、間違えやすい点や前提がある場合だけ書く。無ければ空文字にする。')
     [void]$builder.AppendLine('- 番号付き候補を盲信しない。画像上の意味と一致する候補だけを選ぶ。正しい候補がなければ targetCandidateId を none、visualConfident を false にする。')
+    [void]$builder.AppendLine('- visualReason で「候補1」などが一致すると判断した場合、targetCandidateId には番号ではなく、その候補行に書かれた id を必ず入れる。')
     [void]$builder.AppendLine('- 結果確認の画面やスクロール場面では、無理に操作対象を選ばず none を使う。')
     [void]$builder.AppendLine('- 操作対象が小さく周辺文脈を残した拡大が有効なら zoom=focus、画面全体の確認なら zoom=full、判断できなければ zoom=keep にする。')
     [void]$builder.AppendLine('- 画像と与えられた情報から読み取れないことは書かない。想像で補わない。')
     [void]$builder.AppendLine('- 判断できない手順は confident を false にし、reason に理由を短く書く。')
     [void]$builder.AppendLine('- 直前の手順と実質的に同じ画面、描画途中、ぼけ・残像、ローディングだけ、操作や結果が読み取れない通過画面は keep を false にする。')
+    [void]$builder.AppendLine('- 候補枠がない最後の画像でも、直前操作の完了、条件解除、保存後の状態などを確認できる結果画面は keep を true にし、確認手順として文章を書く。直前操作の「操作後の結果」画像として別途添付済みの場合だけ重複として外してよい。')
     [void]$builder.AppendLine('- 画面の一部だけが変わった場合は、前後を比較して何が変わったかを説明する。変化が確認できなければ想像で操作を書かない。')
     [void]$builder.AppendLine('- 最初の画像は操作開始に必要な状態、最後の画像は利用者が確認すべき結果である場合に残す。単に録画の開始・終了に写っただけなら残さない。')
+    [void]$builder.AppendLine('- 申請番号、ファイル名、設定名など画面上の固有識別子が操作対象の特定に必要な場合は、読み取れる範囲で説明へ含める。')
     [void]$builder.AppendLine('- すでに人が書いた内容がある手順は、それを尊重して整えるだけにする。')
     [void]$builder.AppendLine()
 
@@ -369,6 +372,20 @@ function ConvertFrom-MbCopilotStepAnswer {
         if ($zoom -notin @('keep', 'focus', 'full')) { $zoom = 'keep' }
         $visualConfident = Get-MbBooleanOrDefault -Container $item -Name 'visualConfident' -Default $false
         $allowedCandidateIds = @(@($source.targetCandidates) | ForEach-Object { [string]$_.id })
+        # Copilotが枠上の表示番号を返すことがある。番号は候補IDではないが、
+        # 依頼文に列挙した順序と一意に対応するため、安全に正規化できる。
+        if ($allowedCandidateIds.Count -gt 0 -and $targetCandidateId -ne 'none') {
+            $candidateOrdinal = 0
+            if ($targetCandidateId -match '^(?:候補|candidate|#)?\s*([1-4])$') {
+                $candidateOrdinal = [int]$Matches[1]
+            } elseif ([string]::IsNullOrWhiteSpace($targetCandidateId) -and $visualConfident -and
+                $visualReason -match '(?:候補|candidate)\s*([1-4])') {
+                $candidateOrdinal = [int]$Matches[1]
+            }
+            if ($candidateOrdinal -ge 1 -and $candidateOrdinal -le $allowedCandidateIds.Count) {
+                $targetCandidateId = [string]$allowedCandidateIds[$candidateOrdinal - 1]
+            }
+        }
         if ($allowedCandidateIds.Count -eq 0) {
             # 視覚候補がない手順では、Copilotが none や zoom を補っても画像編集へ使わない。
             $targetCandidateId = ''

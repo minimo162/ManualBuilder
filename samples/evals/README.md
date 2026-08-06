@@ -8,6 +8,7 @@
 - `expense-application.webm`: 一覧から申請を作成して保存する基本操作
 - `settings-roundtrip.webm`: ホームから設定へ移動し、元の画面へ戻る操作
 - `terms-slow-scroll.webm`: ゆっくりしたスクロールと確認ダイアログ
+- `request-search-workflow.webm`: 検索、絞り込み、並べ替え、詳細確認、一覧復帰、条件クリアを行う10場面のholdout
 
 正解は [`gold/manifest.json`](gold/manifest.json) にあります。場面数、時刻範囲、操作対象、
 正規化矩形、期待する手順文、必須概念、書いてはいけない内容を記録しています。
@@ -28,19 +29,44 @@
 製品と同じ閾値で、場面時刻と操作候補を再評価できます。
 
 ```powershell
-python tools/evals/evaluate_video_candidates.py --output out/video-candidates.json
+python tools/evals/evaluate_video_candidates.py --split development --output out/video-candidates.json
 ```
 
 `top1RectHits` / `top4RectHits` は正解枠を候補へ含められた割合、
 `candidateSetPrecision` は候補を出した場面のうち正解枠を含んだ割合、
 `noRectFalsePositiveRate` は本来枠を出さない場面で候補を出した割合です。
-この3本は開発中に調整へ使用した合成データであり、holdoutではありません。
+既定では調整可能なdevelopment 3本だけを評価します。未調整の確認は
+`--split holdout`を明示し、結果を見た後で検出器を調整した場合は新しいholdoutへ交換します。
 満点でも実録画や別アプリでの精度を保証しません。
 
 製品のJavaScriptをブラウザーで直接確認するときは、リポジトリをローカルHTTPで配信し、
 `tools/evals/video-pipeline-harness.html`を開いて録画を選択します。
 出力フレームからCopilot用の評価プロジェクトを作る場合は、
 `tools/evals/New-MbCopilotEvalProject.ps1`を使います。
+
+製品UIで取り込んだプロジェクトは、300ms走査の許容と粗い候補の中心包含を含む
+候補再現率を次で採点できます。厳密なIoU合格数も別に残ります。
+
+```powershell
+python tools/evals/evaluate_product_project.py --project <project.json> `
+  --scenario request-search-workflow --output out/machine.json
+```
+
+架空画像だけを使用し、画像送信への同意とサインインが済んだ評価PCでは、実M365 Copilotを
+反復実行できます。結果は各runへ保存され、既存結果を上書きしません。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/evals/Invoke-MbCopilotBenchmarkRuns.ps1 `
+  -ProjectPath <project.json> -OutputRoot out/copilot -Runs 3
+```
+
+独立レビュアー2名のJSONは次で検証・集約します。合否、文章点、重大誤認の判定が割れた場合は
+`needs-arbitration`となり、3人目の裁定が必要です。
+
+```powershell
+python tools/evals/aggregate_copilot_reviews.py --machine out/machine.json `
+  --reviewer-a out/reviewer-a.json --reviewer-b out/reviewer-b.json --output out/aggregate.json
+```
 
 ## 再生成
 

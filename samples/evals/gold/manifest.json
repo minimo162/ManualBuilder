@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "fixtureVersion": "1.0.0",
+  "fixtureVersion": "1.1.0",
   "coordinateSystem": "normalized-0-to-1",
   "evaluationDefaults": {
     "sceneCountMustMatch": true,
@@ -12,8 +12,8 @@
     {
       "id": "expense-application",
       "videoFile": "../videos/expense-application.webm",
-      "byteLength": 94086,
-      "sha256": "7cd1ac2d42d3b21eeed40f8f02f3367048643ecc2b9789946c95bab37c312565",
+      "byteLength": 94026,
+      "sha256": "cadf93c23c619aa6f8a522bd30c89b9e218b17f1487cc28e459960de8e1bceac",
       "durationMs": 7400,
       "summary": "申請一覧から出張費申請を作成し、保存結果を確認する。",
       "expectedSceneCount": 5,
@@ -21,70 +21,138 @@
         {
           "order": 1,
           "state": "申請一覧",
-          "representativeTimeRangeMs": [200, 600],
+          "representativeTimeRangeMs": [
+            200,
+            600
+          ],
           "operationKind": "click",
           "operationTarget": "新規申請",
-          "expectedRect": { "x1": 0.7604, "y1": 0.1852, "x2": 0.9271, "y2": 0.2741 },
+          "expectedRect": {
+            "x1": 0.7604,
+            "y1": 0.1852,
+            "x2": 0.9271,
+            "y2": 0.2741
+          },
           "expectedTitle": "新規申請の開始",
           "expectedDescription": "［新規申請］を選択します。申請の作成画面が表示されます。",
-          "requiredConcepts": ["新規申請", "選択"],
-          "forbiddenClaims": ["申請を送信", "承認完了"]
+          "requiredConcepts": [
+            "新規申請",
+            "選択"
+          ],
+          "forbiddenClaims": [
+            "申請を送信",
+            "承認完了"
+          ]
         },
         {
           "order": 2,
           "state": "申請作成フォーム",
-          "representativeTimeRangeMs": [1800, 2300],
+          "representativeTimeRangeMs": [
+            1800,
+            2300
+          ],
           "operationKind": "click",
           "operationTarget": "申請の種類",
-          "expectedRect": { "x1": 0.2292, "y1": 0.3426, "x2": 0.7708, "y2": 0.4352 },
+          "expectedRect": {
+            "x1": 0.2292,
+            "y1": 0.3426,
+            "x2": 0.7708,
+            "y2": 0.4352
+          },
           "expectedTitle": "申請種類の選択",
           "expectedDescription": "［申請の種類］を選択します。種類の一覧が表示されます。",
-          "requiredConcepts": ["申請の種類", "選択"],
-          "forbiddenClaims": ["出張費を保存", "申請を提出"]
+          "requiredConcepts": [
+            "申請の種類",
+            "選択"
+          ],
+          "forbiddenClaims": [
+            "出張費を保存",
+            "申請を提出"
+          ]
         },
         {
           "order": 3,
           "state": "申請種類の一覧",
-          "representativeTimeRangeMs": [3300, 3800],
+          "representativeTimeRangeMs": [
+            3300,
+            3800
+          ],
           "operationKind": "click",
           "operationTarget": "出張費",
-          "expectedRect": { "x1": 0.2396, "y1": 0.4667, "x2": 0.7604, "y2": 0.5667 },
+          "expectedRect": {
+            "x1": 0.2396,
+            "y1": 0.4667,
+            "x2": 0.7604,
+            "y2": 0.5667
+          },
           "expectedTitle": "出張費の選択",
           "expectedDescription": "申請の種類から［出張費］を選択します。",
-          "requiredConcepts": ["出張費", "選択"],
-          "forbiddenClaims": ["備品購入", "承認"]
+          "requiredConcepts": [
+            "出張費",
+            "選択"
+          ],
+          "forbiddenClaims": [
+            "備品購入",
+            "承認"
+          ]
         },
         {
           "order": 4,
           "state": "入力済み申請フォーム",
-          "representativeTimeRangeMs": [4800, 5300],
+          "representativeTimeRangeMs": [
+            4800,
+            5300
+          ],
           "operationKind": "click",
           "operationTarget": "保存",
-          "expectedRect": { "x1": 0.7604, "y1": 0.8333, "x2": 0.9271, "y2": 0.9222 },
+          "expectedRect": {
+            "x1": 0.7604,
+            "y1": 0.8333,
+            "x2": 0.9271,
+            "y2": 0.9222
+          },
           "expectedTitle": "申請の保存",
           "expectedDescription": "入力内容を確認し、［保存］を選択します。",
-          "requiredConcepts": ["保存", "選択"],
-          "forbiddenClaims": ["送信", "承認"]
+          "requiredConcepts": [
+            "保存",
+            "選択"
+          ],
+          "forbiddenClaims": [
+            "送信",
+            "承認"
+          ]
         },
         {
           "order": 5,
           "state": "保存完了",
-          "representativeTimeRangeMs": [6300, 6900],
+          "representativeTimeRangeMs": [
+            6300,
+            6900
+          ],
           "operationKind": "result",
           "operationTarget": "",
           "expectedRect": null,
           "expectedTitle": "保存結果の確認",
           "expectedDescription": "申請が保存され、状態が「下書き」と表示されたことを確認します。",
-          "requiredConcepts": ["保存", "下書き", "確認"],
-          "forbiddenClaims": ["申請が承認", "申請を送信"]
+          "requiredConcepts": [
+            "保存",
+            "下書き",
+            "確認"
+          ],
+          "forbiddenClaims": [
+            "申請が承認",
+            "申請を送信"
+          ]
         }
-      ]
+      ],
+      "split": "development",
+      "detectorTuningAllowed": true
     },
     {
       "id": "settings-roundtrip",
       "videoFile": "../videos/settings-roundtrip.webm",
-      "byteLength": 70527,
-      "sha256": "00d1ac9e6d80f879ebf3bdd006100d5a436d979bc3c724b3b06cbe05daf958cf",
+      "byteLength": 70467,
+      "sha256": "3fcd3f29e52d9a8ec01347a168bb26f3749cdb04e61ed112c7b501f9dd72e929",
       "durationMs": 4600,
       "summary": "ホームから通知設定へ移動し、ホームへ戻る。",
       "expectedSceneCount": 3,
@@ -92,46 +160,86 @@
         {
           "order": 1,
           "state": "ホーム",
-          "representativeTimeRangeMs": [200, 600],
+          "representativeTimeRangeMs": [
+            200,
+            600
+          ],
           "operationKind": "click",
           "operationTarget": "通知設定",
-          "expectedRect": { "x1": 0.7292, "y1": 0.6296, "x2": 0.9271, "y2": 0.7185 },
+          "expectedRect": {
+            "x1": 0.7292,
+            "y1": 0.6296,
+            "x2": 0.9271,
+            "y2": 0.7185
+          },
           "expectedTitle": "通知設定を開く",
           "expectedDescription": "［通知設定］を選択します。通知設定画面が表示されます。",
-          "requiredConcepts": ["通知設定", "選択"],
-          "forbiddenClaims": ["通知を有効", "設定を保存"]
+          "requiredConcepts": [
+            "通知設定",
+            "選択"
+          ],
+          "forbiddenClaims": [
+            "通知を有効",
+            "設定を保存"
+          ]
         },
         {
           "order": 2,
           "state": "通知設定",
-          "representativeTimeRangeMs": [1800, 2300],
+          "representativeTimeRangeMs": [
+            1800,
+            2300
+          ],
           "operationKind": "click",
           "operationTarget": "ホームへ戻る",
-          "expectedRect": { "x1": 0.2135, "y1": 0.1704, "x2": 0.4115, "y2": 0.2593 },
+          "expectedRect": {
+            "x1": 0.2135,
+            "y1": 0.1704,
+            "x2": 0.4115,
+            "y2": 0.2593
+          },
           "expectedTitle": "ホームへ戻る",
           "expectedDescription": "［ホームへ戻る］を選択します。",
-          "requiredConcepts": ["ホームへ戻る", "選択"],
-          "forbiddenClaims": ["メール通知を変更", "設定を保存"]
+          "requiredConcepts": [
+            "ホームへ戻る",
+            "選択"
+          ],
+          "forbiddenClaims": [
+            "メール通知を変更",
+            "設定を保存"
+          ]
         },
         {
           "order": 3,
           "state": "ホームへの再訪",
-          "representativeTimeRangeMs": [3300, 3900],
+          "representativeTimeRangeMs": [
+            3300,
+            3900
+          ],
           "operationKind": "result",
           "operationTarget": "",
           "expectedRect": null,
           "expectedTitle": "ホーム画面の確認",
           "expectedDescription": "ホーム画面へ戻ったことを確認します。",
-          "requiredConcepts": ["ホーム", "戻った", "確認"],
-          "forbiddenClaims": ["通知設定を保存", "ログアウト"]
+          "requiredConcepts": [
+            "ホーム",
+            "戻った",
+            "確認"
+          ],
+          "forbiddenClaims": [
+            "通知設定を保存",
+            "ログアウト"
+          ]
         }
-      ]
+      ],
+      "split": "development",
+      "detectorTuningAllowed": true
     },
     {
       "id": "terms-slow-scroll",
       "videoFile": "../videos/terms-slow-scroll.webm",
-      "byteLength": 214765,
-      "sha256": "122908f963a4fc8a7f02ae1ec51d883a4c5d5a0ed43653083039be3c74093c96",
+      "byteLength": 214705,
+      "sha256": "f542364431e1ae3a148c621b711805e3662843bc473506c69b8c956233dba0be",
       "durationMs": 7400,
       "summary": "利用規約をゆっくりスクロールし、確認ダイアログで同意する。",
       "expectedSceneCount": 4,
@@ -139,52 +247,395 @@
         {
           "order": 1,
           "state": "利用規約の上部",
-          "representativeTimeRangeMs": [200, 600],
+          "representativeTimeRangeMs": [
+            200,
+            600
+          ],
           "operationKind": "scroll",
           "operationTarget": "ページ下部",
           "expectedRect": null,
           "expectedTitle": "利用規約の確認",
           "expectedDescription": "利用規約を確認しながら、ページ下部までスクロールします。",
-          "requiredConcepts": ["利用規約", "スクロール"],
-          "forbiddenClaims": ["同意完了", "保存"]
+          "requiredConcepts": [
+            "利用規約",
+            "スクロール"
+          ],
+          "forbiddenClaims": [
+            "同意完了",
+            "保存"
+          ]
         },
         {
           "order": 2,
           "state": "利用規約の下部",
-          "representativeTimeRangeMs": [3200, 3700],
+          "representativeTimeRangeMs": [
+            3200,
+            3700
+          ],
           "operationKind": "click",
           "operationTarget": "同意する",
-          "expectedRect": { "x1": 0.7188, "y1": 0.8148, "x2": 0.8958, "y2": 0.9037 },
+          "expectedRect": {
+            "x1": 0.7188,
+            "y1": 0.8148,
+            "x2": 0.8958,
+            "y2": 0.9037
+          },
           "expectedTitle": "利用規約への同意",
           "expectedDescription": "内容を確認し、［同意する］を選択します。",
-          "requiredConcepts": ["同意する", "選択"],
-          "forbiddenClaims": ["同意が完了", "ホームを開く"]
+          "requiredConcepts": [
+            "同意する",
+            "選択"
+          ],
+          "forbiddenClaims": [
+            "同意が完了",
+            "ホームを開く"
+          ]
         },
         {
           "order": 3,
           "state": "同意確認ダイアログ",
-          "representativeTimeRangeMs": [4800, 5300],
+          "representativeTimeRangeMs": [
+            4800,
+            5300
+          ],
           "operationKind": "click",
           "operationTarget": "同意して続行",
-          "expectedRect": { "x1": 0.5417, "y1": 0.6019, "x2": 0.7396, "y2": 0.6907 },
+          "expectedRect": {
+            "x1": 0.5417,
+            "y1": 0.6019,
+            "x2": 0.7396,
+            "y2": 0.6907
+          },
           "expectedTitle": "同意の確定",
           "expectedDescription": "確認ダイアログで［同意して続行］を選択します。",
-          "requiredConcepts": ["同意して続行", "選択"],
-          "forbiddenClaims": ["キャンセル", "設定を保存"]
+          "requiredConcepts": [
+            "同意して続行",
+            "選択"
+          ],
+          "forbiddenClaims": [
+            "キャンセル",
+            "設定を保存"
+          ]
         },
         {
           "order": 4,
           "state": "同意完了",
-          "representativeTimeRangeMs": [6300, 6900],
+          "representativeTimeRangeMs": [
+            6300,
+            6900
+          ],
           "operationKind": "result",
           "operationTarget": "",
           "expectedRect": null,
           "expectedTitle": "同意結果の確認",
           "expectedDescription": "利用規約への同意が完了したことを確認します。",
-          "requiredConcepts": ["同意", "完了", "確認"],
-          "forbiddenClaims": ["ホームを開いた", "ログイン"]
+          "requiredConcepts": [
+            "同意",
+            "完了",
+            "確認"
+          ],
+          "forbiddenClaims": [
+            "ホームを開いた",
+            "ログイン"
+          ]
         }
-      ]
+      ],
+      "split": "development",
+      "detectorTuningAllowed": true
+    },
+    {
+      "id": "request-search-workflow",
+      "split": "holdout",
+      "detectorTuningAllowed": false,
+      "videoFile": "../videos/request-search-workflow.webm",
+      "durationMs": 15000,
+      "summary": "申請を検索・絞り込み・並べ替え、詳細と更新履歴を確認して一覧へ戻り、検索条件をクリアする。",
+      "coverage": [
+        "input",
+        "filter",
+        "sort",
+        "detail",
+        "expand",
+        "A-B-A",
+        "result"
+      ],
+      "expectedSceneCount": 10,
+      "scenes": [
+        {
+          "order": 1,
+          "state": "申請一覧",
+          "representativeTimeRangeMs": [
+            200,
+            600
+          ],
+          "operationKind": "input",
+          "operationTarget": "検索",
+          "expectedRect": {
+            "x1": 0.2135,
+            "y1": 0.2778,
+            "x2": 0.474,
+            "y2": 0.3704
+          },
+          "expectedTitle": "申請の検索",
+          "expectedDescription": "［検索］に「評価用申請」と入力します。",
+          "requiredConcepts": [
+            "検索",
+            "評価用申請",
+            "入力"
+          ],
+          "forbiddenClaims": [
+            "申請を作成",
+            "保存"
+          ]
+        },
+        {
+          "order": 2,
+          "state": "検索済み一覧",
+          "representativeTimeRangeMs": [
+            1700,
+            2100
+          ],
+          "operationKind": "click",
+          "operationTarget": "状態: すべて",
+          "expectedRect": {
+            "x1": 0.4948,
+            "y1": 0.2778,
+            "x2": 0.651,
+            "y2": 0.363
+          },
+          "expectedTitle": "状態フィルターの表示",
+          "expectedDescription": "［状態: すべて］を選択します。",
+          "requiredConcepts": [
+            "状態",
+            "すべて",
+            "選択"
+          ],
+          "forbiddenClaims": [
+            "下書きを保存",
+            "検索を解除"
+          ]
+        },
+        {
+          "order": 3,
+          "state": "状態の選択肢",
+          "representativeTimeRangeMs": [
+            3200,
+            3600
+          ],
+          "operationKind": "click",
+          "operationTarget": "下書き",
+          "expectedRect": {
+            "x1": 0.5052,
+            "y1": 0.4778,
+            "x2": 0.6406,
+            "y2": 0.5481
+          },
+          "expectedTitle": "下書きへの絞り込み",
+          "expectedDescription": "状態から［下書き］を選択します。",
+          "requiredConcepts": [
+            "下書き",
+            "選択"
+          ],
+          "forbiddenClaims": [
+            "完了",
+            "申請を削除"
+          ]
+        },
+        {
+          "order": 4,
+          "state": "下書きの検索結果",
+          "representativeTimeRangeMs": [
+            4700,
+            5100
+          ],
+          "operationKind": "click",
+          "operationTarget": "番号順",
+          "expectedRect": {
+            "x1": 0.6719,
+            "y1": 0.2778,
+            "x2": 0.8073,
+            "y2": 0.363
+          },
+          "expectedTitle": "並べ替え項目の表示",
+          "expectedDescription": "［番号順］を選択します。",
+          "requiredConcepts": [
+            "番号順",
+            "選択"
+          ],
+          "forbiddenClaims": [
+            "申請番号を変更",
+            "保存"
+          ]
+        },
+        {
+          "order": 5,
+          "state": "並べ替えの選択肢",
+          "representativeTimeRangeMs": [
+            6200,
+            6600
+          ],
+          "operationKind": "click",
+          "operationTarget": "更新日の新しい順",
+          "expectedRect": {
+            "x1": 0.6615,
+            "y1": 0.4778,
+            "x2": 0.9167,
+            "y2": 0.5481
+          },
+          "expectedTitle": "更新日順への並べ替え",
+          "expectedDescription": "［更新日の新しい順］を選択します。",
+          "requiredConcepts": [
+            "更新日",
+            "新しい順",
+            "選択"
+          ],
+          "forbiddenClaims": [
+            "申請番号順",
+            "更新日を変更"
+          ]
+        },
+        {
+          "order": 6,
+          "state": "並べ替え済み一覧",
+          "representativeTimeRangeMs": [
+            7700,
+            8100
+          ],
+          "operationKind": "click",
+          "operationTarget": "EV-1008の詳細",
+          "expectedRect": {
+            "x1": 0.8385,
+            "y1": 0.4611,
+            "x2": 0.9115,
+            "y2": 0.5315
+          },
+          "expectedTitle": "申請詳細の表示",
+          "expectedDescription": "申請番号「EV-1008」の［詳細］を選択します。",
+          "requiredConcepts": [
+            "EV-1008",
+            "詳細",
+            "選択"
+          ],
+          "forbiddenClaims": [
+            "EV-1005",
+            "申請を承認"
+          ]
+        },
+        {
+          "order": 7,
+          "state": "申請の詳細",
+          "representativeTimeRangeMs": [
+            9200,
+            9600
+          ],
+          "operationKind": "click",
+          "operationTarget": "詳細を表示",
+          "expectedRect": {
+            "x1": 0.7083,
+            "y1": 0.4444,
+            "x2": 0.8958,
+            "y2": 0.5296
+          },
+          "expectedTitle": "更新履歴の表示",
+          "expectedDescription": "［詳細を表示］を選択し、更新履歴を表示します。",
+          "requiredConcepts": [
+            "詳細を表示",
+            "更新履歴",
+            "選択"
+          ],
+          "forbiddenClaims": [
+            "履歴を削除",
+            "申請を送信"
+          ]
+        },
+        {
+          "order": 8,
+          "state": "更新履歴を展開した詳細",
+          "representativeTimeRangeMs": [
+            10700,
+            11100
+          ],
+          "operationKind": "click",
+          "operationTarget": "一覧へ戻る",
+          "expectedRect": {
+            "x1": 0.2135,
+            "y1": 0.1704,
+            "x2": 0.3906,
+            "y2": 0.2556
+          },
+          "expectedTitle": "申請一覧へ戻る",
+          "expectedDescription": "更新履歴を確認し、［一覧へ戻る］を選択します。",
+          "requiredConcepts": [
+            "更新履歴",
+            "一覧へ戻る",
+            "選択"
+          ],
+          "forbiddenClaims": [
+            "申請を保存",
+            "履歴を編集"
+          ]
+        },
+        {
+          "order": 9,
+          "state": "検索結果への再訪",
+          "representativeTimeRangeMs": [
+            12200,
+            12600
+          ],
+          "operationKind": "click",
+          "operationTarget": "クリア",
+          "expectedRect": {
+            "x1": 0.8229,
+            "y1": 0.2778,
+            "x2": 0.9271,
+            "y2": 0.363
+          },
+          "expectedTitle": "検索条件のクリア",
+          "expectedDescription": "［クリア］を選択して検索条件を解除します。",
+          "requiredConcepts": [
+            "クリア",
+            "検索条件",
+            "解除"
+          ],
+          "forbiddenClaims": [
+            "申請を削除",
+            "ログアウト"
+          ]
+        },
+        {
+          "order": 10,
+          "state": "検索条件の解除結果",
+          "representativeTimeRangeMs": [
+            13700,
+            14300
+          ],
+          "operationKind": "result",
+          "operationTarget": "",
+          "expectedRect": null,
+          "expectedTitle": "検索条件の解除確認",
+          "expectedDescription": "検索条件がクリアされ、申請一覧が再表示されたことを確認します。",
+          "requiredConcepts": [
+            "検索条件",
+            "クリア",
+            "申請一覧",
+            "確認"
+          ],
+          "forbiddenClaims": [
+            "申請を作成",
+            "申請を保存"
+          ]
+        }
+      ],
+      "byteLength": 208035,
+      "sha256": "681929e1c45f9f248251be4719cc7bb4c7637bb54a3d92969f407bf5ff53b1c5"
     }
-  ]
+  ],
+  "splits": {
+    "development": {
+      "detectorTuningAllowed": true
+    },
+    "holdout": {
+      "detectorTuningAllowed": false
+    }
+  }
 }

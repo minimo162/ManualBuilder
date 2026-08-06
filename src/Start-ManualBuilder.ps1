@@ -1159,6 +1159,7 @@ function Invoke-MbRoute {
             }
             '/assets/css/app.css' { Write-MbFile $Context (Join-Path $webRoot 'assets\css\app.css') 'text/css; charset=utf-8'; return }
             '/assets/js/app.js' { Write-MbFile $Context (Join-Path $webRoot 'assets\js\app.js') 'application/javascript; charset=utf-8'; return }
+            '/assets/js/video-scenes.js' { Write-MbFile $Context (Join-Path $webRoot 'assets\js\video-scenes.js') 'application/javascript; charset=utf-8'; return }
             '/assets/js/heartbeat-worker.js' { Write-MbFile $Context (Join-Path $webRoot 'assets\js\heartbeat-worker.js') 'application/javascript; charset=utf-8'; return }
             '/vendor/htmx-2.0.10.min.js' { Write-MbFile $Context (Join-Path $webRoot 'vendor\htmx-2.0.10.min.js') 'application/javascript; charset=utf-8'; return }
             '/api/health' { Write-MbResponse $Context '{"status":"ok"}' 200 'application/json; charset=utf-8'; return }

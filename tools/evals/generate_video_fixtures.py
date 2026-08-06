@@ -7,6 +7,8 @@ optional encoder with `python -m pip install imageio-ffmpeg` before running.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -210,10 +212,179 @@ def terms_frame(elapsed: int) -> Image.Image:
     return image
 
 
+def compact_button(draw: ImageDraw.ImageDraw, value: str, x: int, y: int, width: int,
+                   active: bool = False, color: str = BLUE) -> None:
+    rounded(draw, (x, y, x + width, y + 46), BLUE_DARK if active else color, 7)
+    label(draw, value, (x + width // 2, y + 23), 15, WHITE, True, "mm")
+
+
+def request_search_page(query: str, status: str, sort: str, rows: list[tuple[str, str, str, str]],
+                        active: str = "", notice: str = "") -> tuple[Image.Image, ImageDraw.ImageDraw]:
+    image, draw = shell("申請検索")
+    field(draw, "検索", query, 205, 150, 250, active == "search")
+    compact_button(draw, status, 475, 150, 150, active == "status", "#52677d")
+    compact_button(draw, sort, 645, 150, 130, active == "sort", "#52677d")
+    compact_button(draw, "クリア", 790, 150, 100, active == "clear", "#718096")
+    if notice:
+        rounded(draw, (600, 86, 890, 128), "#dff5ea", 7, "#98d5bb")
+        label(draw, notice, (620, 107), 15, GREEN, True)
+
+    label(draw, "申請番号", (220, 220), 14, MUTED, True)
+    label(draw, "件名", (350, 220), 14, MUTED, True)
+    label(draw, "状態", (610, 220), 14, MUTED, True)
+    label(draw, "更新日", (700, 220), 14, MUTED, True)
+    for index, (request_id, subject, row_status, updated) in enumerate(rows):
+        top = 238 + index * 72
+        rounded(draw, (205, top, 890, top + 60), WHITE, 7, LINE)
+        label(draw, request_id, (220, top + 30), 16, TEXT, True)
+        label(draw, subject, (350, top + 30), 16)
+        label(draw, row_status, (610, top + 30), 16, GREEN if row_status == "下書き" else MUTED, True)
+        label(draw, updated, (700, top + 30), 15, MUTED)
+        rounded(draw, (805, top + 11, 875, top + 49),
+                BLUE_DARK if active == f"detail-{request_id}" else BLUE, 6)
+        label(draw, "詳細", (840, top + 30), 14, WHITE, True, "mm")
+    return image, draw
+
+
+ALL_REQUESTS = [
+    ("EV-1006", "研修資料の購入", "下書き", "8月3日"),
+    ("EV-1007", "会議室利用", "完了", "8月4日"),
+    ("EV-1008", "評価用申請A", "下書き", "8月5日"),
+]
+FILTERED_REQUESTS = [
+    ("EV-1005", "評価用申請B", "下書き", "8月2日"),
+    ("EV-1008", "評価用申請A", "下書き", "8月5日"),
+]
+SORTED_REQUESTS = list(reversed(FILTERED_REQUESTS))
+
+
+def request_detail_page(expanded: bool = False, active: str = "") -> Image.Image:
+    image, draw = shell("申請の詳細")
+    compact_button(draw, "← 一覧へ戻る", 205, 92, 170, active == "back", GREEN)
+    rounded(draw, (205, 165, 890, 430), WHITE, 10, LINE)
+    label(draw, "EV-1008", (235, 205), 18, MUTED, True)
+    label(draw, "評価用申請A", (235, 245), 25, TEXT, True)
+    label(draw, "状態: 下書き", (235, 290), 17, GREEN, True)
+    label(draw, "申請者: テスト利用者", (235, 330), 16, MUTED)
+    compact_button(draw, "詳細を表示", 680, 240, 180, active == "expand")
+    if expanded:
+        rounded(draw, (235, 350, 860, 414), "#eef4fa", 7, "#c6d5e4")
+        label(draw, "更新履歴", (255, 372), 15, MUTED, True)
+        label(draw, "8月5日  下書きを作成", (255, 398), 16)
+    else:
+        label(draw, "更新履歴は［詳細を表示］から確認できます。", (235, 382), 16, MUTED)
+    return image
+
+
+def request_search_holdout_frame(elapsed: int) -> Image.Image:
+    stage = min(9, elapsed // 1500)
+    active = (elapsed % 1500) >= 1300
+    if stage == 0:
+        return request_search_page("", "状態: すべて", "番号順", ALL_REQUESTS,
+                                   "search" if active else "")[0]
+    if stage == 1:
+        return request_search_page("評価用申請", "状態: すべて", "番号順", FILTERED_REQUESTS,
+                                   "status" if active else "")[0]
+    if stage == 2:
+        image, draw = request_search_page("評価用申請", "状態: すべて", "番号順", FILTERED_REQUESTS)
+        rounded(draw, (475, 205, 625, 305), WHITE, 7, "#9aabbd")
+        rounded(draw, (485, 258, 615, 296), "#dbeafe" if active else WHITE, 5)
+        label(draw, "すべて", (500, 230), 15)
+        label(draw, "下書き", (500, 277), 15, TEXT, True)
+        return image
+    if stage == 3:
+        return request_search_page("評価用申請", "状態: 下書き", "番号順", FILTERED_REQUESTS,
+                                   "sort" if active else "")[0]
+    if stage == 4:
+        image, draw = request_search_page("評価用申請", "状態: 下書き", "番号順", FILTERED_REQUESTS)
+        rounded(draw, (625, 205, 890, 305), WHITE, 7, "#9aabbd")
+        label(draw, "申請番号順", (650, 230), 15)
+        rounded(draw, (635, 258, 880, 296), "#dbeafe" if active else WHITE, 5)
+        label(draw, "更新日の新しい順", (650, 277), 15, TEXT, True)
+        return image
+    if stage == 5:
+        return request_search_page("評価用申請", "状態: 下書き", "更新日順", SORTED_REQUESTS,
+                                   "detail-EV-1008" if active else "")[0]
+    if stage == 6:
+        return request_detail_page(False, "expand" if active else "")
+    if stage == 7:
+        return request_detail_page(True, "back" if active else "")
+    if stage == 8:
+        return request_search_page("評価用申請", "状態: 下書き", "更新日順", SORTED_REQUESTS,
+                                   "clear" if active else "")[0]
+    return request_search_page("", "状態: すべて", "番号順", ALL_REQUESTS,
+                               notice="検索条件をクリアしました")[0]
+
+
+REQUEST_SEARCH_HOLDOUT = {
+    "id": "request-search-workflow",
+    "split": "holdout",
+    "detectorTuningAllowed": False,
+    "videoFile": "../videos/request-search-workflow.webm",
+    "durationMs": 15000,
+    "summary": "申請を検索・絞り込み・並べ替え、詳細と更新履歴を確認して一覧へ戻り、検索条件をクリアする。",
+    "coverage": ["input", "filter", "sort", "detail", "expand", "A-B-A", "result"],
+    "expectedSceneCount": 10,
+    "scenes": [
+        {"order": 1, "state": "申請一覧", "representativeTimeRangeMs": [200, 600],
+         "operationKind": "input", "operationTarget": "検索",
+         "expectedRect": {"x1": 0.2135, "y1": 0.2778, "x2": 0.4740, "y2": 0.3704},
+         "expectedTitle": "申請の検索", "expectedDescription": "［検索］に「評価用申請」と入力します。",
+         "requiredConcepts": ["検索", "評価用申請", "入力"], "forbiddenClaims": ["申請を作成", "保存"]},
+        {"order": 2, "state": "検索済み一覧", "representativeTimeRangeMs": [1700, 2100],
+         "operationKind": "click", "operationTarget": "状態: すべて",
+         "expectedRect": {"x1": 0.4948, "y1": 0.2778, "x2": 0.6510, "y2": 0.3630},
+         "expectedTitle": "状態フィルターの表示", "expectedDescription": "［状態: すべて］を選択します。",
+         "requiredConcepts": ["状態", "すべて", "選択"], "forbiddenClaims": ["下書きを保存", "検索を解除"]},
+        {"order": 3, "state": "状態の選択肢", "representativeTimeRangeMs": [3200, 3600],
+         "operationKind": "click", "operationTarget": "下書き",
+         "expectedRect": {"x1": 0.5052, "y1": 0.4778, "x2": 0.6406, "y2": 0.5481},
+         "expectedTitle": "下書きへの絞り込み", "expectedDescription": "状態から［下書き］を選択します。",
+         "requiredConcepts": ["下書き", "選択"], "forbiddenClaims": ["完了", "申請を削除"]},
+        {"order": 4, "state": "下書きの検索結果", "representativeTimeRangeMs": [4700, 5100],
+         "operationKind": "click", "operationTarget": "番号順",
+         "expectedRect": {"x1": 0.6719, "y1": 0.2778, "x2": 0.8073, "y2": 0.3630},
+         "expectedTitle": "並べ替え項目の表示", "expectedDescription": "［番号順］を選択します。",
+         "requiredConcepts": ["番号順", "選択"], "forbiddenClaims": ["申請番号を変更", "保存"]},
+        {"order": 5, "state": "並べ替えの選択肢", "representativeTimeRangeMs": [6200, 6600],
+         "operationKind": "click", "operationTarget": "更新日の新しい順",
+         "expectedRect": {"x1": 0.6615, "y1": 0.4778, "x2": 0.9167, "y2": 0.5481},
+         "expectedTitle": "更新日順への並べ替え", "expectedDescription": "［更新日の新しい順］を選択します。",
+         "requiredConcepts": ["更新日", "新しい順", "選択"], "forbiddenClaims": ["申請番号順", "更新日を変更"]},
+        {"order": 6, "state": "並べ替え済み一覧", "representativeTimeRangeMs": [7700, 8100],
+         "operationKind": "click", "operationTarget": "EV-1008の詳細",
+         "expectedRect": {"x1": 0.8385, "y1": 0.4611, "x2": 0.9115, "y2": 0.5315},
+         "expectedTitle": "申請詳細の表示", "expectedDescription": "申請番号「EV-1008」の［詳細］を選択します。",
+         "requiredConcepts": ["EV-1008", "詳細", "選択"], "forbiddenClaims": ["EV-1005", "申請を承認"]},
+        {"order": 7, "state": "申請の詳細", "representativeTimeRangeMs": [9200, 9600],
+         "operationKind": "click", "operationTarget": "詳細を表示",
+         "expectedRect": {"x1": 0.7083, "y1": 0.4444, "x2": 0.8958, "y2": 0.5296},
+         "expectedTitle": "更新履歴の表示", "expectedDescription": "［詳細を表示］を選択し、更新履歴を表示します。",
+         "requiredConcepts": ["詳細を表示", "更新履歴", "選択"], "forbiddenClaims": ["履歴を削除", "申請を送信"]},
+        {"order": 8, "state": "更新履歴を展開した詳細", "representativeTimeRangeMs": [10700, 11100],
+         "operationKind": "click", "operationTarget": "一覧へ戻る",
+         "expectedRect": {"x1": 0.2135, "y1": 0.1704, "x2": 0.3906, "y2": 0.2556},
+         "expectedTitle": "申請一覧へ戻る", "expectedDescription": "更新履歴を確認し、［一覧へ戻る］を選択します。",
+         "requiredConcepts": ["更新履歴", "一覧へ戻る", "選択"], "forbiddenClaims": ["申請を保存", "履歴を編集"]},
+        {"order": 9, "state": "検索結果への再訪", "representativeTimeRangeMs": [12200, 12600],
+         "operationKind": "click", "operationTarget": "クリア",
+         "expectedRect": {"x1": 0.8229, "y1": 0.2778, "x2": 0.9271, "y2": 0.3630},
+         "expectedTitle": "検索条件のクリア", "expectedDescription": "［クリア］を選択して検索条件を解除します。",
+         "requiredConcepts": ["クリア", "検索条件", "解除"], "forbiddenClaims": ["申請を削除", "ログアウト"]},
+        {"order": 10, "state": "検索条件の解除結果", "representativeTimeRangeMs": [13700, 14300],
+         "operationKind": "result", "operationTarget": "", "expectedRect": None,
+         "expectedTitle": "検索条件の解除確認", "expectedDescription": "検索条件がクリアされ、申請一覧が再表示されたことを確認します。",
+         "requiredConcepts": ["検索条件", "クリア", "申請一覧", "確認"],
+         "forbiddenClaims": ["申請を作成", "申請を保存"]},
+    ],
+}
+
+
 SCENARIOS = (
     ("expense-application", 7400, expense_frame),
     ("settings-roundtrip", 4600, settings_frame),
     ("terms-slow-scroll", 7400, terms_frame),
+    ("request-search-workflow", 15000, request_search_holdout_frame),
 )
 
 
@@ -228,7 +399,10 @@ def write_video(path: Path, duration_ms: int, frame_factory) -> None:
         bitrate="900k",
         macro_block_size=1,
         ffmpeg_log_level="warning",
-        output_params=["-deadline", "good", "-cpu-used", "4", "-row-mt", "1"],
+        output_params=[
+            "-deadline", "good", "-cpu-used", "4", "-row-mt", "1",
+            "-fflags", "+bitexact", "-flags:v", "+bitexact", "-map_metadata", "-1",
+        ],
     )
     writer.send(None)
     try:
@@ -243,6 +417,11 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     default_output = Path(__file__).resolve().parents[2] / "samples" / "evals" / "videos"
     parser.add_argument("--output", type=Path, default=default_output)
+    parser.add_argument(
+        "--manifest",
+        type=Path,
+        default=Path(__file__).resolve().parents[2] / "samples" / "evals" / "gold" / "manifest.json",
+    )
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     for scenario_id, duration_ms, frame_factory in SCENARIOS:
@@ -250,6 +429,29 @@ def main() -> None:
         print(f"Generating {target.name}...")
         write_video(target, duration_ms, frame_factory)
         print(f"  {target.stat().st_size:,} bytes")
+
+    manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
+    manifest["fixtureVersion"] = "1.1.0"
+    manifest["splits"] = {
+        "development": {"detectorTuningAllowed": True},
+        "holdout": {"detectorTuningAllowed": False},
+    }
+    scenarios = []
+    for scenario in manifest["scenarios"]:
+        if scenario["id"] == REQUEST_SEARCH_HOLDOUT["id"]:
+            continue
+        scenario["split"] = "development"
+        scenario["detectorTuningAllowed"] = True
+        scenarios.append(scenario)
+    scenarios.append(REQUEST_SEARCH_HOLDOUT.copy())
+    for scenario in scenarios:
+        video_path = (args.manifest.parent / scenario["videoFile"]).resolve()
+        payload = video_path.read_bytes()
+        scenario["byteLength"] = len(payload)
+        scenario["sha256"] = hashlib.sha256(payload).hexdigest()
+    manifest["scenarios"] = scenarios
+    args.manifest.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"Updated {args.manifest}")
 
 
 if __name__ == "__main__":

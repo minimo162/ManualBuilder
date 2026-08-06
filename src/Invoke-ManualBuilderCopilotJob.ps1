@@ -194,21 +194,42 @@ try {
         }
 
         $response = $null
-        try {
-            $response = Invoke-MbCopilotRequest -Settings $settings -ProfileDirectory $ProfileDirectory `
-                -Prompt $prompt -AttachPaths @($attachments) -Marker $marker `
-                -OnPhase $onPhase -ShouldCancel $shouldCancel
-        } catch {
-            $failureMessage = [string]$_.Exception.Message
-            $failureCode = if ($failureMessage -like '*Copilotで画像利用の確認が必要です*') { 'IMAGE_CONSENT_REQUIRED' } else { 'REQUEST_FAILED' }
-            Write-MbJobLog ("パケット {0} の依頼に失敗しました: {1}" -f $packetNumber, $failureMessage) 'ERROR'
-            [void]$failures.Add([pscustomobject]@{ packet = $packetNumber; code = $failureCode; message = $failureMessage })
-            continue
+        $requestFailureMessage = ''
+        $requestFailureCode = ''
+        $maximumAttempts = 2
+        for ($attempt = 1; $attempt -le $maximumAttempts; $attempt++) {
+            $requestFailureMessage = ''
+            $requestFailureCode = ''
+            try {
+                $response = Invoke-MbCopilotRequest -Settings $settings -ProfileDirectory $ProfileDirectory `
+                    -Prompt $prompt -AttachPaths @($attachments) -Marker $marker `
+                    -OnPhase $onPhase -ShouldCancel $shouldCancel
+            } catch {
+                $requestFailureMessage = [string]$_.Exception.Message
+                $requestFailureCode = if ($requestFailureMessage -like '*Copilotで画像利用の確認が必要です*') { 'IMAGE_CONSENT_REQUIRED' } else { 'REQUEST_FAILED' }
+                if ($requestFailureCode -eq 'IMAGE_CONSENT_REQUIRED' -or $attempt -ge $maximumAttempts) { break }
+                Write-MbJobLog ("パケット {0} の依頼を再試行します（{1}/{2}）: {3}" -f
+                    $packetNumber, ($attempt + 1), $maximumAttempts, $requestFailureMessage) 'WARN'
+                continue
+            }
+
+            if ($null -ne $response -and
+                ($response.cancelled -or ($response.ok -and $null -ne $response.answer))) { break }
+            if ($attempt -lt $maximumAttempts) {
+                Write-MbJobLog ("パケット {0} の回答形式を読み取れないため再試行します（{1}/{2}）" -f
+                    $packetNumber, ($attempt + 1), $maximumAttempts) 'WARN'
+            }
         }
 
-        if ($response.cancelled) { break }
-        if (-not $response.ok -or $null -eq $response.answer) {
-            $reason = switch ([string]$response.completedBy) {
+        if (-not [string]::IsNullOrWhiteSpace($requestFailureMessage)) {
+            Write-MbJobLog ("パケット {0} の依頼に失敗しました: {1}" -f $packetNumber, $requestFailureMessage) 'ERROR'
+            [void]$failures.Add([pscustomobject]@{ packet = $packetNumber; code = $requestFailureCode; message = $requestFailureMessage })
+            continue
+        }
+        if ($null -ne $response -and $response.cancelled) { break }
+        if ($null -eq $response -or -not $response.ok -or $null -eq $response.answer) {
+            $completedBy = if ($null -ne $response) { [string]$response.completedBy } else { '' }
+            $reason = switch ($completedBy) {
                 'timeout' { 'Copilotの回答が時間内に終わりませんでした。' }
                 'no-json' { 'Copilotが手順の形で答えませんでした。' }
                 default   { 'Copilotの回答を読み取れませんでした。' }

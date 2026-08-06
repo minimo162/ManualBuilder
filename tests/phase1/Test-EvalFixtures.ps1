@@ -22,21 +22,32 @@ try {
     $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
 
     Add-Result ([int]$manifest.schemaVersion -eq 1) '対応する正解データ形式である'
-    Add-Result (@($manifest.scenarios).Count -eq 3) '評価用シナリオが3件ある'
+    Add-Result (@($manifest.scenarios).Count -eq 4) '評価用シナリオが4件ある'
     Add-Result ([bool]$manifest.evaluationDefaults.sceneCountMustMatch) '場面数を厳密に採点する設定である'
+    Add-Result ([bool]$manifest.splits.development.detectorTuningAllowed) 'developmentは検出器調整に使用できる'
+    Add-Result (-not [bool]$manifest.splits.holdout.detectorTuningAllowed) 'holdoutは検出器調整から除外する'
 
     $expectedCounts = @{
         'expense-application' = 5
         'settings-roundtrip' = 3
         'terms-slow-scroll' = 4
+        'request-search-workflow' = 10
     }
     $totalScenes = 0
+    $developmentCount = 0
+    $holdoutCount = 0
 
     foreach ($scenario in @($manifest.scenarios)) {
         $scenarioId = [string]$scenario.id
         $scenes = @($scenario.scenes)
         $totalScenes += $scenes.Count
+        $split = [string]$scenario.split
+        if ($split -eq 'development') { $developmentCount++ }
+        if ($split -eq 'holdout') { $holdoutCount++ }
         Add-Result ($expectedCounts.ContainsKey($scenarioId)) "既知のシナリオである: $scenarioId"
+        Add-Result ($split -in @('development', 'holdout')) "データ分割が定義されている: $scenarioId"
+        Add-Result ([bool]$scenario.detectorTuningAllowed -eq ($split -eq 'development')) `
+            "検出器調整の可否がデータ分割と一致する: $scenarioId"
         if ($expectedCounts.ContainsKey($scenarioId)) {
             Add-Result ($scenes.Count -eq $expectedCounts[$scenarioId]) "正解場面数が一致する: $scenarioId"
         }
@@ -88,7 +99,19 @@ try {
         }
     }
 
-    Add-Result ($totalScenes -eq 12) '全12場面の正解が揃っている'
+    Add-Result ($developmentCount -eq 3) 'developmentシナリオが3件ある'
+    Add-Result ($holdoutCount -eq 1) 'holdoutシナリオが1件ある'
+    Add-Result ($totalScenes -eq 22) '全22場面の正解が揃っている'
+
+    $holdout = @($manifest.scenarios | Where-Object { [string]$_.split -eq 'holdout' }) | Select-Object -First 1
+    if ($null -ne $holdout) {
+        $coverage = @($holdout.coverage)
+        foreach ($requiredCoverage in @('input', 'filter', 'sort', 'detail', 'expand', 'A-B-A', 'result')) {
+            Add-Result ($coverage -contains $requiredCoverage) "holdoutが実践操作を含む: $requiredCoverage"
+        }
+        Add-Result (@($holdout.scenes).Count -ge 8 -and @($holdout.scenes).Count -le 12) `
+            'holdoutは8〜12操作相当の長さである'
+    }
 } catch {
     Add-Result $false ("評価用データの検査中に例外: " + $_.Exception.Message)
 }
