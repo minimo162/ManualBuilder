@@ -46,6 +46,21 @@ try {
     Assert-Mb (@($loadedStep.annotations).Count -eq 0) '空の注釈一覧を再読込できる'
     Assert-Mb ([double]$loadedStep.crop.x -eq 0 -and [double]$loadedStep.crop.width -eq 1) '切り抜き範囲を再読込できる'
     Assert-Mb ([bool]$loadedStep.review.required -and [string]$loadedStep.review.action -eq 'review') '要確認を再読込できる'
+
+    $copiedSheet = Copy-MbSheet -Project $loaded -SheetId $sheet2.id
+    $copiedStep = @($copiedSheet.steps)[0]
+    Assert-Mb (@($loaded.sheets).Count -eq 3 -and [string]$loaded.sheets[2].id -eq [string]$copiedSheet.id) '複製したシートを元シートの直後へ追加する'
+    Assert-Mb ([string]$copiedSheet.name -eq '申請 のコピー' -and [string]$loaded.selectedSheetId -eq [string]$copiedSheet.id) '複製シートへ分かりやすい名前を付けて選択する'
+    Assert-Mb ([string]$copiedSheet.id -ne [string]$sheet2.id -and [string]$copiedStep.id -ne [string]$loadedStep.id) '複製したシートと手順へ新しいIDを割り当てる'
+    Assert-Mb ([string]$copiedStep.description -eq [string]$loadedStep.description -and [string]$copiedStep.review.reason -eq [string]$loadedStep.review.reason) '複製時に文章と要確認情報を維持する'
+    $copiedStep.title = '複製側だけ変更'
+    Assert-Mb ([string]$loadedStep.title -eq '申請画面を開く') '複製後の編集が元手順へ影響しない'
+    $secondCopiedSheet = Copy-MbSheet -Project $loaded -SheetId $sheet2.id
+    Assert-Mb ([string]$secondCopiedSheet.name -eq '申請 のコピー (2)') '同じシートを繰り返し複製しても名前が重複しない'
+    Remove-MbSheet -Project $loaded -SheetId $secondCopiedSheet.id
+    Remove-MbSheet -Project $loaded -SheetId $copiedSheet.id
+    Select-MbSheet -Project $loaded -SheetId $sheet2.id
+
     [void](Set-MbStepReview -Project $loaded -StepId $loadedStep.id)
     Assert-Mb (-not [bool]$loadedStep.review.required -and [string]::IsNullOrWhiteSpace([string]$loadedStep.review.action)) '明示操作で要確認を解除できる'
     $loadedStep.PSObject.Properties.Remove('crop')

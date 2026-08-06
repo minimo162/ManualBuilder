@@ -165,6 +165,8 @@ if (appJs) {
   check('要確認は明示操作で解除する', appJs.includes('data-step-review-resolve') && appJs.includes('/api/steps/review/resolve'));
   check('手順とシートの削除を元に戻せる', appJs.includes('/api/deletions/status') && appJs.includes('/api/deletions/undo') && appJs.includes('deletion-undo__button'));
   check('シート削除を取り消し対応APIへ送る', appJs.includes('data-sheet-delete') && appJs.includes("fetch('/api/sheets/delete'"));
+  check('未保存内容を待ってからシートを複製する', appJs.includes('data-sheet-duplicate') &&
+    /flushPendingStructuralSaves[\s\S]{0,260}fetch\('\/api\/sheets\/duplicate'/.test(appJs));
   check('編集中カードを追加位置として選ぶ', appJs.includes("document.body.addEventListener('focusin'"));
   // 名前の無いダイアログは読み上げが「ダイアログ」としか伝えない。作る数と名前を付ける数を合わせる。
   const dialogCreations = (appJs.match(/document\.createElement\('dialog'\)/g) || []).length;

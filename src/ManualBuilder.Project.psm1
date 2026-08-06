@@ -533,6 +533,50 @@ function Add-MbSheet {
     return $sheet
 }
 
+function Copy-MbSheet {
+    param(
+        [Parameter(Mandatory = $true)][object]$Project,
+        [Parameter(Mandatory = $true)][string]$SheetId
+    )
+
+    if (@($Project.sheets).Count -ge 50) { throw 'シートは50件までです。' }
+    $source = @($Project.sheets | Where-Object { [string]$_.id -eq $SheetId }) | Select-Object -First 1
+    if (-not $source) { throw '対象シートが見つかりません。' }
+
+    $existingNames = @($Project.sheets | ForEach-Object { [string]$_.name })
+    $copyNumber = 1
+    do {
+        $suffix = if ($copyNumber -eq 1) { ' のコピー' } else { " のコピー ($copyNumber)" }
+        $baseLength = [Math]::Max(1, 50 - $suffix.Length)
+        $baseName = [string]$source.name
+        if ($baseName.Length -gt $baseLength) { $baseName = $baseName.Substring(0, $baseLength) }
+        $candidateName = $baseName.TrimEnd() + $suffix
+        $copyNumber++
+    } while ($existingNames -contains $candidateName)
+
+    # JSONを介して、注釈・切り抜き・記録情報を含む入れ子の値を独立したオブジェクトにする。
+    # 画像・動画IDは同じ素材を参照し、シートと手順のIDだけを新しく発行する。
+    $copy = $source | ConvertTo-Json -Depth 100 -Compress | ConvertFrom-Json
+    $now = Get-MbUtcTimestamp
+    $copy.id = New-MbId -Prefix 'sheet'
+    $copy.name = $candidateName
+    $copy.createdAt = $now
+    $copy.updatedAt = $now
+    foreach ($step in @($copy.steps)) {
+        $step.id = New-MbId -Prefix 'step'
+        $step.createdAt = $now
+        $step.updatedAt = $now
+    }
+
+    $sourceIndex = [array]::IndexOf(@($Project.sheets), $source)
+    $sheets = New-Object System.Collections.ArrayList
+    foreach ($sheet in @($Project.sheets)) { [void]$sheets.Add($sheet) }
+    $sheets.Insert($sourceIndex + 1, $copy)
+    $Project.sheets = @($sheets)
+    $Project.selectedSheetId = $copy.id
+    return $copy
+}
+
 function Select-MbSheet {
     param([object]$Project, [string]$SheetId)
     $sheet = @($Project.sheets | Where-Object { $_.id -eq $SheetId }) | Select-Object -First 1
@@ -1151,6 +1195,7 @@ Export-ModuleMember -Function @(
     'Get-MbSelectedSheet',
     'Set-MbProjectTitle',
     'Add-MbSheet',
+    'Copy-MbSheet',
     'Select-MbSheet',
     'Rename-MbSheet',
     'Remove-MbSheet',
