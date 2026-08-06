@@ -186,6 +186,7 @@ try {
     Assert-Mb $invalidCropRejected '注釈保存APIが画像外の切り抜きを拒否する'
 
     $imageId = [string]$withImage.images[0].id
+    $imagePath = Join-Path (Join-Path $testRoot 'images') ([string]$withImage.images[0].fileName)
     $replacementBitmap = New-Object Drawing.Bitmap 12, 8
     $replacementGraphics = [Drawing.Graphics]::FromImage($replacementBitmap)
     $replacementStream = New-Object IO.MemoryStream
@@ -241,10 +242,20 @@ try {
     Assert-Mb ($duplicate.Content -match 'data-import-status="duplicate"') '同じ画像の再取込みをスキップする'
 
     $deleted = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/steps/delete" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body @{ stepId = $imageStepId } -TimeoutSec 5
-    Assert-Mb ($deleted.Content -match '保存済み') '画像付き手順を削除できる'
+    Assert-Mb ($deleted.Content -match 'id="workspace"') '画像付き手順を削除できる'
     $afterDelete = [IO.File]::ReadAllText($projectPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
     Assert-Mb (@($afterDelete.sheets[0].steps).Count -eq 1) '削除結果がproject.jsonへ反映される'
     Assert-Mb (@($afterDelete.images).Count -eq 0) '削除した手順だけが使う画像メタデータを整理する'
+    Assert-Mb (Test-Path -LiteralPath $imagePath) '取り消しに備えて削除した手順の画像ファイルを保持する'
+    $deleteStatus = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/deletions/status" -Headers $headers -TimeoutSec 5
+    $deleteStatusJson = $deleteStatus.Content | ConvertFrom-Json
+    Assert-Mb ([bool]$deleteStatusJson.available -and [string]$deleteStatusJson.label -match '手順') '直前の削除を元に戻せると通知する'
+    $deleteUndo = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/deletions/undo" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body '' -TimeoutSec 5
+    Assert-Mb ($deleteUndo.Content -match 'id="workspace"') '削除した手順を元に戻すAPIを実行できる'
+    $afterDeleteUndo = [IO.File]::ReadAllText($projectPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    Assert-Mb (@($afterDeleteUndo.sheets[0].steps).Count -eq 2 -and [string]$afterDeleteUndo.sheets[0].steps[0].id -eq $imageStepId) '手順を削除前の位置へ復元する'
+    Assert-Mb (@($afterDeleteUndo.images | Where-Object { $_.id -eq $imageId }).Count -eq 1 -and (Test-Path -LiteralPath $imagePath)) '削除した手順の画像参照とファイルを復元する'
+    [void](Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/steps/delete" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body @{ stepId = $imageStepId } -TimeoutSec 5)
 
     $emptyStepHeaders = $imageHeaders.Clone()
     $emptyStepHeaders['X-Step-Id'] = $stepId
@@ -297,7 +308,14 @@ try {
     $remainingBulkSteps = @($afterBulkDelete.sheets | ForEach-Object { @($_.steps) } | Where-Object { $_.id -in $bulkStepIds })
     Assert-Mb ($remainingBulkSteps.Count -eq 0) '一括削除した2手順が再読込後も残らない'
     Assert-Mb (@($afterBulkDelete.images | Where-Object { $_.id -eq $reimportedImageId }).Count -eq 0) '一括削除で孤立した画像メタデータを整理する'
-    Assert-Mb (-not (Test-Path -LiteralPath $reimportedImagePath)) '一括削除で孤立した画像ファイルを整理する'
+    Assert-Mb (Test-Path -LiteralPath $reimportedImagePath) '一括削除した画像ファイルを取り消し用に保持する'
+    $bulkUndoResponse = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/deletions/undo" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body '' -TimeoutSec 5
+    Assert-Mb ($bulkUndoResponse.Content -match 'id="workspace"') '複数手順の削除を元に戻せる'
+    $afterBulkUndo = [IO.File]::ReadAllText($projectPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    $bulkRestored = @($afterBulkUndo.sheets | Where-Object { $_.id -eq $targetSheetId })[0]
+    Assert-Mb ((@($bulkRestored.steps | ForEach-Object { [string]$_.id }) -join ',') -eq (@($targetExistingStepId) + $bulkStepIds -join ',')) '一括削除した手順を元の順序へ復元する'
+    Assert-Mb (@($afterBulkUndo.images | Where-Object { $_.id -eq $reimportedImageId }).Count -eq 1 -and (Test-Path -LiteralPath $reimportedImagePath)) '一括削除した画像を復元する'
+    [void](Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/steps/delete-many" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body @{ stepIds = ($bulkStepIds -join ',') } -TimeoutSec 5)
     [void](Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/steps/delete-many" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body @{ stepIds = "$targetExistingStepId,$bulkSpacerStepId" } -TimeoutSec 5)
     $sheetOrder = @($targetSheetId, $sheetId) -join ','
     $sheetReordered = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/sheets/reorder" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body @{ orderedIds = $sheetOrder } -TimeoutSec 5
@@ -316,6 +334,15 @@ try {
     Assert-Mb (@($movedTarget.steps).Count -eq 1 -and [string]$movedTarget.steps[0].id -eq $stepId) '移動先シートへ同じ手順IDを保持する'
     Assert-Mb (@($movedSource.steps | Where-Object { $_.id -eq $stepId }).Count -eq 0) '移動元シートから手順を取り除く'
     Assert-Mb ([string]$movedTarget.steps[0].title -eq 'ログイン画面を開く') 'シート移動後も文章を維持する'
+
+    $sheetDeleted = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/sheets/delete" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body @{ sheetId = $targetSheetId } -TimeoutSec 5
+    Assert-Mb ($sheetDeleted.Content -match 'id="workspace"') '手順を含むシートを削除できる'
+    $afterSheetDelete = [IO.File]::ReadAllText($projectPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    Assert-Mb (@($afterSheetDelete.sheets | Where-Object { $_.id -eq $targetSheetId }).Count -eq 0) 'シート削除をproject.jsonへ反映する'
+    [void](Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/deletions/undo" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body '' -TimeoutSec 5)
+    $afterSheetUndo = [IO.File]::ReadAllText($projectPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    $restoredSheet = @($afterSheetUndo.sheets | Where-Object { $_.id -eq $targetSheetId }) | Select-Object -First 1
+    Assert-Mb ($restoredSheet -and @($restoredSheet.steps).Count -eq 1 -and [string]$restoredSheet.steps[0].id -eq $stepId) '削除したシートと中の手順をまとめて復元する'
 
     $badTokenRejected = $false
     try {

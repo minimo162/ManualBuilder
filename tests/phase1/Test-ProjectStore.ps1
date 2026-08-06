@@ -80,6 +80,19 @@ try {
     Remove-MbStep -Project $loaded -StepId $temporaryStep.id
     Assert-Mb (@((Get-MbSelectedSheet -Project $loaded).steps).Count -eq 1) '手順を削除できる'
 
+    $restoreFirst = Add-MbStep -Project $loaded -SheetId $sheet2.id
+    $restoreSecond = Add-MbStep -Project $loaded -SheetId $sheet2.id
+    $restoreItems = @(
+        [pscustomobject]@{ sheetId = $sheet2.id; index = 1; step = $restoreFirst },
+        [pscustomobject]@{ sheetId = $sheet2.id; index = 2; step = $restoreSecond }
+    )
+    Remove-MbSteps -Project $loaded -StepIds @($restoreFirst.id, $restoreSecond.id)
+    [void](Restore-MbSteps -Project $loaded -Items $restoreItems)
+    $restoredOrder = @((Get-MbSelectedSheet -Project $loaded).steps | ForEach-Object { [string]$_.id })
+    Assert-Mb ($restoredOrder.Count -eq 3 -and $restoredOrder[1] -eq $restoreFirst.id -and $restoredOrder[2] -eq $restoreSecond.id) `
+        '複数手順を削除前の位置へ復元できる'
+    Remove-MbSteps -Project $loaded -StepIds @($restoreFirst.id, $restoreSecond.id)
+
     $temporarySheet = Add-MbSheet -Project $loaded
     Set-MbSheetOrder -Project $loaded -SheetIds @($temporarySheet.id, $sheet2.id, $loaded.sheets[0].id)
     Assert-Mb ([string]$loaded.sheets[0].id -eq $temporarySheet.id) 'シートを並べ替えできる'
@@ -87,6 +100,11 @@ try {
     Assert-Mb (@($temporarySheet.steps).Count -eq 1 -and [string]$temporarySheet.steps[0].id -eq $loadedStep.id) '手順を別シートへ移動できる'
     Assert-Mb ([string]$temporarySheet.steps[0].description -eq 'メニューから申請を選択します。') 'シート移動後も手順内容を維持する'
     [void](Move-MbStepToSheet -Project $loaded -StepId $loadedStep.id -TargetSheetId $sheet2.id)
+    $temporarySheetIndex = [array]::IndexOf(@($loaded.sheets), $temporarySheet)
+    Remove-MbSheet -Project $loaded -SheetId $temporarySheet.id
+    [void](Restore-MbSheet -Project $loaded -Sheet $temporarySheet -Index $temporarySheetIndex)
+    Assert-Mb ([string]$loaded.sheets[$temporarySheetIndex].id -eq $temporarySheet.id -and [string]$loaded.selectedSheetId -eq $temporarySheet.id) `
+        '削除したシートを元の位置へ復元して選択できる'
     Remove-MbSheet -Project $loaded -SheetId $temporarySheet.id
     Select-MbSheet -Project $loaded -SheetId $sheet2.id
     Assert-Mb (@($loaded.sheets).Count -eq 2) 'シートを削除できる'

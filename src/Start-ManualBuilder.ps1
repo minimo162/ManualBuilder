@@ -71,6 +71,7 @@ Initialize-MbCopilotServer -JobsRoot $script:CopilotJobsRoot -ScriptRoot $PSScri
 $script:RecordingJobsRoot = Join-Path $DataRoot 'recording-jobs'
 Initialize-MbRecorderServer -JobsRoot $script:RecordingJobsRoot -ScriptRoot $PSScriptRoot
 $script:ImageReplacementHistory = @{}
+$script:DeletionUndo = $null
 $script:ProjectHomeVisible = -not $usesExplicitProjectPath
 $script:ActiveProjectKey = if ($usesExplicitProjectPath) { '' } else { 'default' }
 
@@ -902,7 +903,180 @@ function Test-MbOfficeExportActive {
         ([string]$word.state -in @('queued', 'running', 'finalizing'))
 }
 
+function Copy-MbDetachedValue {
+    param([Parameter(Mandatory = $true)][object]$Value)
+    return ($Value | ConvertTo-Json -Depth 100 | ConvertFrom-Json)
+}
+
+function Remove-MbDeletionUndoFiles {
+    param([AllowNull()][object]$Entry)
+    if (-not $Entry) { return }
+    foreach ($path in @($Entry.removedPaths | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique)) {
+        if (Test-Path -LiteralPath ([string]$path) -PathType Leaf) {
+            Remove-Item -LiteralPath ([string]$path) -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Clear-MbDeletionUndo {
+    param([switch]$DeleteFiles)
+    $previous = $script:DeletionUndo
+    $script:DeletionUndo = $null
+    if ($DeleteFiles) { Remove-MbDeletionUndoFiles -Entry $previous }
+}
+
+function Set-MbDeletionUndo {
+    param([Parameter(Mandatory = $true)][object]$Entry)
+    $previous = $script:DeletionUndo
+    $script:DeletionUndo = $Entry
+    Remove-MbDeletionUndoFiles -Entry $previous
+}
+
+function New-MbDeletionUndoEntry {
+    param(
+        [Parameter(Mandatory = $true)][object]$Project,
+        [Parameter(Mandatory = $true)][ValidateSet('step', 'steps', 'sheet')][string]$Kind,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [string[]]$StepIds = @(),
+        [AllowEmptyString()][string]$SheetId = ''
+    )
+
+    $items = New-Object System.Collections.ArrayList
+    $targetSteps = New-Object System.Collections.ArrayList
+    $sheetSnapshot = $null
+    $sheetIndex = -1
+    if ($Kind -eq 'sheet') {
+        for ($index = 0; $index -lt @($Project.sheets).Count; $index++) {
+            if ([string]$Project.sheets[$index].id -ne $SheetId) { continue }
+            $sheetIndex = $index
+            $sheetSnapshot = Copy-MbDetachedValue -Value $Project.sheets[$index]
+            foreach ($step in @($Project.sheets[$index].steps)) { [void]$targetSteps.Add($step) }
+            break
+        }
+        if (-not $sheetSnapshot) { throw '対象シートが見つかりません。' }
+    } else {
+        foreach ($stepId in @($StepIds)) {
+            $found = $false
+            foreach ($sheet in @($Project.sheets)) {
+                for ($index = 0; $index -lt @($sheet.steps).Count; $index++) {
+                    if ([string]$sheet.steps[$index].id -ne [string]$stepId) { continue }
+                    [void]$targetSteps.Add($sheet.steps[$index])
+                    [void]$items.Add([pscustomobject]@{
+                        sheetId = [string]$sheet.id
+                        index   = $index
+                        step    = Copy-MbDetachedValue -Value $sheet.steps[$index]
+                    })
+                    $found = $true
+                    break
+                }
+                if ($found) { break }
+            }
+            if (-not $found) { throw '対象手順が見つかりません。' }
+        }
+    }
+
+    $imageIds = New-Object 'System.Collections.Generic.HashSet[string]'
+    $videoIds = New-Object 'System.Collections.Generic.HashSet[string]'
+    $history = New-Object System.Collections.ArrayList
+    foreach ($step in @($targetSteps)) {
+        $stepId = [string]$step.id
+        $resultImageId = if ($step.PSObject.Properties.Name -contains 'resultImageId') { [string]$step.resultImageId } else { '' }
+        foreach ($imageId in @([string]$step.imageId, $resultImageId)) {
+            if (-not [string]::IsNullOrWhiteSpace($imageId)) { [void]$imageIds.Add($imageId) }
+        }
+        $videoId = [string]$step.videoId
+        if (-not [string]::IsNullOrWhiteSpace($videoId)) { [void]$videoIds.Add($videoId) }
+        if ($script:ImageReplacementHistory.ContainsKey($stepId)) {
+            $historyValue = Copy-MbDetachedValue -Value $script:ImageReplacementHistory[$stepId]
+            [void]$history.Add([pscustomobject]@{ stepId = $stepId; value = $historyValue })
+            $historyImageId = [string]$historyValue.imageId
+            if (-not [string]::IsNullOrWhiteSpace($historyImageId)) { [void]$imageIds.Add($historyImageId) }
+        }
+    }
+
+    $images = @($Project.images | Where-Object { $imageIds.Contains([string]$_.id) } | ForEach-Object { Copy-MbDetachedValue -Value $_ })
+    $videos = @($Project.videos | Where-Object { $videoIds.Contains([string]$_.id) } | ForEach-Object { Copy-MbDetachedValue -Value $_ })
+    return [pscustomobject]@{
+        projectPath    = [string]$ProjectPath
+        kind           = $Kind
+        label          = $Label
+        selectedSheetId = [string]$Project.selectedSheetId
+        items          = @($items)
+        sheet          = $sheetSnapshot
+        sheetIndex     = $sheetIndex
+        images         = $images
+        videos         = $videos
+        history        = @($history)
+        removedPaths   = @()
+    }
+}
+
+function Remove-MbDeletionAssets {
+    param(
+        [Parameter(Mandatory = $true)][object]$Project,
+        [Parameter(Mandatory = $true)][object]$Entry
+    )
+
+    foreach ($item in @($Entry.history)) { [void]$script:ImageReplacementHistory.Remove([string]$item.stepId) }
+    $paths = New-Object System.Collections.ArrayList
+    foreach ($image in @($Entry.images)) {
+        $path = Remove-MbUnusedImage -Project $Project -ProjectPath $ProjectPath -ImageId ([string]$image.id)
+        if ($path) { [void]$paths.Add([string]$path) }
+    }
+    foreach ($video in @($Entry.videos)) {
+        $path = Remove-MbUnusedVideo -Project $Project -ProjectPath $ProjectPath -VideoId ([string]$video.id)
+        if ($path) { [void]$paths.Add([string]$path) }
+    }
+    $Entry.removedPaths = @($paths | Select-Object -Unique)
+}
+
+function Restore-MbDeletionHistory {
+    param([Parameter(Mandatory = $true)][object]$Entry)
+    foreach ($item in @($Entry.history)) {
+        $script:ImageReplacementHistory[[string]$item.stepId] = $item.value
+    }
+}
+
+function Invoke-MbDeletionUndo {
+    param(
+        [Parameter(Mandatory = $true)][object]$Project,
+        [AllowEmptyString()][string]$TabId
+    )
+
+    $entry = $script:DeletionUndo
+    if (-not $entry -or [string]$entry.projectPath -ne [string]$ProjectPath) { throw '元に戻せる削除はありません。' }
+    foreach ($path in @($entry.removedPaths)) {
+        if (-not (Test-Path -LiteralPath ([string]$path) -PathType Leaf)) {
+            throw '削除した画像または動画が見つからないため、元に戻せません。'
+        }
+    }
+    if ([string]$entry.kind -eq 'sheet') {
+        [void](Restore-MbSheet -Project $Project -Sheet $entry.sheet -Index ([int]$entry.sheetIndex))
+    } else {
+        [void](Restore-MbSteps -Project $Project -Items @($entry.items))
+        if (@($Project.sheets | Where-Object { [string]$_.id -eq [string]$entry.selectedSheetId }).Count -gt 0) {
+            $Project.selectedSheetId = [string]$entry.selectedSheetId
+        }
+    }
+    foreach ($image in @($entry.images)) {
+        if (@($Project.images | Where-Object { [string]$_.id -eq [string]$image.id }).Count -eq 0) {
+            $Project.images = @($Project.images) + @($image)
+        }
+    }
+    foreach ($video in @($entry.videos)) {
+        if (@($Project.videos | Where-Object { [string]$_.id -eq [string]$video.id }).Count -eq 0) {
+            $Project.videos = @($Project.videos) + @($video)
+        }
+    }
+    $saved = Save-MbProject -Project $Project -Path $ProjectPath
+    Restore-MbDeletionHistory -Entry $entry
+    $html = ConvertTo-MbCurrentWorkspaceHtml -Project $saved -TabId $TabId
+    Clear-MbDeletionUndo
+    return $html
+}
+
 function Reset-MbActiveProjectSession {
+    Clear-MbDeletionUndo -DeleteFiles
     $script:CaptureOwnerTab = $null
     $script:CaptureOwnerLastHeartbeat = $null
     $script:CaptureOwnerSheetId = $null
@@ -988,6 +1162,15 @@ function Invoke-MbRoute {
             '/assets/js/heartbeat-worker.js' { Write-MbFile $Context (Join-Path $webRoot 'assets\js\heartbeat-worker.js') 'application/javascript; charset=utf-8'; return }
             '/vendor/htmx-2.0.10.min.js' { Write-MbFile $Context (Join-Path $webRoot 'vendor\htmx-2.0.10.min.js') 'application/javascript; charset=utf-8'; return }
             '/api/health' { Write-MbResponse $Context '{"status":"ok"}' 200 'application/json; charset=utf-8'; return }
+            '/api/deletions/status' {
+                $available = $null -ne $script:DeletionUndo -and [string]$script:DeletionUndo.projectPath -eq [string]$ProjectPath
+                $status = [pscustomobject]@{
+                    available = $available
+                    label     = if ($available) { [string]$script:DeletionUndo.label } else { '' }
+                }
+                Write-MbResponse $Context ($status | ConvertTo-Json -Compress) 200 'application/json; charset=utf-8'
+                return
+            }
             '/ui/workspace' {
                 if ($script:ProjectHomeVisible) {
                     Write-MbResponse -Context $Context -Body (ConvertTo-MbCurrentProjectLibraryHtml)
@@ -1641,6 +1824,14 @@ function Invoke-MbRoute {
     $project = Get-MbProject -Path $ProjectPath
 
     switch ($path) {
+        '/api/deletions/undo' {
+            try {
+                Write-MbResponse $Context (Invoke-MbDeletionUndo -Project $project -TabId $tabId)
+            } catch {
+                Write-MbResponse $Context $_.Exception.Message 409 'text/plain; charset=utf-8'
+            }
+            return
+        }
         '/api/project/title' {
             try {
                 Set-MbProjectTitle -Project $project -Title (Get-MbFormValue $form 'title')
@@ -1683,8 +1874,21 @@ function Invoke-MbRoute {
             return
         }
         '/api/sheets/delete' {
-            Remove-MbSheet -Project $project -SheetId (Get-MbFormValue $form 'sheetId')
-            Write-MbResponse $Context (Save-MbAndRenderWorkspace -Project $project -TabId $tabId)
+            $entry = $null
+            try {
+                $sheetId = Get-MbFormValue $form 'sheetId'
+                $sheet = @($project.sheets | Where-Object { [string]$_.id -eq $sheetId }) | Select-Object -First 1
+                $sheetName = if ($sheet) { [string]$sheet.name } else { 'シート' }
+                $entry = New-MbDeletionUndoEntry -Project $project -Kind sheet -Label "「$sheetName」を削除しました" -SheetId $sheetId
+                Remove-MbSheet -Project $project -SheetId $sheetId
+                Remove-MbDeletionAssets -Project $project -Entry $entry
+                $html = Save-MbAndRenderWorkspace -Project $project -TabId $tabId
+                Set-MbDeletionUndo -Entry $entry
+                Write-MbResponse $Context $html
+            } catch {
+                if ($entry) { Restore-MbDeletionHistory -Entry $entry }
+                Write-MbResponse $Context $_.Exception.Message 400 'text/plain; charset=utf-8'
+            }
             return
         }
         '/api/steps/add' {
@@ -1832,74 +2036,33 @@ function Invoke-MbRoute {
             return
         }
         '/api/steps/delete' {
+            $entry = $null
             try {
                 $stepId = Get-MbFormValue $form 'stepId'
-                $removedStep = $null
-                foreach ($sheet in @($project.sheets)) {
-                    $removedStep = @($sheet.steps | Where-Object { $_.id -eq $stepId }) | Select-Object -First 1
-                    if ($removedStep) { break }
-                }
-                $removedImageId = if ($removedStep) { [string]$removedStep.imageId } else { '' }
-                $removedResultImageId = if ($removedStep -and $removedStep.PSObject.Properties.Name -contains 'resultImageId') { [string]$removedStep.resultImageId } else { '' }
-                $removedVideoId = if ($removedStep) { [string]$removedStep.videoId } else { '' }
-                $historyImageId = ''
-                if ($script:ImageReplacementHistory.ContainsKey($stepId)) {
-                    $historyImageId = [string]$script:ImageReplacementHistory[$stepId].imageId
-                    [void]$script:ImageReplacementHistory.Remove($stepId)
-                }
+                $entry = New-MbDeletionUndoEntry -Project $project -Kind step -Label '手順を削除しました' -StepIds @($stepId)
                 Remove-MbStep -Project $project -StepId $stepId
-                $unusedImagePaths = @(
-                    Remove-MbUnusedImage -Project $project -ProjectPath $ProjectPath -ImageId $removedImageId
-                    Remove-MbUnusedImage -Project $project -ProjectPath $ProjectPath -ImageId $removedResultImageId
-                    Remove-MbUnusedImage -Project $project -ProjectPath $ProjectPath -ImageId $historyImageId
-                    Remove-MbUnusedVideo -Project $project -ProjectPath $ProjectPath -VideoId $removedVideoId
-                ) | Where-Object { $_ }
-                [void](Save-MbProject -Project $project -Path $ProjectPath)
-                foreach ($unusedImagePath in @($unusedImagePaths)) {
-                    if (Test-Path -LiteralPath $unusedImagePath -PathType Leaf) {
-                        Remove-Item -LiteralPath $unusedImagePath -Force -ErrorAction SilentlyContinue
-                    }
-                }
-                Write-MbResponse $Context (ConvertTo-MbSaveStatusHtml)
+                Remove-MbDeletionAssets -Project $project -Entry $entry
+                $html = Save-MbAndRenderWorkspace -Project $project -TabId $tabId
+                Set-MbDeletionUndo -Entry $entry
+                Write-MbResponse $Context $html
             } catch {
-                Write-MbResponse $Context (ConvertTo-MbSaveStatusHtml -Message $_.Exception.Message -State error) 400
+                if ($entry) { Restore-MbDeletionHistory -Entry $entry }
+                Write-MbResponse $Context $_.Exception.Message 400 'text/plain; charset=utf-8'
             }
             return
         }
         '/api/steps/delete-many' {
+            $entry = $null
             try {
                 $stepIds = @((Get-MbFormValue $form 'stepIds').Split(',') | Where-Object { $_ })
-                $removedSteps = New-Object System.Collections.ArrayList
-                foreach ($stepId in $stepIds) {
-                    $step = Get-MbStepById -Project $project -StepId $stepId
-                    if (-not $step) { throw '対象手順が見つかりません。' }
-                    [void]$removedSteps.Add($step)
-                }
+                $entry = New-MbDeletionUndoEntry -Project $project -Kind steps -Label "$($stepIds.Count)件の手順を削除しました" -StepIds $stepIds
                 Remove-MbSteps -Project $project -StepIds $stepIds
-                $unusedPaths = New-Object System.Collections.ArrayList
-                foreach ($step in @($removedSteps)) {
-                    $stepId = [string]$step.id
-                    $historyImageId = ''
-                    if ($script:ImageReplacementHistory.ContainsKey($stepId)) {
-                        $historyImageId = [string]$script:ImageReplacementHistory[$stepId].imageId
-                        [void]$script:ImageReplacementHistory.Remove($stepId)
-                    }
-                    foreach ($unusedPath in @(
-                        Remove-MbUnusedImage -Project $project -ProjectPath $ProjectPath -ImageId ([string]$step.imageId)
-                        Remove-MbUnusedImage -Project $project -ProjectPath $ProjectPath -ImageId $historyImageId
-                        Remove-MbUnusedVideo -Project $project -ProjectPath $ProjectPath -VideoId ([string]$step.videoId)
-                    )) {
-                        if ($unusedPath) { [void]$unusedPaths.Add([string]$unusedPath) }
-                    }
-                }
+                Remove-MbDeletionAssets -Project $project -Entry $entry
                 $html = Save-MbAndRenderWorkspace -Project $project -TabId $tabId
-                foreach ($unusedPath in @($unusedPaths | Select-Object -Unique)) {
-                    if (Test-Path -LiteralPath $unusedPath -PathType Leaf) {
-                        Remove-Item -LiteralPath $unusedPath -Force -ErrorAction SilentlyContinue
-                    }
-                }
+                Set-MbDeletionUndo -Entry $entry
                 Write-MbResponse $Context $html
             } catch {
+                if ($entry) { Restore-MbDeletionHistory -Entry $entry }
                 Write-MbResponse $Context $_.Exception.Message 400 'text/plain; charset=utf-8'
             }
             return
