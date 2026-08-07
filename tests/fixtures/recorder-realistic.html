@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <title>ManualBuilder Recorder Smoke</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #172033; background: #f4f6f9; font: 15px/1.5 "Yu Gothic UI", sans-serif; }
+    header { height: 72px; padding: 20px 40px; color: white; background: #173b72; }
+    header strong { font-size: 20px; }
+    main { position: relative; width: min(1200px, 100%); min-height: 850px; padding: 34px 40px; }
+    h1 { margin: 0; font-size: 25px; }
+    .hint { margin: 5px 0 0; color: #596579; }
+    .filters { display: flex; gap: 24px; align-items: end; margin-top: 26px; padding: 22px; background: white; border: 1px solid #d9dfeb; border-radius: 10px; }
+    label { display: grid; gap: 6px; font-weight: 700; }
+    input, select, button { min-height: 42px; border-radius: 6px; font: inherit; }
+    input, select { width: 230px; padding: 8px 11px; border: 1px solid #9ca9bc; background: white; }
+    button { padding: 8px 20px; border: 0; color: white; background: #245db2; font-weight: 700; cursor: pointer; }
+    button:hover { background: #174b99; }
+    .results, .detail { margin-top: 24px; padding: 20px 22px; background: white; border: 1px solid #d9dfeb; border-radius: 10px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 13px 15px; border-bottom: 1px solid #e1e5ec; text-align: left; }
+    th { color: #526075; background: #f6f8fb; }
+    td:last-child { width: 180px; text-align: right; }
+    .detail { border-left: 5px solid #2f69bd; }
+    .detail dl { display: grid; grid-template-columns: 140px 1fr; gap: 8px 16px; margin: 12px 0 0; }
+    .detail dt { color: #5c687a; font-weight: 700; }
+    .detail dd { margin: 0; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <header><strong>受注管理</strong></header>
+  <main>
+    <h1>注文を検索</h1>
+    <p class="hint">顧客コードと状態を指定して、対象の注文を確認します。</p>
+    <section class="filters" aria-label="検索条件">
+      <label>顧客コード<input id="customer-code" type="text" autocomplete="off" placeholder="例: C-1042"></label>
+      <label>注文状態<select id="order-status"><option>すべて</option><option>処理中</option><option>完了</option></select></label>
+      <button id="search-button" type="button">検索する</button>
+    </section>
+    <section id="results" class="results" hidden aria-live="polite">
+      <table>
+        <thead><tr><th>注文番号</th><th>顧客</th><th>状態</th><th>合計</th><th>操作</th></tr></thead>
+        <tbody><tr><td>ORD-2026-0817</td><td>C-1042 山田商事</td><td>処理中</td><td>¥1,550</td><td><button id="detail-button" type="button">詳細を表示</button></td></tr></tbody>
+      </table>
+    </section>
+    <section id="detail" class="detail" hidden tabindex="-1">
+      <strong>注文詳細 ORD-2026-0817</strong>
+      <dl><dt>納品予定日</dt><dd>2026年8月12日</dd><dt>担当者</dt><dd>佐藤</dd><dt>備考</dt><dd>内容を確認後、Excelの集計表へ転記します。</dd></dl>
+    </section>
+  </main>
+  <script>
+    document.getElementById('search-button').addEventListener('click', () => {
+      document.getElementById('results').hidden = false;
+    });
+    document.getElementById('detail-button').addEventListener('click', () => {
+      const detail = document.getElementById('detail');
+      detail.hidden = false;
+      detail.focus();
+    });
+  </script>
+</body>
+</html>

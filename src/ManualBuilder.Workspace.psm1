@@ -174,13 +174,23 @@ function Move-MbCatalogProjectToArchive {
         [Parameter(Mandatory = $true)][string]$ProjectKey
     )
     $sourcePath = Get-MbCatalogProjectPath -DataRoot $DataRoot -ProjectKey $ProjectKey
-    if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) { throw 'アーカイブするマニュアルが見つかりません。' }
+    if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) { throw '削除するマニュアルが見つかりません。' }
     $project = Get-MbProject -Path $sourcePath
     Test-MbCatalogProjectFiles -Project $project -ProjectPath $sourcePath
     $archivePath = Get-MbCatalogProjectPath -DataRoot $DataRoot -ProjectKey $ProjectKey -Archived
-    if (Test-Path -LiteralPath (Split-Path -Parent $archivePath)) { throw '同じIDのアーカイブがすでにあります。' }
-    [void](New-Item -ItemType Directory -Path (Split-Path -Parent (Split-Path -Parent $archivePath)) -Force)
-    [IO.Directory]::Move((Split-Path -Parent $sourcePath), (Split-Path -Parent $archivePath))
+    $archiveDirectory = Split-Path -Parent $archivePath
+    $archiveRoot = Split-Path -Parent $archiveDirectory
+    [void](New-Item -ItemType Directory -Path $archiveRoot -Force)
+    # 同じマニュアルを復元後にもう一度削除した場合、以前のごみ箱項目とIDが重なる。
+    # 古い項目を消さず別IDへ退避し、今回の項目は元IDのまま復元できるようにする。
+    if (Test-Path -LiteralPath $archiveDirectory -PathType Container) {
+        do {
+            $historicalKey = 'project-' + [guid]::NewGuid().ToString('N')
+            $historicalDirectory = Join-Path $archiveRoot $historicalKey
+        } while (Test-Path -LiteralPath $historicalDirectory)
+        [IO.Directory]::Move($archiveDirectory, $historicalDirectory)
+    }
+    [IO.Directory]::Move((Split-Path -Parent $sourcePath), $archiveDirectory)
     return $archivePath
 }
 
@@ -198,6 +208,24 @@ function Restore-MbCatalogProject {
     [void](New-Item -ItemType Directory -Path (Split-Path -Parent (Split-Path -Parent $destinationPath)) -Force)
     [IO.Directory]::Move((Split-Path -Parent $sourcePath), (Split-Path -Parent $destinationPath))
     return $destinationPath
+}
+
+function Remove-MbCatalogProject {
+    param(
+        [Parameter(Mandatory = $true)][string]$DataRoot,
+        [Parameter(Mandatory = $true)][string]$ProjectKey
+    )
+    $projectPath = Get-MbCatalogProjectPath -DataRoot $DataRoot -ProjectKey $ProjectKey
+    if (-not (Test-Path -LiteralPath $projectPath -PathType Leaf)) { throw '削除するマニュアルが見つかりません。' }
+    $project = Get-MbProject -Path $projectPath
+    Test-MbCatalogProjectFiles -Project $project -ProjectPath $projectPath
+    $projectDirectory = [IO.Path]::GetFullPath((Split-Path -Parent $projectPath))
+    $projectsRoot = [IO.Path]::GetFullPath((Get-MbProjectCollectionRoot -DataRoot $DataRoot))
+    if (-not $projectDirectory.StartsWith($projectsRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        throw '削除先がマニュアル保存先の外側です。'
+    }
+    [IO.Directory]::Delete($projectDirectory, $true)
+    return $projectDirectory
 }
 
 function Initialize-MbProjectPackageAssembly {
@@ -466,6 +494,7 @@ Export-ModuleMember -Function @(
     'Copy-MbCatalogProject',
     'Move-MbCatalogProjectToArchive',
     'Restore-MbCatalogProject',
+    'Remove-MbCatalogProject',
     'Get-MbProjectPackageFileName',
     'Export-MbCatalogProjectPackage',
     'Import-MbCatalogProjectPackage',

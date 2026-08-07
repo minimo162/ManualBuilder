@@ -94,52 +94,12 @@ try {
     $imageDirectory = Join-Path $testRoot 'images'
     Add-Result (@(Get-ChildItem -LiteralPath $imageDirectory -File).Count -eq 2) '共有した画像を2ファイルだけ保存する'
 
-    # 保存したプロジェクトを、Copilotへ渡す平坦な一覧とパケットへ変換する。
-    $copilotSteps = @(Get-MbCopilotStepList -Project $project)
-    Add-Result ($copilotSteps.Count -eq 3) '録画由来の3手順がCopilotの対象になる'
-    $packets = Get-MbCopilotPackets -Steps $copilotSteps -StepsPerPacket 2
-    Add-Result (@($packets).Count -eq 2) 'Copilotの対象を指定件数で分割する'
-    if (@($packets).Count -eq 2) {
-        Add-Result (@($packets[0]).Count -eq 2 -and @($packets[1]).Count -eq 1) 'Copilotパケットの端数を残す'
-    }
-
-    # 実Copilotの代わりに、依頼したidをそのまま返す固定JSONを使う。
-    $answerSteps = New-Object System.Collections.ArrayList
-    for ($i = 0; $i -lt $copilotSteps.Count; $i++) {
-        [void]$answerSteps.Add([pscustomobject]@{
-            id          = [string]$copilotSteps[$i].id
-            keep        = $true
-            title       = ('録画手順' + ($i + 1))
-            description = ('画面の操作' + ($i + 1) + 'を行います。')
-            note        = ''
-            confident   = $true
-            reason      = ''
-        })
-    }
-    $answerJson = ([pscustomobject]@{ steps = @($answerSteps) } | ConvertTo-Json -Depth 6 -Compress)
-    $answer = Get-MbStepAnswerJson -Text ("回答です。`n" + $answerJson + "`nMB_END")
-    $drafts = @(ConvertFrom-MbCopilotStepAnswer -Answer $answer -PacketSteps $copilotSteps)
-    Add-Result ($drafts.Count -eq 3) '固定Copilot回答から3件の下書きを受け取る'
-
-    $selection = [pscustomobject]@{ accept = @($drafts | ForEach-Object {
-        [pscustomobject]@{ id = $_.id; title = $_.title; description = $_.description; note = $_.note }
-    }) } | ConvertTo-Json -Depth 6 -Compress
-    $applied = Set-MbCopilotDraftSelection -Project $project -SelectionJson $selection
-    Add-Result ($applied -eq 3) '3件の下書きを手順へ反映する'
-
-    $project = Save-MbProject -Project $project -Path $projectPath
-    $reloaded = Get-MbProject -Path $projectPath
-    $finalSteps = @($reloaded.sheets[0].steps)
-    Add-Result ($finalSteps.Count -eq 3) '下書き反映後も手順数を維持する'
-    if ($finalSteps.Count -eq 3) {
-        Add-Result ([string]$finalSteps[0].title -eq '録画手順1' -and
-            [string]$finalSteps[1].title -eq '録画手順2' -and
-            [string]$finalSteps[2].title -eq '録画手順3') '採用した手順名を再読込できる'
-        Add-Result ([string]$finalSteps[0].description -eq '画面の操作1を行います。' -and
-            [string]$finalSteps[2].description -eq '画面の操作3を行います。') '採用した説明を再読込できる'
-        Add-Result ([string]$finalSteps[0].imageId -eq [string]$finalSteps[2].imageId) '下書き反映後も共有画像の参照を維持する'
-        Add-Result (@($finalSteps | Where-Object { @($_.annotations).Count -eq 0 }).Count -eq 3) '視覚候補を選んでいない下書きでは誤った赤枠を追加しない'
-    }
+    # 録画後解析は操作対象を確定できないため、外部AIを待たず編集可能な仮文と要確認を残す。
+    Add-Result (@($steps | Where-Object { [string]$_.title -eq '録画の場面を確認' }).Count -eq 3) '録画場面へローカルの仮手順名を付ける'
+    Add-Result (@($steps | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.description) }).Count -eq 3) '録画場面を空の文章のまま残さない'
+    Add-Result (@($steps | Where-Object { [bool]$_.review.required -and [string]$_.review.action -eq 'review' }).Count -eq 3) '録画後解析の曖昧さを要確認として残す'
+    Add-Result ([string]$steps[0].imageId -eq [string]$steps[2].imageId) 'ローカル初稿後も共有画像の参照を維持する'
+    Add-Result (@($steps | Where-Object { @($_.annotations).Count -eq 0 }).Count -eq 3) '未確定の動画差分を誤った赤枠として追加しない'
 } finally {
     if (Test-Path -LiteralPath $testRoot) {
         Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue

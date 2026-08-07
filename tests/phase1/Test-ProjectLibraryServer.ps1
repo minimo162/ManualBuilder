@@ -30,7 +30,7 @@ try {
         '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA',
         '-File', ('"' + $serverScript + '"'), '-Port', $Port,
         '-DataRoot', ('"' + $dataRoot + '"'), '-LegacyAppRoot', ('"' + $legacyRoot + '"'),
-        '-DisableScreenshotWatcher', '-NoBrowser'
+        '-DisableScreenshotWatcher', '-NoBrowser', '-SkipCopilotWarmup', '-AllowParallelTestInstance'
     )
     $child = Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
     $ready = $false
@@ -56,7 +56,7 @@ try {
     Assert-Mb (Test-Path -LiteralPath (Join-Path $dataRoot 'projects\default\project.json') -PathType Leaf) '従来のdefaultマニュアルを残す'
 
     $createdResponse = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/projects/create" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body @{ title = '部内経費精算' } -TimeoutSec 5
-    Assert-Mb ($createdResponse.Content -match 'class="workspace"') '新規作成後に編集画面を開く'
+    Assert-Mb ($createdResponse.Content -match 'class="[^"]*\bworkspace\b[^"]*"') '新規作成後に編集画面を開く'
     Assert-Mb ($createdResponse.Content -match '部内経費精算') '新規作成した名前を編集画面に表示する'
     Assert-Mb (($createdResponse.Content -match 'data-project-home') -and ($createdResponse.Content -notmatch 'project-home-button')) '編集画面のアプリロゴから一覧へ戻れる'
     $projectDirectories = @(Get-ChildItem -LiteralPath (Join-Path $dataRoot 'projects') -Directory | Where-Object { $_.Name -ne 'default' })
@@ -69,7 +69,9 @@ try {
     [void](Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/projects/export" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body @{ projectKey = $createdKey } -OutFile $transferZipPath -TimeoutSec 10)
     Assert-Mb ((Test-Path -LiteralPath $transferZipPath -PathType Leaf) -and (Get-Item -LiteralPath $transferZipPath).Length -gt 0) '一覧APIからマニュアルZIPを書き出す'
 
-    $importedResponse = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/projects/import" -Method Post -Headers $headers -ContentType 'application/zip' -InFile $transferZipPath -TimeoutSec 10
+    # ZIP取込みは展開・全ファイル検証・原子的保存までを同期して完了させる。
+    # Defenderが新規ZIPと展開ファイルを走査する環境でも実処理の成否を判定できる猶予を持たせる。
+    $importedResponse = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/projects/import" -Method Post -Headers $headers -ContentType 'application/zip' -InFile $transferZipPath -TimeoutSec 60
     Assert-Mb ($importedResponse.Content -match '部内経費精算') 'マニュアルZIPを新しい項目として取り込む'
     $afterImport = @(Get-ChildItem -LiteralPath (Join-Path $dataRoot 'projects') -Directory)
     Assert-Mb ($afterImport.Count -eq 3) 'ZIP取込みで既存マニュアルを上書きしない'
@@ -79,18 +81,17 @@ try {
     $afterCopy = @(Get-ChildItem -LiteralPath (Join-Path $dataRoot 'projects') -Directory)
     Assert-Mb ($afterCopy.Count -eq 4) '複製先を独立フォルダーへ保存する'
 
-    $archiveResponse = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/projects/archive" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body @{ projectKey = $createdKey } -TimeoutSec 5
-    Assert-Mb ($archiveResponse.Content -match 'アーカイブ') 'アーカイブ後も一覧を表示する'
-    Assert-Mb (Test-Path -LiteralPath (Join-Path $dataRoot "projects-archive\$createdKey\project.json") -PathType Leaf) 'アーカイブは削除せず別フォルダーへ移す'
-
-    $restoreResponse = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/projects/restore" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body @{ projectKey = $createdKey } -TimeoutSec 5
-    Assert-Mb ($restoreResponse.Content -match '部内経費精算') 'アーカイブからマニュアルを復元する'
-    Assert-Mb (Test-Path -LiteralPath (Join-Path $dataRoot "projects\$createdKey\project.json") -PathType Leaf) '復元後は現役フォルダーへ戻す'
-
     $opened = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/projects/open" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body @{ projectKey = $createdKey } -TimeoutSec 5
-    Assert-Mb ($opened.Content -match '部内経費精算') '復元したマニュアルを開く'
+    Assert-Mb ($opened.Content -match '部内経費精算') '作成したマニュアルを開く'
     $settings = [IO.File]::ReadAllText((Join-Path $dataRoot 'settings.json'), [Text.Encoding]::UTF8) | ConvertFrom-Json
     Assert-Mb ([string]$settings.lastOpenedProjectKey -eq $createdKey) '開いたマニュアルを次回の目印として記録する'
+
+    [void](Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/projects/home" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body '' -TimeoutSec 5)
+    $deleteResponse = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/projects/delete" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body @{ projectKey = $createdKey } -TimeoutSec 5
+    Assert-Mb ($deleteResponse.Content -match 'class="workspace project-library"') '削除後もマニュアル一覧を表示する'
+    Assert-Mb (-not (Test-Path -LiteralPath (Join-Path $dataRoot "projects\$createdKey") -PathType Container)) '削除したマニュアルの全ファイルを消す'
+    Assert-Mb (-not (Test-Path -LiteralPath (Join-Path $dataRoot "projects-archive\$createdKey") -PathType Container)) '削除したマニュアルをごみ箱へ移さない'
+    Assert-Mb ($deleteResponse.Content -notmatch 'ごみ箱|アーカイブ') '一覧にごみ箱とアーカイブを表示しない'
 
     [void](Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/shutdown" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body '' -TimeoutSec 5)
     [void]$child.WaitForExit(5000)

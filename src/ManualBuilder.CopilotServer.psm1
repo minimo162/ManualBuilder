@@ -13,7 +13,54 @@ $script:MbCopilotScriptRoot = ''
 $script:MbCopilotProfileRoot = ''
 $script:MbCopilotConfigPath = ''
 $script:MbCopilotJob = $null
+$script:MbRecorderCopilotJob = $null
 $script:MbCopilotWarmupStatusPath = ''
+
+function New-MbRecorderCopilotProcessIdentity {
+    param([Parameter(Mandatory = $true)]$Process)
+    try {
+        return [pscustomobject]@{
+            Id = [int]$Process.Id
+            ProcessName = [string]$Process.ProcessName
+            StartTimeUtcTicks = [int64]$Process.StartTime.ToUniversalTime().Ticks
+            ExecutablePath = [string]$Process.Path
+        }
+    } catch { return $null }
+}
+
+function Test-MbRecorderCopilotProcessIdentity {
+    param([AllowNull()]$Identity)
+    if ($null -eq $Identity -or [int]$Identity.Id -le 0 -or
+        [string]::IsNullOrWhiteSpace([string]$Identity.ProcessName) -or
+        [int64]$Identity.StartTimeUtcTicks -le 0 -or
+        [string]::IsNullOrWhiteSpace([string]$Identity.ExecutablePath)) { return $false }
+    $process = $null
+    try {
+        $process = Get-Process -Id ([int]$Identity.Id) -ErrorAction Stop
+        return ([string]$process.ProcessName -eq [string]$Identity.ProcessName -and
+            [int64]$process.StartTime.ToUniversalTime().Ticks -eq [int64]$Identity.StartTimeUtcTicks -and
+            [string]::Equals([string]$process.Path, [string]$Identity.ExecutablePath, [StringComparison]::OrdinalIgnoreCase))
+    } catch { return $false }
+    finally { if ($null -ne $process) { try { $process.Dispose() } catch { } } }
+}
+
+function Stop-MbRecorderCopilotOwnedProcess {
+    param([AllowNull()]$Identity)
+    if ($null -eq $Identity -or [int]$Identity.Id -le 0) { return $false }
+    $process = $null
+    try {
+        $process = Get-Process -Id ([int]$Identity.Id) -ErrorAction Stop
+        # 所有確認とKillを同じProcessオブジェクト上で行い、その間のPID再利用余地を作らない。
+        if ([string]$process.ProcessName -ne [string]$Identity.ProcessName -or
+            [int64]$process.StartTime.ToUniversalTime().Ticks -ne [int64]$Identity.StartTimeUtcTicks -or
+            -not [string]::Equals([string]$process.Path, [string]$Identity.ExecutablePath, [StringComparison]::OrdinalIgnoreCase)) {
+            return $false
+        }
+        $process.Kill()
+        return $true
+    } catch { return $false }
+    finally { if ($null -ne $process) { try { $process.Dispose() } catch { } } }
+}
 
 function Initialize-MbCopilotServer {
     param(
@@ -164,6 +211,10 @@ function Import-MbVideoScene {
     # Set-MbStepCapture は操作記録向けに先頭候補へフォールバックする。動画差分だけは
     # Copilot精査前なので、候補一覧を残したまま現在候補を未選択へ戻す。
     $capturedStep.capture.targetCandidateId = ''
+    [void](Set-MbStepDraft -Project $Project -StepId $stepId -Title '録画の場面を確認' `
+        -Description '画面の内容を確認し、必要な操作を説明します。' -Note '')
+    [void](Set-MbStepReview -Project $Project -StepId $stepId -Action 'review' `
+        -Reason '録画の画面変化から作成した手順です。必要な場面か、文章と操作箇所を確認してください。')
 
     return [pscustomobject]@{
         status       = 'added'
@@ -549,6 +600,131 @@ function Set-MbCopilotDraftSelection {
     return $applied
 }
 
+# ---------------------------------------------------------------------
+# 操作記録の時系列フレームをCopilotで手順化するジョブ
+# ---------------------------------------------------------------------
+function Get-MbRecorderCopilotIdleStatus {
+    return [pscustomobject]@{
+        jobId = ''; state = 'idle'; phase = 'idle'; message = ''; percent = 0
+        currentPacket = 0; totalPackets = 0; proposalCount = 0; resultPath = ''
+        startedAt = ''; updatedAt = ''; completedAt = ''; errorCode = ''
+    }
+}
+
+function Read-MbRecorderCopilotStatus {
+    if ($null -eq $script:MbRecorderCopilotJob) { return Get-MbRecorderCopilotIdleStatus }
+    $path = [string]$script:MbRecorderCopilotJob.StatusPath
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return Get-MbRecorderCopilotIdleStatus }
+    try { $status = [IO.File]::ReadAllText($path, [Text.Encoding]::UTF8) | ConvertFrom-Json } catch { return Get-MbRecorderCopilotIdleStatus }
+    if ($null -eq $status) { return Get-MbRecorderCopilotIdleStatus }
+    if ([string]$status.state -in @('queued', 'running')) {
+        $alive = $false
+        try {
+            $alive = if ($script:MbRecorderCopilotJob.PSObject.Properties.Name -contains 'ProcessIdentity') {
+                if ($null -ne $script:MbRecorderCopilotJob.ProcessIdentity) {
+                    Test-MbRecorderCopilotProcessIdentity -Identity $script:MbRecorderCopilotJob.ProcessIdentity
+                } else {
+                    $null -ne (Get-Process -Id ([int]$script:MbRecorderCopilotJob.ProcessId) -ErrorAction SilentlyContinue)
+                }
+            } else { $false }
+        } catch { }
+        if (-not $alive) {
+            $status.state = 'failed'; $status.phase = 'failed'; $status.errorCode = 'WORKER_LOST'
+            $status.message = 'AIによる手順整理が途中で終了しました。'
+        }
+    }
+    return $status
+}
+
+function Start-MbRecorderCopilotJob {
+    param(
+        [Parameter(Mandatory = $true)]$SourceInfo,
+        [scriptblock]$WorkerStarter = $null
+    )
+    $current = Read-MbRecorderCopilotStatus
+    if ([string]$current.state -in @('queued', 'running')) { return $current }
+    $draft = Read-MbCopilotDraftStatus
+    if ([string]$draft.state -in @('queued', 'running')) { throw '文章を整えるCopilot処理が実行中です。終了後にもう一度お試しください。' }
+    foreach ($property in @('jobDirectory', 'framesDirectory', 'framesPath', 'eventsPath')) {
+        if ($SourceInfo.PSObject.Properties.Name -notcontains $property -or
+            [string]::IsNullOrWhiteSpace([string]$SourceInfo.$property)) { throw '記録した時系列データが見つかりません。' }
+    }
+    $frames = @([IO.File]::ReadAllLines([string]$SourceInfo.framesPath, [Text.Encoding]::UTF8) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($frames.Count -lt 2) { throw 'AIが比較できる画面が足りません。少し長めに操作を記録してください。' }
+
+    $jobId = 'recording-ai-' + [guid]::NewGuid().ToString('N')
+    $jobDirectory = Join-Path ([string]$SourceInfo.jobDirectory) $jobId
+    [void](New-Item -ItemType Directory -Path $jobDirectory -Force)
+    $statusPath = Join-Path $jobDirectory 'status.json'
+    $resultPath = Join-Path $jobDirectory 'result.json'
+    $cancelPath = Join-Path $jobDirectory 'cancel.requested'
+    $logPath = Join-Path $jobDirectory 'copilot.log'
+    $queued = [pscustomobject]@{
+        jobId = $jobId; state = 'queued'; phase = 'queued'; message = '記録画面をAI用に整えています'; percent = 0
+        currentPacket = 0; totalPackets = 0; proposalCount = 0; resultPath = $resultPath
+        startedAt = [DateTime]::UtcNow.ToString('o'); updatedAt = [DateTime]::UtcNow.ToString('o'); completedAt = ''; errorCode = ''
+    }
+    [IO.File]::WriteAllText($statusPath, ($queued | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding($false)))
+    $workerPath = Join-Path $script:MbCopilotScriptRoot 'Invoke-ManualBuilderRecorderCopilot.ps1'
+    $powerShellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $quote = { param([string]$Value) '"' + $Value.Replace('"', '\"') + '"' }
+    $arguments = @(
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-STA', '-File', (& $quote $workerPath),
+        '-FramesDirectory', (& $quote ([string]$SourceInfo.framesDirectory)),
+        '-FramesPath', (& $quote ([string]$SourceInfo.framesPath)),
+        '-EventsPath', (& $quote ([string]$SourceInfo.eventsPath)),
+        '-WorkDirectory', (& $quote $jobDirectory), '-StatusPath', (& $quote $statusPath),
+        '-ResultPath', (& $quote $resultPath), '-CancelPath', (& $quote $cancelPath),
+        '-JobId', (& $quote $jobId), '-ProfileDirectory', (& $quote $script:MbCopilotProfileRoot),
+        '-ConfigPath', (& $quote $script:MbCopilotConfigPath), '-LogPath', (& $quote $logPath)
+    )
+    try {
+        $process = if ($WorkerStarter) { & $WorkerStarter $powerShellPath $arguments } else {
+            Start-Process -FilePath $powerShellPath -ArgumentList $arguments -WindowStyle Hidden -PassThru
+        }
+        $processId = [int]$process.Id
+        # WorkerStarterはテスト差し替えなので所有プロセスとして停止しない。
+        # 実プロセスだけ名前・開始時刻・実行ファイルを記録し、PID再利用を拒否する。
+        $processIdentity = if ($WorkerStarter) { $null } else { New-MbRecorderCopilotProcessIdentity -Process $process }
+        if ($null -eq $WorkerStarter -and $null -eq $processIdentity) { throw 'AI整理プロセスの所有情報を確認できません。' }
+        try { $process.Dispose() } catch { }
+    } catch {
+        Remove-Item -LiteralPath $jobDirectory -Recurse -Force -ErrorAction SilentlyContinue
+        throw
+    }
+    $script:MbRecorderCopilotJob = [pscustomobject]@{
+        JobId = $jobId; ProcessId = $processId; JobDirectory = $jobDirectory
+        ProcessIdentity = $processIdentity
+        StatusPath = $statusPath; ResultPath = $resultPath; CancelPath = $cancelPath
+    }
+    return (Read-MbRecorderCopilotStatus)
+}
+
+function Get-MbRecorderCopilotResult {
+    $status = Read-MbRecorderCopilotStatus
+    if ([string]$status.state -ne 'completed') { return [pscustomobject]@{ jobId = [string]$status.jobId; proposals = @() } }
+    $path = [string]$script:MbRecorderCopilotJob.ResultPath
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return [pscustomobject]@{ jobId = [string]$status.jobId; proposals = @() } }
+    try { return ([IO.File]::ReadAllText($path, [Text.Encoding]::UTF8) | ConvertFrom-Json) } catch { return [pscustomobject]@{ jobId = [string]$status.jobId; proposals = @() } }
+}
+
+function Request-MbRecorderCopilotCancel {
+    if ($null -eq $script:MbRecorderCopilotJob) { return Get-MbRecorderCopilotIdleStatus }
+    [IO.File]::WriteAllText([string]$script:MbRecorderCopilotJob.CancelPath, 'cancel', (New-Object Text.UTF8Encoding($false)))
+    return (Read-MbRecorderCopilotStatus)
+}
+
+function Remove-MbRecorderCopilotJob {
+    if ($null -eq $script:MbRecorderCopilotJob) { return }
+    $job = $script:MbRecorderCopilotJob
+    $script:MbRecorderCopilotJob = $null
+    try { [IO.File]::WriteAllText([string]$job.CancelPath, 'cancel', (New-Object Text.UTF8Encoding($false))) } catch { }
+    if ($job.PSObject.Properties.Name -contains 'ProcessIdentity') {
+        [void](Stop-MbRecorderCopilotOwnedProcess -Identity $job.ProcessIdentity)
+    }
+    # フレームと同じ記録ジョブ配下なので、実体の削除は Remove-MbRecordingJob に任せる。
+}
+
 # 画面の文字認識が使えるかを返す。
 # Ocrモジュールはこのモジュールの内側にしか読み込まれないため、
 # 本体からはこの関数を通して状態を受け取る。
@@ -572,6 +748,11 @@ Export-ModuleMember -Function @(
     'Get-MbCopilotDraftResult',
     'Remove-MbCopilotDraftJob',
     'Set-MbCopilotDraftSelection',
+    'Start-MbRecorderCopilotJob',
+    'Read-MbRecorderCopilotStatus',
+    'Get-MbRecorderCopilotResult',
+    'Request-MbRecorderCopilotCancel',
+    'Remove-MbRecorderCopilotJob',
     'Show-MbCopilotSignInWindow',
     'Get-MbCopilotCapabilities',
     'Get-MbCopilotStepListFromProject'

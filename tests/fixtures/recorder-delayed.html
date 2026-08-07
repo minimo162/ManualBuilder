@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <title>受注検索 - ManualBuilder Recorder Smoke</title>
+  <style>
+    body { margin: 0; background: #f3f6fa; color: #17243a; font: 16px/1.5 "Yu Gothic UI", sans-serif; }
+    main { width: 980px; margin: 0 auto; padding: 40px; }
+    section { margin-top: 22px; padding: 24px; border: 1px solid #d5dce8; border-radius: 10px; background: white; }
+    label { display: grid; gap: 6px; font-weight: 700; }
+    input { width: 280px; padding: 10px; }
+    button { margin-top: 16px; padding: 10px 22px; color: white; border: 0; border-radius: 6px; background: #205ca8; font-weight: 700; }
+    .loading { display: grid; min-height: 180px; place-items: center; color: #5e6c82; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>受注を検索</h1>
+  <section id="search-panel">
+    <label>注文番号<input id="order-id" placeholder="例: ORD-2026-0817"></label>
+    <button id="search">検索</button>
+  </section>
+  <section id="loading" class="loading" hidden>検索結果を読み込み中…</section>
+  <section id="result" hidden>
+    <strong>ORD-2026-0817 / C-1042 山田商事</strong><br>
+    状態: 処理中 / 合計: ¥1,550<br>
+    <button id="detail">詳細を表示</button>
+  </section>
+  <section id="detail-panel" hidden>
+    <strong>受注詳細 ORD-2026-0817</strong>
+    <p>納品予定日: 2026年8月12日</p>
+    <button id="back">一覧へ戻る</button>
+  </section>
+</main>
+<script>
+  const normalTitle = document.title;
+  const searchPanel = document.getElementById('search-panel');
+  const loading = document.getElementById('loading');
+  const result = document.getElementById('result');
+  const detailPanel = document.getElementById('detail-panel');
+  document.getElementById('search').addEventListener('click', () => {
+    document.title = '読み込み中 - Microsoft Edge';
+    loading.hidden = false;
+    result.hidden = true;
+    setTimeout(() => {
+      loading.hidden = true;
+      result.hidden = false;
+      document.title = normalTitle;
+    }, 1100);
+  });
+  document.getElementById('detail').addEventListener('click', () => {
+    document.title = '詳細を読み込み中 - Microsoft Edge';
+    loading.hidden = false;
+    result.hidden = true;
+    setTimeout(() => {
+      loading.hidden = true;
+      detailPanel.hidden = false;
+      searchPanel.hidden = true;
+      document.title = normalTitle;
+    }, 900);
+  });
+  document.getElementById('back').addEventListener('click', () => {
+    detailPanel.hidden = true;
+    searchPanel.hidden = false;
+    result.hidden = false;
+  });
+</script>
+</body>
+</html>

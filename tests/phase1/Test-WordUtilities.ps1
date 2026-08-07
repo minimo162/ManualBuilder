@@ -8,6 +8,7 @@ Set-StrictMode -Version 2.0
 
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 Import-Module (Join-Path $repoRoot 'src\ManualBuilder.Word.psm1') -Force
+
 $testRoot = Join-Path $env:TEMP ('ManualBuilder-WordUtilityTest-' + [guid]::NewGuid().ToString('N'))
 
 function Assert-Mb {
@@ -18,6 +19,8 @@ function Assert-Mb {
 
 try {
     [void](New-Item -ItemType Directory -Path $testRoot -Force)
+    $wordSource = Get-Content -LiteralPath (Join-Path $repoRoot 'src\ManualBuilder.Word.psm1') -Raw -Encoding UTF8
+    Assert-Mb ($wordSource.Contains('$selection.ParagraphFormat.PageBreakBefore = ($stepIndex -gt 0)')) '各手順をページ境界から始めて見出しと画像の分断を防ぐ'
     Assert-Mb ((Get-MbSafeWordFileName -Name '経費/申請:*?' -Directory $testRoot) -eq '経費_申請___.docx') 'Wordファイル名の禁止文字を置換する'
     Assert-Mb ((Get-MbSafeWordFileName -Name 'CON' -Directory $testRoot) -eq '_CON.docx') 'Windows予約名を安全なWordファイル名へ変換する'
     $wordModule = Get-Module -Name 'ManualBuilder.Word'

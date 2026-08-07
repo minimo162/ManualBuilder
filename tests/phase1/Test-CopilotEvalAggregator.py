@@ -12,8 +12,10 @@ ROOT = Path(__file__).resolve().parents[2]
 TOOL = ROOT / "tools" / "evals" / "aggregate_copilot_reviews.py"
 
 
-def machine(*, false_positives: int = 0) -> dict:
+def machine(*, false_positives: int = 0, actual: int = 2,
+            failures: int = 0, state: str = "completed") -> dict:
     return {
+        "fixtureVersion": "1.0.0",
         "evaluationScope": {"fixtureType": "synthetic-in-sample", "scenarioCount": 1, "isHoldout": False},
         "sceneCountPasses": 1,
         "sceneCountTotal": 1,
@@ -23,7 +25,14 @@ def machine(*, false_positives: int = 0) -> dict:
         "top4RectHits": 1,
         "noRectSceneTotal": 1,
         "noRectFalsePositives": false_positives,
-        "scenarios": [{"id": "expense-application"}],
+        "scenarios": [{
+            "id": "expense-application", "expectedSceneCount": 2,
+            "actualSceneCount": actual, "rectTotal": 1, "top4RectHits": 1,
+        }],
+        "runs": [{
+            "id": "run-01", "scenarioId": "expense-application", "state": state,
+            "expectedDraftCount": 2, "actualDraftCount": actual, "failureCount": failures,
+        }],
     }
 
 
@@ -115,6 +124,35 @@ with tempfile.TemporaryDirectory(prefix="mb-copilot-eval-") as temporary:
     check(not value["arbitrationRequired"], "機械評価だけの失敗をレビュアー裁定へ回さない")
     check(value["machine"]["metrics"]["noRectFalsePositiveRate"] == 1.0,
           "回帰比較用の機械評価値を集約結果へ残す")
+
+    failed_packet = machine(failures=1)
+    result, value = invoke(temp, failed_packet, reviewer("blind-a"), reviewer("blind-b"))
+    check(result.returncode == 1 and value["machine"]["metrics"]["packetFailureCount"] == 1,
+          "packet failureが1件でもあれば合格不可にする")
+
+    result, value = invoke(temp, machine(state="failed"), reviewer("blind-a"), reviewer("blind-b"))
+    check(result.returncode == 1 and value["machine"]["metrics"]["completedRunCount"] == 0,
+          "workerが完了していないrunを合格不可にする")
+
+    incomplete = machine(actual=1)
+    incomplete["sceneCountPasses"] = 0
+    bad_review_a = reviewer("blind-a")
+    bad_review_b = reviewer("blind-b")
+    result, value = invoke(temp, incomplete, bad_review_a, bad_review_b)
+    check(result.returncode == 2 and value is None,
+          "不足draftを完全一致とするレビュアーの自己申告を拒否する")
+
+    mismatched_scope = machine()
+    mismatched_scope["evaluationScope"]["scenarioCount"] = 4
+    result, value = invoke(temp, mismatched_scope, reviewer("blind-a"), reviewer("blind-b"))
+    check(result.returncode == 2 and value is None,
+          "evaluationScopeの宣言件数と実際のscenarios件数の不一致を拒否する")
+
+    mismatched_fixture = reviewer("blind-a")
+    mismatched_fixture["fixtureVersion"] = "different-fixture"
+    result, value = invoke(temp, machine(), mismatched_fixture, reviewer("blind-b"))
+    check(result.returncode == 2 and value is None,
+          "reviewerとmachineのfixtureVersion不一致を拒否する")
 
     result, value = invoke(
         temp,

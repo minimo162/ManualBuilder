@@ -17,6 +17,10 @@ function Add-Result {
 
 Import-Module (Join-Path $srcRoot 'ManualBuilder.Recorder.psm1') -Force
 Import-Module (Join-Path $srcRoot 'ManualBuilder.Project.psm1') -Force
+$recorderSourceText = [IO.File]::ReadAllText((Join-Path $srcRoot 'ManualBuilder.Recorder.psm1'), [Text.Encoding]::UTF8)
+Add-Result (($recorderSourceText -match '\$pendingResultWindowHandle') -and
+    ($recorderSourceText -match '別アプリへ移った画面を、直前操作の結果として結び付けない')) `
+    '操作後画像を別アプリの画面へすり替えない'
 
 # ---------------------------------------------------------------------
 # status.json の読み書き競合
@@ -73,6 +77,30 @@ try {
         $statusWriterProcess.Dispose()
     }
     Remove-Item -LiteralPath $statusTestRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# ---------------------------------------------------------------------
+# 記録中の直前取消
+# ---------------------------------------------------------------------
+$undoRoot = Join-Path $env:TEMP ('ManualBuilder-RecorderUndo-' + [guid]::NewGuid().ToString('N'))
+try {
+    $undoEventsDirectory = Join-Path $undoRoot 'events'
+    [void](New-Item -ItemType Directory -Path $undoEventsDirectory -Force)
+    $undoEventsPath = Join-Path $undoRoot 'events.jsonl'
+    [IO.File]::WriteAllLines($undoEventsPath, @(
+        '{"index":1,"targetName":"最初"}',
+        '{"index":2,"targetName":"直前"}'
+    ), [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $undoEventsDirectory 'event-002.jpg'), 'before')
+    [IO.File]::WriteAllText((Join-Path $undoEventsDirectory 'event-002-result.jpg'), 'after')
+    $undoResult = Remove-MbLastRecordingEvent -EventsPath $undoEventsPath -EventsDirectory $undoEventsDirectory
+    Add-Result ($undoResult.removed -and [int]$undoResult.count -eq 1) '記録中に直前の1操作を取り消せる'
+    Add-Result ([string]$undoResult.lastTarget -eq '最初') '取消後の直前対象を戻す'
+    Add-Result ([IO.File]::ReadAllLines($undoEventsPath).Count -eq 1) '取消後もそれ以前の操作ログを保つ'
+    Add-Result (-not (Test-Path -LiteralPath (Join-Path $undoEventsDirectory 'event-002.jpg')) -and
+        -not (Test-Path -LiteralPath (Join-Path $undoEventsDirectory 'event-002-result.jpg'))) '取消した操作前後の画像だけを除く'
+} finally {
+    Remove-Item -LiteralPath $undoRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 # ---------------------------------------------------------------------
@@ -148,6 +176,10 @@ Add-Result ($null -eq (ConvertTo-MbRegionRect -Region $capturedRegion -Target $l
 
 $sliver = [pscustomobject]@{ left = 500.0; top = 400.0; width = 0.5; height = 30.0 }
 Add-Result ($null -eq (ConvertTo-MbRegionRect -Region $capturedRegion -Target $sliver)) '潰れた矩形は赤枠にしない'
+
+$fourKRegion = [pscustomobject]@{ left = 0; top = 0; width = 3840; height = 2160 }
+$fourKThinButton = [pscustomobject]@{ left = 1800.0; top = 900.0; width = 6.0; height = 32.0 }
+Add-Result ($null -ne (ConvertTo-MbRegionRect -Region $fourKRegion -Target $fourKThinButton)) '4K画面でも物理幅のある細い操作対象を残す'
 
 Add-Result ($null -eq (ConvertTo-MbRegionRect -Region $capturedRegion -Target $null)) '操作対象が無ければ矩形は作らない'
 
@@ -229,6 +261,9 @@ Add-Result ((Test-MbIgnoredWindow -Window $app) -eq $false) '業務アプリへ�
 # 記録を止めるためにManualBuilderへ戻る操作が手順に混ざらないようにする。
 $self = [pscustomobject]@{ title = 'ManualBuilder — Edge'; class = 'Chrome_WidgetWin_1'; left = 0; top = 0; width = 800; height = 600 }
 Add-Result ((Test-MbIgnoredWindow -Window $self -IgnoreTitlePatterns @('ManualBuilder')) -eq $true) 'ManualBuilder自身への操作は記録しない'
+$edgePage = [pscustomobject]@{ title = 'ManualBuilderの使い方 - Microsoft 365 Copilot - Microsoft Edge'; class = 'Chrome_WidgetWin_1'; left = 0; top = 0; width = 800; height = 600 }
+Add-Result ((Test-MbIgnoredWindow -Window $edgePage -IgnoreTitlePatterns @('ManualBuilder')) -eq $false) `
+    'ページ題名にManualBuilderを含むEdge操作を自己画面と誤認しない'
 Add-Result ((Test-MbIgnoredWindow -Window $self) -eq $false) '除外指定が無ければ普通に記録する'
 Add-Result ((Test-MbIgnoredWindow -Window $null) -eq $true) 'ウィンドウが取れない場合は記録しない'
 
@@ -310,9 +345,16 @@ try {
     $cachedTarget = Get-MbUiaTargetFromCache -Path $uiaCachePath -X 342 -Y 235 -Window $cacheWindow
     Add-Result ($null -ne $cachedTarget -and [string]$cachedTarget.name -eq '請求書' -and
         [long]$cachedTarget.captureWindow.handle -eq 12345) 'クリック前に保持したWindows操作対象とウィンドウを利用する'
+    Add-Result ($null -eq (Get-MbUiaTargetFromCache -Path $uiaCachePath -X 340 -Y 211 -Window $cacheWindow)) `
+        'クリック座標から外れた隣接UIAキャッシュを赤枠候補にしない'
+    $changedPageWindow = [pscustomobject]@{ handle = 12345; title = '支払完了'; left = 0; top = 0; width = 1000; height = 700 }
+    Add-Result ($null -eq (Get-MbUiaTargetFromCache -Path $uiaCachePath -X 342 -Y 235 -Window $changedPageWindow)) `
+        '同じEdgeウィンドウでも画面遷移後は古いUIAキャッシュを使わない'
+    $otherWindow = [pscustomobject]@{ handle = 54321; left = 0; top = 0; width = 1000; height = 700 }
+    Add-Result ($null -eq (Get-MbUiaTargetFromCache -Path $uiaCachePath -X 342 -Y 235 -Window $otherWindow)) `
+        '十分新しいキャッシュでも別HWNDなら誤適用しない'
     $cacheValue.updatedAtUtc = [DateTime]::UtcNow.AddMilliseconds(-800).ToString('o')
     [IO.File]::WriteAllText($uiaCachePath, ($cacheValue | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding($false)))
-    $otherWindow = [pscustomobject]@{ handle = 54321; left = 0; top = 0; width = 1000; height = 700 }
     Add-Result ($null -eq (Get-MbUiaTargetFromCache -Path $uiaCachePath -X 342 -Y 235 -Window $otherWindow)) '別ウィンドウのUIAキャッシュを誤適用しない'
 } finally {
     Remove-Item -LiteralPath $uiaCachePath -Force -ErrorAction SilentlyContinue
@@ -337,6 +379,8 @@ Add-Result ([Math]::Abs([double]$pointFallback.left - 392.0) -lt 0.001 -and
     [Math]::Abs([double]$pointFallback.top - 342.0) -lt 0.001) 'クリック位置の小さな枠を中央へ置く'
 $edgeFallback = New-MbClickPointTargetInfo -X 101 -Y 101 -Window $window
 Add-Result ([double]$edgeFallback.left -ge 100.0 -and [double]$edgeFallback.top -ge 100.0) 'クリック位置の枠をウィンドウ外へ出さない'
+Add-Result ([double]$edgeFallback.anchorX -eq 101.0 -and [double]$edgeFallback.anchorY -eq 101.0) `
+    '画面端で小枠をクランプしても実クリック座標を保持する'
 
 $wideSplitButton = [pscustomobject]@{
     name = '名前'; controlType = 'ControlType.SplitButton'; provider = 'UIA-CACHE'
@@ -362,8 +406,55 @@ $smallButton = [pscustomobject]@{
     name = '保存'; controlType = 'ControlType.Button'; provider = 'UIA-CACHE'
     left = 430.0; top = 340.0; width = 90.0; height = 32.0
 }
-$smallPrimary = Select-MbRecordingPrimaryTarget -Target $smallButton -PointTarget $pointFallback -Window $window
+$smallPoint = New-MbClickPointTargetInfo -X 470 -Y 356 -Window $window
+$smallPrimary = Select-MbRecordingPrimaryTarget -Target $smallButton -PointTarget $smallPoint -Window $window
 Add-Result (-not [bool]$smallPrimary.isFallback -and [string]$smallPrimary.name -eq '保存') '妥当なUIAボタンはクリック点へ置き換えない'
+
+$nearbySmallIcon = [pscustomobject]@{
+    name = '別アイコン'; controlType = 'ControlType.Button'; isActionable = $true
+    left = 525.0; top = 348.0; width = 16.0; height = 16.0
+}
+$containingButton = [pscustomobject]@{
+    name = '保存'; controlType = 'ControlType.Button'; isActionable = $true
+    left = 430.0; top = 340.0; width = 90.0; height = 32.0
+}
+$containmentWinner = Select-MbUiaTargetInfo -Candidates @($nearbySmallIcon, $containingButton) -X 520 -Y 356
+Add-Result ([string]$containmentWinner.name -eq '保存') '近くの小要素より実クリックを含む操作対象を優先する'
+$namedContainmentWinner = Select-MbUiaNamedTargetInfo -Candidates @($nearbySmallIcon, $containingButton) -X 520 -Y 356 -Window $window
+Add-Result ([string]$namedContainmentWinner.name -eq '保存') '名前だけで補う経路でも実クリックを含む操作対象を優先する'
+
+$nearbyOnlyTarget = Select-MbUiaTargetInfo -Candidates @($nearbySmallIcon) -X 520 -Y 356
+$nearbyPrimary = Select-MbRecordingPrimaryTarget -Target $nearbyOnlyTarget -PointTarget `
+    (New-MbClickPointTargetInfo -X 520 -Y 356 -Window $window) -Window $window
+Add-Result ([bool]$nearbyPrimary.isFallback -and [string]$nearbyPrimary.name -eq '' -and
+    [string](Get-MbRecorderTargetEvidence -Target $nearbyPrimary).confidence -eq 'low') `
+    'クリックを含まない近傍候補は名前を移さず低信頼のクリック点にする'
+
+$edgeButton = [pscustomobject]@{
+    name = '戻る'; controlType = 'ControlType.Button'; provider = 'UIA'
+    left = 100.0; top = 100.0; width = 20.0; height = 20.0
+}
+$edgePrimary = Select-MbRecordingPrimaryTarget -Target $edgeButton -PointTarget $edgeFallback -Window $window
+Add-Result (-not [bool]$edgePrimary.isFallback -and [string]$edgePrimary.name -eq '戻る') `
+    'ウィンドウ端の正しい小要素をクランプ後の枠中心で誤降格しない'
+
+$adjacentCell = [pscustomobject]@{
+    name = 'F9'; controlType = 'ControlType.DataItem'; provider = 'UIA-CACHE'
+    left = 320.0; top = 420.0; width = 52.0; height = 24.0
+}
+$adjacentPoint = New-MbClickPointTargetInfo -X 346 -Y 405 -Window $window
+$adjacentPrimary = Select-MbRecordingPrimaryTarget -Target $adjacentCell -PointTarget $adjacentPoint -Window $window
+Add-Result ([bool]$adjacentPrimary.isFallback -and [string]$adjacentPrimary.controlType -eq 'ControlType.ClickPoint') `
+    '隣のセルを指すUIA候補より実クリック位置の赤枠を優先する'
+
+$wideEdit = [pscustomobject]@{
+    name = '数式バー'; controlType = 'ControlType.Edit'; provider = 'UIA'
+    left = 210.0; top = 140.0; width = 680.0; height = 34.0
+}
+$wideEditPrimary = Select-MbRecordingPrimaryTarget -Target $wideEdit -PointTarget `
+    (New-MbClickPointTargetInfo -X 260 -Y 165 -Window $window) -Window $window
+Add-Result ([bool]$wideEditPrimary.isFallback -and [string]$wideEditPrimary.controlType -eq 'ControlType.ClickPoint') `
+    '数式バーのような過大な横長Editを既定赤枠にしない'
 
 $normalizedPoint = ConvertTo-MbNormalizedClickPoint -Region $capturedRegion -X 500 -Y 400
 Add-Result ([Math]::Abs([double]$normalizedPoint.x - 0.5) -lt 0.001 -and
@@ -442,6 +533,7 @@ try {
 # 入力の検出に使うキー
 # ---------------------------------------------------------------------
 $typingKeys = @(Get-MbWatchedTypingKeys)
+$commitKeys = @(Get-MbWatchedCommitKeys)
 Add-Result ($typingKeys.Count -gt 30) '入力の検出に十分な数のキーを見る'
 Add-Result ($typingKeys -contains 0x41) '英字を見る'
 Add-Result ($typingKeys -contains 0x30) '数字を見る'
@@ -450,6 +542,8 @@ Add-Result ($typingKeys -contains 0x08) 'BackSpaceを見る'
 Add-Result ($typingKeys -notcontains 0x11) 'Ctrlだけでは入力とみなさない'
 Add-Result ($typingKeys -notcontains 0x10) 'Shiftだけでは入力とみなさない'
 Add-Result ($typingKeys -notcontains 0x09) 'Tabだけでは入力とみなさない'
+Add-Result ($typingKeys -notcontains 0x0D) 'Enterだけでは入力とみなさない'
+Add-Result ($commitKeys -contains 0x0D -and $commitKeys -contains 0x09) 'EnterとTabを入力確定として別に監視する'
 Add-Result (-not (Test-MbTextChangingShortcutKey -VirtualKey 0x4C)) 'Ctrl+Lの移動を入力内容の変更とみなさない'
 Add-Result (-not (Test-MbTextChangingShortcutKey -VirtualKey 0x46)) 'Ctrl+Fの検索開始を入力内容の変更とみなさない'
 Add-Result (Test-MbTextChangingShortcutKey -VirtualKey 0x56) 'Ctrl+Vの貼り付けは入力内容の変更として残す'
@@ -490,6 +584,7 @@ try {
     [void](New-Item -ItemType Directory -Path $eventDirectory -Force)
     $beforePath = Join-Path $eventDirectory 'event-001.jpg'
     $afterPath = Join-Path $eventDirectory 'event-001-result.jpg'
+    $excelPath = Join-Path $eventDirectory 'event-002.jpg'
     $beforeBitmap = New-Object Drawing.Bitmap -ArgumentList @(64, 40)
     $afterBitmap = New-Object Drawing.Bitmap -ArgumentList @(64, 40)
     $beforeGraphics = [Drawing.Graphics]::FromImage($beforeBitmap)
@@ -499,17 +594,25 @@ try {
         $afterGraphics.Clear([Drawing.Color]::LightBlue)
         $beforeBitmap.Save($beforePath, [Drawing.Imaging.ImageFormat]::Jpeg)
         $afterBitmap.Save($afterPath, [Drawing.Imaging.ImageFormat]::Jpeg)
+        $beforeBitmap.Save($excelPath, [Drawing.Imaging.ImageFormat]::Jpeg)
     } finally { $beforeGraphics.Dispose(); $afterGraphics.Dispose() }
     $eventsPath = Join-Path $importRoot 'events.jsonl'
-    $eventJson = [pscustomobject]@{
+    $edgeEventJson = [pscustomobject]@{
         index = 1; kind = 'click'; timeMs = 1000; image = 'event-001.jpg'
-        windowTitle = '詳細'; targetName = '詳細を表示'; targetType = 'ControlType.Button'
+        windowTitle = '申請画面 - Microsoft Edge'; targetName = '詳細を表示'; targetType = 'ControlType.Button'
         rect = [pscustomobject]@{ x1 = 0.1; y1 = 0.1; x2 = 0.3; y2 = 0.2 }
     } | ConvertTo-Json -Compress -Depth 5
-    [IO.File]::WriteAllText($eventsPath, $eventJson + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+    $excelEventJson = [pscustomobject]@{
+        index = 2; kind = 'click'; timeMs = 2200; image = 'event-002.jpg'
+        windowTitle = 'Book1 - Excel'; targetName = 'F8'; targetType = 'ControlType.Cell'
+        rect = [pscustomobject]@{ x1 = 0.4; y1 = 0.4; x2 = 0.5; y2 = 0.5 }
+    } | ConvertTo-Json -Compress -Depth 5
+    [IO.File]::WriteAllLines($eventsPath, @($edgeEventJson, $excelEventJson), [Text.UTF8Encoding]::new($false))
     $job = [pscustomobject]@{ EventsPath = $eventsPath; EventsDirectory = $eventDirectory; NarrationPath = (Join-Path $importRoot 'narration.jsonl') }
     & (Get-Module ManualBuilder.RecorderServer) { param($Job) $script:MbRecordingJob = $Job } $job
     $listedEvents = @(Get-MbRecordedEvents)
+    Add-Result ($listedEvents.Count -eq 2) 'EdgeからExcelへ移った操作をどちらも確認一覧へ残す'
+    Add-Result ([string]$listedEvents[0].windowTitle -like '*Edge' -and [string]$listedEvents[1].windowTitle -like '*Excel') '複数アプリの操作順を保持する'
     Add-Result ([string]$listedEvents[0].resultImage -eq 'event-001-result.jpg') '確認一覧でクリック後画像を同じ操作へ関連付ける'
 
     $importProject = New-MbProject
@@ -517,10 +620,17 @@ try {
     $importProject = Save-MbProject -Project $importProject -Path $importProjectPath
     $imported = Import-MbRecordedEvents -Project $importProject -ProjectPath $importProjectPath -SheetId $importProject.sheets[0].id
     $importedStep = @($importProject.sheets[0].steps)[0]
-    Add-Result ([int]$imported.added -eq 1) '操作後画像つきの記録を手順へ取り込む'
+    Add-Result ([int]$imported.added -eq 2) 'EdgeとExcelの操作をまとめて手順へ取り込む'
+    Add-Result ([int]$imported.generated -eq 2) '取り込みと同時にローカルで文章を作る'
+    Add-Result (@($importProject.sheets[0].steps).Count -eq 2) '複数アプリの手順を取り込み時に欠落させない'
+    $importedSteps = @($importProject.sheets[0].steps)
+    Add-Result ([string]$importedSteps[0].capture.windowTitle -like '*Edge' -and [string]$importedSteps[1].capture.windowTitle -like '*Excel') '取り込み後もEdgeからExcelへの操作順を保持する'
     Add-Result (-not [string]::IsNullOrWhiteSpace([string]$importedStep.resultImageId)) '取り込み後も操作後画像を手順へ保持する'
     Add-Result ([string]$importedStep.imageId -ne [string]$importedStep.resultImageId) '操作前画像と操作後画像を混同しない'
     Add-Result ([string]$importedStep.imageLayout -eq 'side-by-side') '操作後画像つきの記録を左右比較で取り込む'
+    Add-Result ([string]$importedStep.title -eq '詳細を表示' -and [string]$importedStep.description -eq '［詳細を表示］をクリックします。') '操作対象名から編集可能な初稿を作る'
+    Add-Result ([double]$importedStep.crop.x -eq 0 -and [double]$importedStep.crop.y -eq 0 -and
+        [double]$importedStep.crop.width -eq 1 -and [double]$importedStep.crop.height -eq 1) '取り込み時は画面全体を残し自動拡大しない'
 } finally {
     & (Get-Module ManualBuilder.RecorderServer) { $script:MbRecordingJob = $null }
     if ($beforeBitmap) { $beforeBitmap.Dispose() }
@@ -544,13 +654,26 @@ $slowEditEvents = @(
     [pscustomobject]@{ index = 2; timeMs = 8000; kind = 'input'; targetType = 'ControlType.Edit'; targetName = '検索'; windowTitle = 'Explorer' }
 )
 Add-Result (@(Merge-MbRecordedEditInteractions -Events $slowEditEvents).Count -eq 2) '間を置いた入力欄クリックは独立操作として残す'
+$excelCellInputEvents = @(
+    [pscustomobject]@{ index = 1; timeMs = 1000; kind = 'click'; targetType = 'ControlType.DataItem'; targetName = 'B2'; windowTitle = 'Book1 - Excel'; rect = [pscustomobject]@{ x1 = 0.1; y1 = 0.2; x2 = 0.2; y2 = 0.3 } },
+    [pscustomobject]@{ index = 2; timeMs = 2800; kind = 'input'; targetType = 'ControlType.DataItem'; targetName = 'B2'; windowTitle = 'Book1 - Excel'; rect = [pscustomobject]@{ x1 = 0.1; y1 = 0.2; x2 = 0.2; y2 = 0.3 } }
+)
+$mergedExcelCellInputEvents = @(Merge-MbRecordedEditInteractions -Events $excelCellInputEvents)
+Add-Result ($mergedExcelCellInputEvents.Count -eq 1 -and [string]$mergedExcelCellInputEvents[0].kind -eq 'input') `
+    'Excelセルの選択と直後の入力を1手順へまとめる'
+$sameNameDifferentFields = @(
+    [pscustomobject]@{ index = 1; timeMs = 1000; kind = 'click'; targetType = 'ControlType.Edit'; targetName = '値'; windowTitle = '設定'; rect = [pscustomobject]@{ x1 = 0.1; y1 = 0.1; x2 = 0.3; y2 = 0.2 } },
+    [pscustomobject]@{ index = 2; timeMs = 2000; kind = 'input'; targetType = 'ControlType.Edit'; targetName = '値'; windowTitle = '設定'; rect = [pscustomobject]@{ x1 = 0.1; y1 = 0.6; x2 = 0.3; y2 = 0.7 } }
+)
+Add-Result (@(Merge-MbRecordedEditInteractions -Events $sameNameDifferentFields).Count -eq 2) '同じ名前でも位置が違う入力欄を誤ってまとめない'
 
-$focusRect = [pscustomobject]@{ x1 = 0.7; y1 = 0.7; x2 = 0.8; y2 = 0.75 }
-$focusCrop = Get-MbRecorderTargetCrop -Rect $focusRect -TargetType 'ControlType.Button'
-Add-Result ($null -ne $focusCrop -and [double]$focusCrop.width -eq 0.55 -and [double]$focusCrop.height -eq 0.55) '特定できた操作対象の周辺を初期表示する'
-Add-Result ([double]$focusCrop.x -ge 0 -and ([double]$focusCrop.x + [double]$focusCrop.width) -le 1) '対象周辺の切り抜きを画像内へ収める'
-$fallbackCrop = Get-MbRecorderTargetCrop -Rect $focusRect -TargetType 'ControlType.ClickPoint'
-Add-Result ($null -eq $fallbackCrop) '対象不明のクリックは自動で切り抜かない'
+$repeatedClicks = @(
+    [pscustomobject]@{ index = 1; timeMs = 1000; kind = 'click'; windowTitle = 'Book1 - Excel'; targetName = 'F8'; targetType = 'ControlType.DataItem' },
+    [pscustomobject]@{ index = 2; timeMs = 1150; kind = 'click'; windowTitle = 'Book1 - Excel'; targetName = 'F8'; targetType = 'ControlType.DataItem' },
+    [pscustomobject]@{ index = 3; timeMs = 1300; kind = 'click'; windowTitle = 'Book1 - Excel'; targetName = 'F8'; targetType = 'ControlType.DataItem' }
+)
+Add-Result (@(Merge-MbRecordedEditInteractions -Events $repeatedClicks).Count -eq 3) `
+    '似た連続クリックを復元不能な形で自動削除しない'
 
 $candidateProject = New-MbProject
 $candidateStep = Add-MbStep -Project $candidateProject -SheetId $candidateProject.sheets[0].id

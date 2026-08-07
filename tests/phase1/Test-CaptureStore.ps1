@@ -89,10 +89,13 @@ try {
     $resultImage = Set-MbStepResultImage -Project $project -ProjectPath $projectPath -StepId $step.id -Bytes $resultBytes -Source file
     Assert-Mb ($resultImage.Status -eq 'set' -and -not [string]::IsNullOrWhiteSpace([string]$step.resultImageId)) '手順へ操作後画像を追加できる'
     Assert-Mb ([string]$step.imageLayout -eq 'side-by-side') '操作後画像の追加時は左右比較を初期値にする'
+    Set-MbStepImageEdits -Project $project -StepId $step.id -Target result -AnnotationsJson $annotationJson -CropJson '{"x":0.2,"y":0.2,"width":0.7,"height":0.7}'
+    Assert-Mb (@($step.resultAnnotations).Count -eq 2 -and [double]$step.resultCrop.width -eq 0.7) '操作後画像の注釈と切り抜きを操作前と分けて保存する'
     [void](Set-MbStepImageLayout -Project $project -StepId $step.id -Layout stacked -Order after-before)
     Assert-Mb ([string]$step.imageLayout -eq 'stacked' -and [string]$step.imageOrder -eq 'after-before') '比較画像の配置と前後順を保存できる'
     $removedResult = Remove-MbStepResultImage -Project $project -ProjectPath $projectPath -StepId $step.id
     Assert-Mb ([string]::IsNullOrWhiteSpace([string]$step.resultImageId) -and [string]$step.imageLayout -eq 'before') '操作後画像を外すと操作前だけへ戻る'
+    Assert-Mb (@($step.resultAnnotations).Count -eq 0 -and [double]$step.resultCrop.width -eq 1.0) '操作後画像を外すと専用の編集状態も初期化する'
     if ($removedResult.RemovedPath -and (Test-Path -LiteralPath $removedResult.RemovedPath)) { Remove-Item -LiteralPath $removedResult.RemovedPath -Force }
 
     $imagePath = Get-MbImageFilePath -Project $project -ProjectPath $projectPath -ImageId $result.Image.id

@@ -67,12 +67,16 @@ $resultStep = New-MbTestStep -AnnotationCount 0
 $resultStep | Add-Member -NotePropertyName resultImageId -NotePropertyValue ('image-' + ([guid]::NewGuid().ToString('N')))
 $resultStep | Add-Member -NotePropertyName imageLayout -NotePropertyValue 'side-by-side'
 $resultStep | Add-Member -NotePropertyName imageOrder -NotePropertyValue 'after-before'
+$resultStep | Add-Member -NotePropertyName resultAnnotations -NotePropertyValue @([pscustomobject]@{ id = 'annotation-' + ([guid]::NewGuid().ToString('N')); type = 'rect'; x1 = 0.1; y1 = 0.1; x2 = 0.4; y2 = 0.4; label = 0 })
+$resultStep | Add-Member -NotePropertyName resultCrop -NotePropertyValue ([pscustomobject]@{ x = 0.1; y = 0.1; width = 0.8; height = 0.8 })
 $resultHtml = ConvertTo-MbStepCardHtml -Step $resultStep -Number 1 -Total 1 -Token 'testtoken'
 Assert-Mb ($resultHtml -match 'step-visual-item--before' -and $resultHtml -match 'step-visual-item--after') '操作前と操作後を同じ手順カードに表示する'
 Assert-Mb ($resultHtml -match [regex]::Escape([string]$resultStep.resultImageId)) '結果画像を操作前画像と別に参照する'
 Assert-Mb ($resultHtml -match 'step-visual-layout--side-by-side step-visual-layout--reverse') '選んだ左右配置と前後順を表示へ反映する'
 Assert-Mb (([regex]::Matches($resultHtml, 'data-image-layout-option=')).Count -eq 4) '4種類の画像配置を選べる'
 Assert-Mb ($resultHtml -match 'data-swap-image-order' -and $resultHtml -match 'data-remove-result-image') '比較画像の順序変更と取り外しができる'
+Assert-Mb ($resultHtml -match 'data-open-annotation data-image-edit-target="result"' -and $resultHtml -match 'step-result-annotations-data') '操作後画像も独立して注釈・切り抜きを編集できる'
+Assert-Mb ($resultHtml -match 'aria-label="注釈 1件"' -and $resultHtml -match 'crop-badge">切り抜き済み') '操作後画像の注釈数と切り抜き状態を区別して表示する'
 Assert-Mb ($emptyHtml -match 'data-add-result-image') '1枚の手順から比較画像を追加できる'
 
 Write-Host ''
@@ -114,11 +118,14 @@ Assert-Mb ($navHtml -notmatch '<span class="step-nav__status"(?![^>]*role=")') '
 Assert-Mb ($navHtml -match 'aria-label="説明未入力"') '説明未入力の手順に読み上げ可能な目印を出す'
 Assert-Mb ($navHtml -match 'aria-label="画像なし"') '画像なしの手順に読み上げ可能な目印を出す'
 Assert-Mb (([regex]::Matches($navHtml, 'step-nav__status')).Count -eq 2) '入力済みの手順には目印を出さない'
-# ドラッグしか案内していないと、キーボードだけを使う人が並べ替えに気付けない（UX-08）。
-Assert-Mb ($navHtml -match 'data-step-nav-drag-handle[^>]*↑↓ キー') '手順の取っ手がキーボード操作を案内する'
-Assert-Mb ($navHtml -match 'data-step-select-mode[^>]*>複数選択') '複数選択を明示的に開始できる'
+# カードを直接つかみ、キーボードではAlt+矢印を代替操作として使う。
+Assert-Mb (([regex]::Matches($navHtml, 'data-step-direct-drag data-step-nav-item')).Count -eq 3) '各手順カード全体をドラッグできる'
+Assert-Mb (($navHtml -notmatch 'data-step-nav-drag-handle|data-step-select-mode|data-step-select"') -and ($navHtml -match 'Alt＋↑↓')) '専用取っ手とチェックボックスを使わずキーボード操作も案内する'
 Assert-Mb ($navHtml -match 'data-step-selection-all[^>]*>すべて選択') '手順をすべて選択できる'
 Assert-Mb (([regex]::Matches($navHtml, 'data-step-bulk-order=')).Count -eq 4) '選択した手順を一括で上下・先頭・末尾へ移動できる'
+Assert-Mb (([regex]::Matches($navHtml, 'data-step-nav-add-after')).Count -eq 3) '各手順の直後へ挿入できる'
+Assert-Mb (([regex]::Matches($navHtml, 'data-step-nav-order=')).Count -eq 6) '各手順のメニューから上下へ移動できる'
+Assert-Mb (([regex]::Matches($navHtml, 'data-step-nav-delete')).Count -eq 3) '各手順のメニューから削除できる'
 
 Write-Host ''
 Write-Host '--- 録画から手順書を作る主導線 ---' -ForegroundColor Cyan
@@ -142,7 +149,7 @@ Assert-Mb ($emptyWorkspaceHtml -match 'empty-state__main-button[^>]*data-record-
 Assert-Mb (([regex]::Matches($emptyWorkspaceHtml, 'button button--primary[^>]*data-record-operations')).Count -eq 1) '空の画面では操作記録の主ボタンを重複させない'
 Assert-Mb ($emptyWorkspaceHtml -match 'data-open-video-picker>録画ファイルを取り込む') '既存録画の取り込みを同じ画面から選べる'
 Assert-Mb (([regex]::Matches($emptyWorkspaceHtml, 'data-open-video-picker>録画ファイルを取り込む')).Count -eq 1) '空の画面では既存録画の入口を重複させない'
-Assert-Mb ($emptyWorkspaceHtml -match '操作を記録.+使う操作を確認.+Copilotの提案を確認') '主機能の3段階を最初に示す'
+Assert-Mb ($emptyWorkspaceHtml -match '操作を記録.+自動で手順を作成.+編集してExcelへ') 'ローカルで完了する主機能の3段階を最初に示す'
 Assert-Mb ($emptyWorkspaceHtml -match 'accept="video/mp4,video/webm"') '主ボタンから選べる動画形式を制限する'
 
 $filledWorkspaceHtml = ConvertTo-MbWorkspaceHtml -Project (New-MbTestProject -Steps @((New-MbTestStep -AnnotationCount 0))) -Token 'testtoken'
@@ -150,20 +157,26 @@ Assert-Mb ($filledWorkspaceHtml -notmatch 'class="empty-state') '手順がある
 Assert-Mb ($filledWorkspaceHtml -match 'topbar__main-action[^>]*data-record-operations[^>]*>操作を記録') '編集中も主機能へスクロールせず戻れる'
 Assert-Mb (([regex]::Matches($filledWorkspaceHtml, 'button button--primary[^>]*data-record-operations')).Count -eq 1) '編集中も操作記録の主ボタンを重複させない'
 Assert-Mb ($filledWorkspaceHtml -match 'topbar__video-action[^>]*data-open-video-picker[^>]*>録画を取り込む') '編集中も既存録画をメニューを開かず取り込める'
+Assert-Mb ($filledWorkspaceHtml -match 'class="workspace step-view--review"') '手順の分割確認は一覧表示から始める'
+Assert-Mb ($filledWorkspaceHtml -match 'data-step-view="review"[^>]*aria-pressed="true"' -and $filledWorkspaceHtml -match 'data-step-view="focus"') '一覧確認と1件編集を切り替えられる'
+Assert-Mb ($filledWorkspaceHtml -match 'data-step-previous' -and $filledWorkspaceHtml -match 'data-step-next' -and $filledWorkspaceHtml -match 'data-step-position') '手順を前後へ連続移動できる'
 
 Write-Host ''
-Write-Host '--- Copilot後の仕上げ導線 ---' -ForegroundColor Cyan
+Write-Host '--- 自動作成後の仕上げ導線 ---' -ForegroundColor Cyan
 Assert-Mb ($filledWorkspaceHtml -match 'data-finish-guide') '編集画面に仕上げ状況を常時表示する'
 Assert-Mb ($filledWorkspaceHtml -match 'data-finish-check="text"') '説明なしの手順へ移動できる'
 Assert-Mb ($filledWorkspaceHtml -match 'data-finish-check="annotation"') '赤枠・番号なしの手順を確認できる'
-Assert-Mb ($filledWorkspaceHtml -match 'data-finish-check="attention"') 'Copilot後の要確認手順へ移動できる'
-Assert-Mb ($filledWorkspaceHtml -match 'data-add-step-after[^>]*>＋ 手順をこの後に追加') '現在の手順の直後へ追加できる入口を表示する'
+Assert-Mb ($filledWorkspaceHtml -match 'data-finish-check="attention"') '自動作成後の要確認手順へ移動できる'
+Assert-Mb ($filledWorkspaceHtml -match 'data-add-step-end[^>]*>＋ 手順を追加') '通常の追加は一覧末尾へ追加する入口にする'
 Assert-Mb (([regex]::Matches($filledWorkspaceHtml, 'data-open-export-dialog')).Count -eq 2) '上部と仕上げ欄から最終出力へ進める'
 $cardHtml = ConvertTo-MbStepCardHtml -Step (New-MbTestStep -AnnotationCount 0) -Number 2 -Total 3 -Token 'testtoken'
-Assert-Mb (([regex]::Matches($cardHtml, 'data-step-move=')).Count -eq 2) '手順カードから個別に上下移動できる'
-Assert-Mb ($cardHtml -match 'data-step-card-delete[^>]*>削除') '手順カードから削除できる'
+Assert-Mb ($cardHtml -notmatch 'data-step-move=|data-step-card-delete') '手順カードへ一覧と重複する整理操作を置かない'
 Assert-Mb ($cardHtml -match 'data-open-annotation[^>]*[\s\S]*赤枠・番号を追加') '赤枠・番号の入口を具体的な名前で表示する'
 Assert-Mb ($cardHtml -match 'annotation-badge[^>]*>注釈 <span class="annotation-count">0') '注釈がない手順も状態を表示する'
+$focusRectStep = New-MbTestStep -AnnotationCount 1
+$focusRectStep.annotations[0].type = 'rect'
+$focusRectHtml = ConvertTo-MbStepCardHtml -Step $focusRectStep -Number 1 -Total 1 -Token 'testtoken'
+Assert-Mb ($focusRectHtml -match '赤枠を確認・修正' -and $focusRectHtml -match 'data-remove-focus-rect[^>]*>赤枠を外す') '自動赤枠を確認し、その場で外せる'
 
 $reviewStep = New-MbTestStep -AnnotationCount 0
 $reviewStep.review = [pscustomobject]@{ required = $true; action = 'review'; reason = '赤枠の候補を特定できませんでした。' }

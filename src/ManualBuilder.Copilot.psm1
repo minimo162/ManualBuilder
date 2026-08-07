@@ -48,7 +48,9 @@ function Get-MbCopilotDefaultSettings {
         # 校正は画像を渡さないぶん軽い。表記ゆれは広く見ないと気付けないのでまとめて渡す。
         review_steps_per_packet = 25
         copilot_model        = 'GPT 5.6 Think deeper,Opus,Think Deeper'
-        browser_display_mode = 'minimized'
+        # アプリ起動時に、利用者がEdgeとCopilotタブの存在を目で確認できるようにする。
+        # 実処理中にManualBuilderを操作しても問題ないため、前面へ固定はしない。
+        browser_display_mode = 'foreground'
         poll_interval_ms     = 2000
         response_end_marker  = 'MB_END'
         selectors            = [ordered]@{
@@ -236,6 +238,27 @@ function Select-MbCopilotPageCandidate {
     return @($Candidates)[0]
 }
 
+function Test-MbCopilotTransitionUrl {
+    param(
+        [AllowEmptyString()][string]$Url = '',
+        [Parameter(Mandatory = $true)][string]$CopilotHost
+    )
+    if ([string]::IsNullOrWhiteSpace($Url)) { return $false }
+    $uri = $null
+    try { $uri = [Uri]$Url } catch { return $false }
+    if ($uri.Scheme -notin @('http', 'https')) { return $false }
+    $host = ([string]$uri.Host).ToLowerInvariant()
+    $expected = $CopilotHost.ToLowerInvariant()
+    if ($host -eq $expected -or $host.EndsWith('.' + $expected)) { return $true }
+    return ($host -eq 'login.live.com' -or
+        $host -eq 'account.microsoft.com' -or
+        $host -eq 'login.microsoft.com' -or
+        $host -eq 'www.microsoft365.com' -or
+        $host -eq 'office.com' -or $host.EndsWith('.office.com') -or
+        $host -eq 'microsoftonline.com' -or $host.EndsWith('.microsoftonline.com') -or
+        $host -eq 'cloud.microsoft' -or $host.EndsWith('.cloud.microsoft'))
+}
+
 function Get-MbCopilotPage {
     param([Parameter(Mandatory = $true)]$Settings, [switch]$PreferConsent)
 
@@ -250,11 +273,13 @@ function Get-MbCopilotPage {
             ((([string]$_.url) -like ('*' + $copilotHost + '*')) -or (([string]$_.url) -like '*copilot*'))
         })
         if ($pages.Count -eq 0) {
-            # サインインへ飛んでいる最中の受け皿（約束事4）。
+            # サインインやMicrosoft 365内の遷移だけを受け皿にする（約束事4）。
+            # ここで任意のhttpページを選ぶと、Copilotタブが閉じられた場合に
+            # MSNなど別のEdgeウィンドウを起動済みと誤認してしまう。
             $pages = @($targets | Where-Object {
                 $_ -and ([string]$_.type) -eq 'page' -and
                 (-not [string]::IsNullOrWhiteSpace([string]$_.webSocketDebuggerUrl)) -and
-                (([string]$_.url) -like 'http*')
+                (Test-MbCopilotTransitionUrl -Url ([string]$_.url) -CopilotHost $copilotHost)
             })
         }
         if ($pages.Count -gt 0) {
@@ -474,6 +499,7 @@ function Wait-MbCopilotScreenReady {
     $deadline = (Get-Date).AddSeconds([Math]::Max(10, $TimeoutSeconds))
     $last = $null
     $homeTransitionTried = $false
+    $signInObservedAt = $null
     while ((Get-Date) -lt $deadline) {
         if ($ShouldCancel -and (& $ShouldCancel)) {
             return [pscustomobject]@{ ok = $false; cancelled = $true; signinRequired = $false; message = '中止しました。' }
@@ -483,11 +509,19 @@ function Wait-MbCopilotScreenReady {
             return [pscustomobject]@{ ok = $true; cancelled = $false; signinRequired = $false; message = '' }
         }
         if ($last.signin_required -eq $true) {
-            Write-MbCopilotLog ('Copilotの準備ができません（サインインが必要）: ' + (Format-MbCopilotScreenDiagnostic -State $last)) 'ERROR'
-            return [pscustomobject]@{
-                ok = $false; cancelled = $false; signinRequired = $true
-                message = 'Microsoft 365 Copilotへのサインインが必要です。［Copilotの画面を開く］からサインインして、もう一度実行してください。'
+            # Edge起動直後は、保存済みセッションの復元中にもログインURLや
+            # サインインボタンが一瞬だけ見える。連続して12秒続いた場合だけ
+            # 利用者の操作が必要と判断し、正常な自動遷移を途中で止めない。
+            if ($null -eq $signInObservedAt) { $signInObservedAt = Get-Date }
+            if (((Get-Date) - $signInObservedAt).TotalSeconds -ge 12) {
+                Write-MbCopilotLog ('Copilotの準備ができません（サインインが必要）: ' + (Format-MbCopilotScreenDiagnostic -State $last)) 'ERROR'
+                return [pscustomobject]@{
+                    ok = $false; cancelled = $false; signinRequired = $true
+                    message = 'Microsoft 365 Copilotへのサインインが必要です。［Copilotの画面を開く］からサインインして、もう一度実行してください。'
+                }
             }
+        } else {
+            $signInObservedAt = $null
         }
         # ホーム画面で止まっている場合は自分でチャットへ入る。
         if ([string]$last.surface -eq 'home' -and -not $homeTransitionTried) {
@@ -1187,7 +1221,7 @@ function Repair-MbJsonText {
 
 # 手順の下書きとして使える形かどうかを見る。
 function Get-MbStepAnswerJson {
-    param([AllowNull()][string]$Text)
+    param([AllowNull()][string]$Text, [switch]$AllowEmptySteps)
 
     $candidates = @(Get-MbJsonObjectCandidates -Text $Text)
     if ($candidates.Count -eq 0) { return $null }
@@ -1199,7 +1233,8 @@ function Get-MbStepAnswerJson {
             try { $parsed = $attempt | ConvertFrom-Json } catch { continue }
             if ($null -eq $parsed) { continue }
             if ($parsed.PSObject.Properties.Name -notcontains 'steps') { continue }
-            if (@($parsed.steps).Count -lt 1) { continue }
+            if ($null -eq $parsed.steps) { continue }
+            if (@($parsed.steps).Count -lt 1 -and -not $AllowEmptySteps) { continue }
             return $parsed
         }
     }
@@ -1219,6 +1254,21 @@ function Get-MbCopilotResponseRegion {
     return ''
 }
 
+function Get-MbCopilotMeaningfulTextLength {
+    param([AllowEmptyString()][AllowNull()][string]$Text = '')
+    if ([string]::IsNullOrEmpty($Text)) { return 0 }
+    # M365 Copilot leaves zero-width formatting characters in an empty answer
+    # region before generation starts.  Treating those as an answer made the
+    # recorder declare "no JSON" after only a few polls.
+    return ([regex]::Replace($Text, '[\p{Cf}\p{Cc}\p{Z}\s]', '')).Length
+}
+
+function Test-MbCopilotServiceErrorText {
+    param([AllowEmptyString()][AllowNull()][string]$Text = '')
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
+    return $Text -match '(?is)問題が発生しました|応答を生成できません|回答を生成できません|something\s+went\s+wrong|problem\s+occurred|unable\s+to\s+generate|please\s+try\s+again|try\s+again'
+}
+
 function Wait-MbCopilotResponse {
     param(
         [Parameter(Mandatory = $true)][string]$WsUrl,
@@ -1226,7 +1276,8 @@ function Wait-MbCopilotResponse {
         [string]$Marker = '',
         [int]$TimeoutSeconds = 600,
         [scriptblock]$ShouldCancel = $null,
-        [scriptblock]$OnProgress = $null
+        [scriptblock]$OnProgress = $null,
+        [switch]$AllowEmptySteps
     )
 
     if ([string]::IsNullOrWhiteSpace($Marker)) { $Marker = [string]$Settings.response_end_marker }
@@ -1251,7 +1302,7 @@ function Wait-MbCopilotResponse {
 
         $hasMarker = (-not [string]::IsNullOrEmpty($Marker)) -and ($region -like ('*' + $Marker + '*'))
         if ($hasMarker) {
-            $answer = Get-MbStepAnswerJson -Text $region
+            $answer = Get-MbStepAnswerJson -Text $region -AllowEmptySteps:$AllowEmptySteps
             if ($null -ne $answer) {
                 return [pscustomobject]@{ ok = $true; cancelled = $false; completedBy = 'marker'; answer = $answer; tail = '' }
             }
@@ -1259,10 +1310,11 @@ function Wait-MbCopilotResponse {
 
         # マーカーが出ない画面もあるため、生成が止まってから読めるJSONがあれば採用する。
         $generating = Test-MbCopilotGenerating -WsUrl $WsUrl
-        if (-not $generating -and $region.Length -gt 0 -and $region.Length -eq $lastLength) {
+        $meaningfulLength = Get-MbCopilotMeaningfulTextLength -Text $region
+        if (-not $generating -and $meaningfulLength -gt 0 -and $meaningfulLength -eq $lastLength) {
             $idleChecks++
             if ($idleChecks -ge 2) {
-                $answer = Get-MbStepAnswerJson -Text $region
+                $answer = Get-MbStepAnswerJson -Text $region -AllowEmptySteps:$AllowEmptySteps
                 if ($null -ne $answer) {
                     return [pscustomobject]@{ ok = $true; cancelled = $false; completedBy = 'idle'; answer = $answer; tail = '' }
                 }
@@ -1276,7 +1328,7 @@ function Wait-MbCopilotResponse {
         } else {
             $idleChecks = 0
         }
-        $lastLength = $region.Length
+        $lastLength = $meaningfulLength
     }
 
     $tail = ''
@@ -1299,7 +1351,8 @@ function Invoke-MbCopilotRequest {
         [string]$Marker = '',
         [scriptblock]$OnPhase = $null,
         [scriptblock]$ShouldCancel = $null,
-        [scriptblock]$OnWaitProgress = $null
+        [scriptblock]$OnWaitProgress = $null,
+        [switch]$AllowEmptySteps
     )
 
     $report = {
@@ -1337,17 +1390,48 @@ function Invoke-MbCopilotRequest {
     $sent = $false
     $lastError = ''
     while ((Get-Date) -lt $sendDeadline) {
-        try { $null = Invoke-MbClickSend -WsUrl $wsUrl; $sent = $true; break }
-        catch { $lastError = $_.Exception.Message; Start-Sleep -Milliseconds 1000 }
+        try {
+            $null = Invoke-MbClickSend -WsUrl $wsUrl
+            Start-Sleep -Milliseconds 700
+            $inputAfterClick = Get-MbChatInputSnapshot -WsUrl $wsUrl -Settings $Settings
+            if (([string]$inputAfterClick.tail).Contains((Get-MbCopilotPromptTailAnchor))) {
+                # M365 occasionally accepts the synthetic button click without
+                # dispatching the React submit action.  Enter is the same normal
+                # chat submission path; verify again instead of assuming success.
+                $null = Invoke-MbFocusChatInput -WsUrl $wsUrl -Settings $Settings
+                Invoke-MbKeyEvent -WsUrl $wsUrl -Type 'rawKeyDown' -Key 'Enter' -Code 'Enter' -KeyCode 13
+                Invoke-MbKeyEvent -WsUrl $wsUrl -Type 'keyUp' -Key 'Enter' -Code 'Enter' -KeyCode 13
+                Start-Sleep -Milliseconds 700
+                $inputAfterClick = Get-MbChatInputSnapshot -WsUrl $wsUrl -Settings $Settings
+            }
+            if (([string]$inputAfterClick.tail).Contains((Get-MbCopilotPromptTailAnchor))) {
+                throw '送信操作後も依頼文が入力欄に残っています。'
+            }
+            $sent = $true
+            Write-MbCopilotLog 'Copilotの入力欄が空になったことを確認しました。' 'INFO'
+            break
+        } catch { $lastError = $_.Exception.Message; Start-Sleep -Milliseconds 1000 }
     }
     if (-not $sent) { throw ('Copilotへ送信できませんでした: ' + $lastError) }
 
     & $report 'waiting'
     return (Wait-MbCopilotResponse -WsUrl $wsUrl -Settings $Settings -Marker $Marker `
-        -TimeoutSeconds ([int]$Settings.request_timeout) -ShouldCancel $ShouldCancel -OnProgress $OnWaitProgress)
+        -TimeoutSeconds ([int]$Settings.request_timeout) -ShouldCancel $ShouldCancel -OnProgress $OnWaitProgress `
+        -AllowEmptySteps:$AllowEmptySteps)
 }
 
-# 利用者にCopilotの画面を見せる。サインインや様子の確認に使う。
+function Test-MbCopilotWindowBoundsVisible {
+    param([AllowNull()]$Bounds)
+    if ($null -eq $Bounds) { return $false }
+    $state = [string]$Bounds.windowState
+    if ($state -eq 'minimized') { return $false }
+    try {
+        return ([int]$Bounds.width -ge 640 -and [int]$Bounds.height -ge 480 -and
+            [int]$Bounds.left -ge 0 -and [int]$Bounds.top -ge 0)
+    } catch { return $false }
+}
+
+# 利用者にCopilotの画面を見せる。サインイン、起動時の存在確認、様子の確認に使う。
 function Show-MbCopilotWindow {
     param(
         [Parameter(Mandatory = $true)]$Settings,
@@ -1369,6 +1453,22 @@ function Show-MbCopilotWindow {
         # 状態と位置は別々に指定する。まとめて渡すと実装差で失敗することがある。
         $null = Invoke-MbCdpOnSocket -WebSocket $socket -Method 'Browser.setWindowBounds' -Params @{ windowId = $windowId; bounds = @{ windowState = 'normal' } } -TimeoutSeconds 10
         $null = Invoke-MbCdpOnSocket -WebSocket $socket -Method 'Browser.setWindowBounds' -Params @{ windowId = $windowId; bounds = @{ left = 120; top = 120; width = 1280; height = 900 } } -TimeoutSeconds 10
+        # setWindowBoundsだけではウィンドウが背面に残る場合がある。対象タブも明示的に表示する。
+        $null = Invoke-MbCdpMethod -WebSocketUrl ([string]$page.webSocketDebuggerUrl) -Method 'Page.bringToFront' -TimeoutSeconds 10
+        $verified = Invoke-MbCdpOnSocket -WebSocket $socket -Method 'Browser.getWindowBounds' -Params @{ windowId = $windowId } -TimeoutSeconds 10
+        if ($verified.error -or -not (Test-MbCopilotWindowBoundsVisible -Bounds $verified.result.bounds)) {
+            throw 'Copilot用Edgeのウィンドウを画面上に表示できませんでした。'
+        }
+
+        if ((Test-MbCopilotServiceErrorText -Text $region) -and -not (Test-MbCopilotGenerating -WsUrl $WsUrl)) {
+            $tail = $region
+            if ($tail.Length -gt 400) { $tail = $tail.Substring($tail.Length - 400) }
+            return [pscustomobject]@{
+                ok = $false; cancelled = $false; completedBy = 'service-error'; answer = $null
+                tail = $tail; errorCode = 'COPILOT_SERVICE_UNAVAILABLE'; retryable = $false
+            }
+        }
+        Write-MbCopilotLog ("Copilot用Edgeの表示を確認しました: windowId=$windowId state=$([string]$verified.result.bounds.windowState) left=$([int]$verified.result.bounds.left) top=$([int]$verified.result.bounds.top)") 'INFO'
         return $true
     } finally {
         if ($null -ne $socket) { try { $socket.Dispose() } catch { } }
@@ -1399,6 +1499,8 @@ Export-ModuleMember -Function @(
     'Repair-MbJsonText',
     'Get-MbStepAnswerJson',
     'Get-MbCopilotPromptTailAnchor'
+    'Get-MbCopilotMeaningfulTextLength'
+    'Test-MbCopilotServiceErrorText'
     'Test-MbCopilotImageLimitText'
     'Test-MbAttachmentNameMatch'
 )

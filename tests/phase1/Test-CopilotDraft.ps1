@@ -22,10 +22,25 @@ Import-Module (Join-Path $srcRoot 'ManualBuilder.CopilotJob.psm1') -Force
 Import-Module (Join-Path $srcRoot 'ManualBuilder.Ocr.psm1') -Force
 Import-Module (Join-Path $srcRoot 'ManualBuilder.CopilotServer.psm1') -Force
 
+$currentCopilotProcess = Get-Process -Id $PID
+try {
+    $copilotProcessIdentity = & (Get-Module ManualBuilder.CopilotServer) { param($Process) New-MbRecorderCopilotProcessIdentity -Process $Process } $currentCopilotProcess
+    $copilotIdentityMatches = & (Get-Module ManualBuilder.CopilotServer) { param($Identity) Test-MbRecorderCopilotProcessIdentity -Identity $Identity } $copilotProcessIdentity
+    $reusedCopilotIdentity = $copilotProcessIdentity | Select-Object *
+    $reusedCopilotIdentity.ExecutablePath = [string]$reusedCopilotIdentity.ExecutablePath + '.reused'
+    $reusedCopilotIdentityRejected = -not (& (Get-Module ManualBuilder.CopilotServer) { param($Identity) Test-MbRecorderCopilotProcessIdentity -Identity $Identity } $reusedCopilotIdentity)
+    Add-Result ($copilotIdentityMatches -and $reusedCopilotIdentityRejected) `
+        '録画AI workerはPIDだけでなく名前・開始時刻・実行ファイルが一致する所有プロセスだけを扱う'
+} finally { $currentCopilotProcess.Dispose() }
+
 $copilotWorkerText = [IO.File]::ReadAllText((Join-Path $srcRoot 'Invoke-ManualBuilderCopilotJob.ps1'), [Text.Encoding]::UTF8)
 Add-Result ($copilotWorkerText -match '\$maximumAttempts\s*=\s*2' -and
     $copilotWorkerText -match '回答形式を読み取れないため再試行') `
     'Copilotの一時的な空回答を同じパケットで1回だけ再試行する'
+$copilotTransportText = [IO.File]::ReadAllText((Join-Path $srcRoot 'ManualBuilder.Copilot.psm1'), [Text.Encoding]::UTF8)
+Add-Result ($copilotTransportText -match '送信操作後も依頼文が入力欄に残っています' -and
+    $copilotTransportText -match "-Key 'Enter' -Code 'Enter' -KeyCode 13") `
+    '送信後に入力欄が空になったことを検証し、残った場合はEnterで再送する'
 
 # ---------------------------------------------------------------------
 # Copilotの画像利用確認
@@ -48,6 +63,26 @@ $usablePage = & $copilotModule { param($Items) Select-MbCopilotPageCandidate -Ca
 $consentPage = & $copilotModule { param($Items) Select-MbCopilotPageCandidate -Candidates $Items -PreferConsent } $pageCandidates
 Add-Result ([string]$usablePage.page.id -eq 'usable') '通常処理では画像同意に塞がれていないCopilotタブを選ぶ'
 Add-Result ([string]$consentPage.page.id -eq 'blocked') 'Copilot画面を開く操作では画像同意のあるタブを選ぶ'
+$defaultCopilotSettings = Get-MbCopilotDefaultSettings
+Add-Result ([string]$defaultCopilotSettings.browser_display_mode -eq 'foreground') 'アプリ起動時のCopilot用Edgeを画面上に表示する'
+Add-Result ((Get-MbCopilotMeaningfulTextLength -Text ([string]([char]0x200B) + [char]0x200C)) -eq 0) `
+    'Copilot回答前のゼロ幅文字を空回答として待ち続ける'
+Add-Result ((Get-MbCopilotMeaningfulTextLength -Text (([string][char]0x200B) + '{"steps":[]}')) -gt 0) `
+    'ゼロ幅文字を含んでも実際の回答文字は検出する'
+Add-Result (Test-MbCopilotServiceErrorText -Text '申し訳ございません。問題が発生しました。もう一度お試しください。') `
+    'M365の日本語サービスエラーを即時判定する'
+Add-Result (Test-MbCopilotServiceErrorText -Text 'Something went wrong. Please try again.') `
+    'M365の英語サービスエラーを即時判定する'
+Add-Result (-not (Test-MbCopilotServiceErrorText -Text '{"steps":[]}')) `
+    '正常なJSON回答をサービスエラーと誤判定しない'
+$loginTransitionAccepted = & $copilotModule { Test-MbCopilotTransitionUrl -Url 'https://login.microsoftonline.com/common/oauth2/authorize' -CopilotHost 'm365.cloud.microsoft' }
+$unrelatedPageRejected = & $copilotModule { Test-MbCopilotTransitionUrl -Url 'https://www.msn.com/ja-jp/' -CopilotHost 'm365.cloud.microsoft' }
+Add-Result ($loginTransitionAccepted -and -not $unrelatedPageRejected) 'サインイン画面だけをCopilot遷移として認め、無関係なEdgeタブを除外する'
+$visibleBounds = [pscustomobject]@{ windowState = 'normal'; left = 120; top = 120; width = 1280; height = 900 }
+$hiddenBounds = [pscustomobject]@{ windowState = 'minimized'; left = -32000; top = -32000; width = 1280; height = 900 }
+Add-Result ((& $copilotModule { param($Bounds) Test-MbCopilotWindowBoundsVisible -Bounds $Bounds } $visibleBounds) -and
+    -not (& $copilotModule { param($Bounds) Test-MbCopilotWindowBoundsVisible -Bounds $Bounds } $hiddenBounds)) `
+    'Copilot用Edgeが画面上にある場合だけ起動確認を成功にする'
 
 # ---------------------------------------------------------------------
 # 下書きジョブのスナップショット
@@ -311,6 +346,7 @@ Add-Result ($null -ne (Get-MbStepAnswerJson -Text $withTrailingComma)) '末尾�
 Add-Result ($null -eq (Get-MbStepAnswerJson -Text 'お手伝いできません。')) 'JSONが無ければnullになる'
 Add-Result ($null -eq (Get-MbStepAnswerJson -Text '{"result":"ok"}')) 'stepsが無いJSONは採用しない'
 Add-Result ($null -eq (Get-MbStepAnswerJson -Text '{"steps":[]}')) '空のstepsは採用しない'
+Add-Result ($null -ne (Get-MbStepAnswerJson -Text '{"steps":[]}' -AllowEmptySteps)) '操作選択では空のstepsを正常回答として扱える'
 
 $candidates = @(Get-MbJsonObjectCandidates -Text 'a {"x":"}"} b {"y":1}')
 Add-Result (@($candidates).Count -eq 2) '文字列の中の波括弧に惑わされない'

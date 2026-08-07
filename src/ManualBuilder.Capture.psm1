@@ -171,6 +171,8 @@ function Set-MbStepResultImage {
     }
     $previousImageId = [string]$step.resultImageId
     $step.resultImageId = [string]$asset.Image.id
+    $step.resultAnnotations = @()
+    $step.resultCrop = [pscustomobject]@{ x = 0.0; y = 0.0; width = 1.0; height = 1.0 }
     if ([string]$step.imageLayout -eq 'before') { $step.imageLayout = 'side-by-side' }
     $step.updatedAt = [DateTime]::UtcNow.ToString('o')
     $removedPath = Remove-MbUnusedImage -Project $Project -ProjectPath $ProjectPath -ImageId $previousImageId
@@ -187,6 +189,8 @@ function Remove-MbStepResultImage {
     if (-not $step) { throw '対象手順が見つかりません。' }
     $removedImageId = [string]$step.resultImageId
     $step.resultImageId = $null
+    $step.resultAnnotations = @()
+    $step.resultCrop = [pscustomobject]@{ x = 0.0; y = 0.0; width = 1.0; height = 1.0 }
     $step.imageLayout = 'before'
     $step.imageOrder = 'before-after'
     $step.updatedAt = [DateTime]::UtcNow.ToString('o')

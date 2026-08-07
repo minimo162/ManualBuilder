@@ -110,6 +110,24 @@ try {
     Assert-Mb (Test-Path -LiteralPath $restoredPath -PathType Leaf) 'アーカイブから非破壊で復元する'
     Assert-Mb (@(Get-MbProjectCatalog -DataRoot $testRoot -Archived).Count -eq 0) '復元後はアーカイブ一覧から外す'
 
+    $collisionProject = New-MbCatalogProject -DataRoot $testRoot -Title '繰り返し削除テスト'
+    $collisionActiveDirectory = Split-Path -Parent ([string]$collisionProject.Path)
+    $collisionArchivePath = Get-MbCatalogProjectPath -DataRoot $testRoot -ProjectKey ([string]$collisionProject.Key) -Archived
+    [void](New-Item -ItemType Directory -Path (Split-Path -Parent (Split-Path -Parent $collisionArchivePath)) -Force)
+    Copy-Item -LiteralPath $collisionActiveDirectory -Destination (Split-Path -Parent $collisionArchivePath) -Recurse
+    [void](Move-MbCatalogProjectToArchive -DataRoot $testRoot -ProjectKey ([string]$collisionProject.Key))
+    $collisionTrash = @(Get-MbProjectCatalog -DataRoot $testRoot -Archived)
+    Assert-Mb ($collisionTrash.Count -eq 2) '同じIDがごみ箱にあっても古い項目を消さず削除する'
+    Assert-Mb (-not (Test-Path -LiteralPath ([string]$collisionProject.Path) -PathType Leaf)) 'ID衝突時も現行マニュアルを一覧から外す'
+    Assert-Mb (Test-Path -LiteralPath $collisionArchivePath -PathType Leaf) '今回削除した項目を元IDでごみ箱へ移す'
+    [void](Restore-MbCatalogProject -DataRoot $testRoot -ProjectKey ([string]$collisionProject.Key))
+    Assert-Mb (Test-Path -LiteralPath ([string]$collisionProject.Path) -PathType Leaf) 'ID衝突後も今回削除した項目を復元できる'
+
+    $deleteProject = New-MbCatalogProject -DataRoot $testRoot -Title '完全削除テスト'
+    $deletedDirectory = Remove-MbCatalogProject -DataRoot $testRoot -ProjectKey ([string]$deleteProject.Key)
+    Assert-Mb (-not (Test-Path -LiteralPath $deletedDirectory -PathType Container)) 'マニュアルをフォルダーごと完全に削除する'
+    Assert-Mb (-not (Test-Path -LiteralPath ([string]$deleteProject.Path) -PathType Leaf)) '完全削除後にproject.jsonを残さない'
+
     Set-MbLastOpenedProject -DataRoot $testRoot -ProjectKey ([string]$copied.Key)
     $settings = Get-MbWorkspaceSettings -DataRoot $testRoot
     Assert-Mb ([string]$settings.lastOpenedProjectKey -eq [string]$copied.Key) '前回開いたマニュアルを安全に記録する'

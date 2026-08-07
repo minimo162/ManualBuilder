@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "fixtureVersion": "recorder-1.0.0",
+  "evaluationDefaults": {
+    "minimumRunsPerScenario": 1,
+    "recommendedRunsPerScenario": 3,
+    "minimumFrameCount": 8,
+    "minimumCaptureDurationMs": 3000,
+    "maximumEventDistanceMs": 2500,
+    "transitionTitlePatterns": ["読み込み中", "処理中…", "Loading", "Please wait"]
+  },
+  "requiredArtifacts": [
+    "status.json",
+    "result.json",
+    "frames.jsonl",
+    "events.jsonl",
+    "copilot.log",
+    "frames/*.jpg"
+  ],
+  "scenarios": [
+    {
+      "id": "edge-excel-order-transfer",
+      "title": "Edgeで受注を検索しExcelへ転記",
+      "captureProvenance": "manualbuilder-recorder-real-gui",
+      "source": {
+        "script": "tests/manual/Invoke-RecorderCopilotScenario.ps1",
+        "fixture": "tests/fixtures/recorder-realistic.html"
+      },
+      "instructions": [
+        "顧客コードへC-1042を入力する",
+        "注文状態で処理中を選ぶ",
+        "検索する",
+        "詳細を表示する",
+        "ExcelのB2へ1200、B3へ350、B4へreadyを入力する"
+      ],
+      "forbiddenClaims": ["Excelを開く", "Edgeを開く", "アプリを切り替", "ManualBuilderタブ", "記録を停止"],
+      "steps": [
+        {"order": 1, "app": "edge", "requiredConcepts": ["顧客コード", "入力"], "exactTokens": ["C-1042"], "eventKinds": ["input"], "targetRequired": true, "afterRequired": false},
+        {"order": 2, "app": "edge", "requiredConcepts": ["状態", "選択"], "exactTokens": ["処理中"], "eventKinds": ["click", "input"], "targetRequired": true, "afterRequired": false},
+        {"order": 3, "app": "edge", "requiredConcepts": ["検索"], "exactTokens": [], "eventKinds": ["click"], "targetRequired": true, "afterRequired": true},
+        {"order": 4, "app": "edge", "requiredConcepts": ["詳細", "表示"], "exactTokens": [], "eventKinds": ["click"], "targetRequired": true, "afterRequired": true},
+        {"order": 5, "app": "excel", "requiredConcepts": ["B2", "入力"], "exactTokens": ["1200"], "eventKinds": ["click", "input"], "targetRequired": true, "afterRequired": false},
+        {"order": 6, "app": "excel", "requiredConcepts": ["B3", "入力"], "exactTokens": ["350"], "eventKinds": ["click", "input"], "targetRequired": true, "afterRequired": false},
+        {"order": 7, "app": "excel", "requiredConcepts": ["B4", "入力"], "exactTokens": ["ready"], "forbiddenExactTokens": ["Ready", "READY"], "eventKinds": ["click", "input"], "targetRequired": true, "afterRequired": false}
+      ]
+    },
+    {
+      "id": "excel-multi-operation",
+      "title": "Excelで複数セル入力・数式・表示形式を操作",
+      "captureProvenance": "manualbuilder-recorder-real-gui",
+      "source": {"script": "tests/manual/Invoke-RecorderCopilotScenario.ps1", "application": "Microsoft Excel", "workbookSetup": "A1:B4の商品別売上表"},
+      "instructions": [
+        "B2へ1200を入力する",
+        "B3へ350を入力する",
+        "B4へ=SUM(B2:B3)を入力する",
+        "B2:B4を選択する",
+        "ホームの通貨表示形式を適用する"
+      ],
+      "forbiddenClaims": ["Excelを開く", "アプリを切り替", "ManualBuilder", "シートを削除"],
+      "steps": [
+        {"order": 1, "app": "excel", "requiredConcepts": ["B2", "入力"], "exactTokens": ["1200"], "eventKinds": ["click", "input"], "targetRequired": true, "afterRequired": false},
+        {"order": 2, "app": "excel", "requiredConcepts": ["B3", "入力"], "exactTokens": ["350"], "eventKinds": ["click", "input"], "targetRequired": true, "afterRequired": false},
+        {"order": 3, "app": "excel", "requiredConcepts": ["B4", "入力"], "exactTokens": ["SUM", "B2:B3"], "eventKinds": ["click", "input"], "targetRequired": true, "afterRequired": true},
+        {"order": 4, "app": "excel", "requiredConcepts": ["B2", "B4", "選択"], "exactTokens": [], "eventKinds": ["click", "drag"], "targetRequired": true, "afterRequired": false},
+        {"order": 5, "app": "excel", "requiredConcepts": ["通貨", "表示形式"], "exactTokens": [], "eventKinds": ["click"], "targetRequired": true, "afterRequired": true}
+      ]
+    },
+    {
+      "id": "edge-delayed-transition",
+      "title": "Edgeの遅延遷移を除いて検索・詳細・復帰を記録",
+      "captureProvenance": "manualbuilder-recorder-real-gui",
+      "source": {"script": "tests/manual/Invoke-RecorderCopilotScenario.ps1", "fixture": "tests/fixtures/recorder-delayed.html"},
+      "instructions": [
+        "注文番号ORD-2026-0817を入力する",
+        "検索し、読み込み完了後の結果を確認する",
+        "詳細を表示し、読み込み完了後の詳細を確認する",
+        "一覧へ戻る"
+      ],
+      "transitionTitlePatterns": ["読み込み中", "詳細を読み込み中"],
+      "forbiddenClaims": ["読み込み中をクリック", "スピナー", "Edgeを開く", "ManualBuilder", "記録を停止"],
+      "steps": [
+        {"order": 1, "app": "edge", "requiredConcepts": ["注文番号", "入力"], "exactTokens": ["ORD-2026-0817"], "eventKinds": ["input"], "targetRequired": true, "afterRequired": false},
+        {"order": 2, "app": "edge", "requiredConcepts": ["検索"], "exactTokens": [], "eventKinds": ["click"], "targetRequired": true, "afterRequired": true},
+        {"order": 3, "app": "edge", "requiredConcepts": ["詳細", "表示"], "exactTokens": [], "eventKinds": ["click"], "targetRequired": true, "afterRequired": true},
+        {"order": 4, "app": "edge", "requiredConcepts": ["一覧", "戻"], "exactTokens": [], "eventKinds": ["click"], "targetRequired": true, "afterRequired": true}
+      ]
+    }
+  ]
+}

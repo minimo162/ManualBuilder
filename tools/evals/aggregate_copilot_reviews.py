@@ -71,12 +71,21 @@ def validate_count(value: Any, name: str) -> int:
 
 
 def validate_machine(machine: dict[str, Any]) -> dict[str, Any]:
+    fixture_version = machine.get("fixtureVersion")
+    require(isinstance(fixture_version, str) and bool(fixture_version.strip()),
+            "machine.fixtureVersion が必要です。")
     require(machine.get("evaluationScope") is not None and isinstance(machine["evaluationScope"], dict),
             "machine.evaluationScope が必要です。")
     scenarios = machine.get("scenarios")
     require(isinstance(scenarios, list) and len(scenarios) > 0, "machine.scenarios が必要です。")
+    declared_scenario_count = machine["evaluationScope"].get("scenarioCount")
+    require(isinstance(declared_scenario_count, int) and not isinstance(declared_scenario_count, bool),
+            "machine.evaluationScope.scenarioCount は整数である必要があります。")
+    require(declared_scenario_count == len(scenarios),
+            "machine.evaluationScope.scenarioCount と machine.scenarios の件数が一致しません。")
 
     scenario_ids: list[str] = []
+    scenario_metrics: dict[str, dict[str, int]] = {}
     for index, scenario in enumerate(scenarios):
         require(isinstance(scenario, dict), f"machine.scenarios[{index}] はオブジェクトである必要があります。")
         scenario_id = scenario.get("id")
@@ -84,6 +93,51 @@ def validate_machine(machine: dict[str, Any]) -> dict[str, Any]:
                 f"machine.scenarios[{index}].id が必要です。")
         require(scenario_id not in scenario_ids, f"machine.scenarios のidが重複しています: {scenario_id}")
         scenario_ids.append(scenario_id)
+        expected = validate_count(scenario.get("expectedSceneCount"),
+                                  f"machine.scenarios[{index}].expectedSceneCount")
+        actual = validate_count(scenario.get("actualSceneCount"),
+                                f"machine.scenarios[{index}].actualSceneCount")
+        rect_total = validate_count(scenario.get("rectTotal"), f"machine.scenarios[{index}].rectTotal")
+        rect_hits = validate_count(scenario.get("top4RectHits"), f"machine.scenarios[{index}].top4RectHits")
+        require(rect_hits <= rect_total,
+                f"machine.scenarios[{index}].top4RectHits がrectTotalを超えています。")
+        scenario_metrics[scenario_id] = {
+            "expected": expected, "actual": actual,
+            "rectsPassing": rect_hits, "rectsEvaluated": rect_total,
+        }
+
+    runs = machine.get("runs")
+    require(isinstance(runs, list) and len(runs) > 0,
+            "machine.runs にCopilot実行ごとの証拠が必要です。")
+    run_ids: set[str] = set()
+    run_expected_by_scenario = {scenario_id: 0 for scenario_id in scenario_ids}
+    run_actual_by_scenario = {scenario_id: 0 for scenario_id in scenario_ids}
+    completed_runs = draft_count_passes = 0
+    packet_failures = 0
+    for index, run in enumerate(runs):
+        prefix = f"machine.runs[{index}]"
+        require(isinstance(run, dict), f"{prefix} はオブジェクトである必要があります。")
+        run_id = run.get("id")
+        require(isinstance(run_id, str) and bool(run_id.strip()), f"{prefix}.id が必要です。")
+        require(run_id not in run_ids, f"machine.runs のidが重複しています: {run_id}")
+        run_ids.add(run_id)
+        scenario_id = run.get("scenarioId")
+        require(scenario_id in scenario_metrics, f"{prefix}.scenarioId がmachine.scenariosに存在しません。")
+        require(isinstance(run.get("state"), str), f"{prefix}.state が必要です。")
+        expected = validate_count(run.get("expectedDraftCount"), f"{prefix}.expectedDraftCount")
+        actual = validate_count(run.get("actualDraftCount"), f"{prefix}.actualDraftCount")
+        failures = validate_count(run.get("failureCount"), f"{prefix}.failureCount")
+        run_expected_by_scenario[scenario_id] += expected
+        run_actual_by_scenario[scenario_id] += actual
+        completed_runs += int(run["state"] == "completed")
+        draft_count_passes += int(actual == expected)
+        packet_failures += failures
+
+    for scenario_id in scenario_ids:
+        require(run_expected_by_scenario[scenario_id] == scenario_metrics[scenario_id]["expected"],
+                f"{scenario_id} の実行証拠とexpectedSceneCountが一致しません。")
+        require(run_actual_by_scenario[scenario_id] == scenario_metrics[scenario_id]["actual"],
+                f"{scenario_id} の実行証拠とactualSceneCountが一致しません。")
 
     count_fields = (
         "sceneCountPasses",
@@ -96,7 +150,8 @@ def validate_machine(machine: dict[str, Any]) -> dict[str, Any]:
         "noRectFalsePositives",
     )
     counts = {name: validate_count(machine.get(name), f"machine.{name}") for name in count_fields}
-    require(counts["sceneCountTotal"] > 0, "machine.sceneCountTotal は1以上である必要があります。")
+    require(counts["sceneCountTotal"] == len(runs),
+            "machine.sceneCountTotal はCopilot実行数と一致する必要があります。")
     require(counts["sceneCountPasses"] <= counts["sceneCountTotal"], "sceneCountPasses が総数を超えています。")
     require(counts["representativeTimeHits"] <= counts["representativeTimeTotal"],
             "representativeTimeHits が総数を超えています。")
@@ -109,9 +164,16 @@ def validate_machine(machine: dict[str, Any]) -> dict[str, Any]:
         "representativeTimes": counts["representativeTimeHits"] == counts["representativeTimeTotal"],
         "rectCandidateRecallAt4": counts["top4RectHits"] == counts["rectTotal"],
         "noRectFalsePositives": counts["noRectFalsePositives"] == 0,
+        "completedRuns": completed_runs == len(runs),
+        "draftCounts": draft_count_passes == len(runs),
+        "packetFailures": packet_failures == 0,
     }
     metrics = {
         **counts,
+        "runCount": len(runs),
+        "completedRunCount": completed_runs,
+        "draftCountPasses": draft_count_passes,
+        "packetFailureCount": packet_failures,
         "sceneCountPassRate": counts["sceneCountPasses"] / counts["sceneCountTotal"],
         "representativeTimeHitRate": (
             counts["representativeTimeHits"] / counts["representativeTimeTotal"]
@@ -123,7 +185,14 @@ def validate_machine(machine: dict[str, Any]) -> dict[str, Any]:
             if counts["noRectSceneTotal"] else None
         ),
     }
-    return {"scenarioIds": scenario_ids, "checks": checks, "metrics": metrics, "pass": all(checks.values())}
+    return {
+        "fixtureVersion": fixture_version,
+        "scenarioIds": scenario_ids,
+        "scenarioMetrics": scenario_metrics,
+        "checks": checks,
+        "metrics": metrics,
+        "pass": all(checks.values()),
+    }
 
 
 def validate_string_list(value: Any, name: str) -> list[str]:
@@ -132,7 +201,8 @@ def validate_string_list(value: Any, name: str) -> list[str]:
     return value
 
 
-def validate_review(review: dict[str, Any], label: str, expected_scenarios: list[str]) -> dict[str, Any]:
+def validate_review(review: dict[str, Any], label: str,
+                    expected_scenarios: list[str], machine_scenarios: dict[str, dict[str, int]]) -> dict[str, Any]:
     unexpected = set(review) - REVIEW_TOP_LEVEL_KEYS
     prohibited = set(review) & PROHIBITED_REVIEW_CONTEXT
     require(not prohibited,
@@ -173,6 +243,19 @@ def validate_review(review: dict[str, Any], label: str, expected_scenarios: list
             require(is_number(value) and 0 <= value <= 1, f"{prefix}.sceneMetrics.{name} は0から1である必要があります。")
         require(isinstance(metrics.get("orderCorrect"), bool),
                 f"{prefix}.sceneMetrics.orderCorrect は真偽値である必要があります。")
+        machine_metrics = machine_scenarios[scenario_id]
+        for review_name, machine_name in (
+            ("expected", "expected"), ("actual", "actual"),
+            ("rectsPassing", "rectsPassing"), ("rectsEvaluated", "rectsEvaluated"),
+        ):
+            require(metrics[review_name] == machine_metrics[machine_name],
+                    f"{prefix}.sceneMetrics.{review_name} が機械評価の実数と一致しません。")
+        expected_precision = metrics["matched"] / metrics["actual"] if metrics["actual"] else 0.0
+        expected_recall = metrics["matched"] / metrics["expected"] if metrics["expected"] else 0.0
+        require(math.isclose(float(metrics["precision"]), expected_precision, abs_tol=1e-6),
+                f"{prefix}.sceneMetrics.precision がmatched/actualと一致しません。")
+        require(math.isclose(float(metrics["recall"]), expected_recall, abs_tol=1e-6),
+                f"{prefix}.sceneMetrics.recall がmatched/expectedと一致しません。")
 
         for name in ("criticalFactualErrors", "missingConcepts", "unsupportedClaims", "goldIssues"):
             validate_string_list(item.get(name), f"{prefix}.{name}")
@@ -192,6 +275,10 @@ def validate_review(review: dict[str, Any], label: str, expected_scenarios: list
             require(score >= 4, f"{prefix}.pass=true では文章点4以上が必要です。")
             require(len(item["criticalFactualErrors"]) == 0,
                     f"{prefix}.pass=true では重大な事実誤認を記録できません。")
+            require(metrics["precision"] == 1 and metrics["recall"] == 1 and metrics["orderCorrect"],
+                    f"{prefix}.pass=true では全場面の一致と正しい順序が必要です。")
+            require(metrics["rectsPassing"] == metrics["rectsEvaluated"],
+                    f"{prefix}.pass=true では全操作矩形が合格する必要があります。")
         parsed[scenario_id] = item
 
     missing = [scenario_id for scenario_id in expected_scenarios if scenario_id not in parsed]
@@ -205,10 +292,12 @@ def validate_review(review: dict[str, Any], label: str, expected_scenarios: list
 
 def aggregate(machine: dict[str, Any], review_a: dict[str, Any], review_b: dict[str, Any]) -> dict[str, Any]:
     machine_result = validate_machine(machine)
-    a = validate_review(review_a, "reviewerA", machine_result["scenarioIds"])
-    b = validate_review(review_b, "reviewerB", machine_result["scenarioIds"])
+    a = validate_review(review_a, "reviewerA", machine_result["scenarioIds"], machine_result["scenarioMetrics"])
+    b = validate_review(review_b, "reviewerB", machine_result["scenarioIds"], machine_result["scenarioMetrics"])
     require(a["reviewerId"] != b["reviewerId"], "reviewerAとreviewerBのreviewerIdは別である必要があります。")
     require(a["fixtureVersion"] == b["fixtureVersion"], "reviewer間でfixtureVersionが一致しません。")
+    require(a["fixtureVersion"] == machine_result["fixtureVersion"],
+            "reviewerとmachineでfixtureVersionが一致しません。")
 
     disagreements: list[dict[str, Any]] = []
     scenario_results: list[dict[str, Any]] = []

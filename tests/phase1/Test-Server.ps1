@@ -29,7 +29,7 @@ try {
         '-Port', $Port,
         '-ProjectPath', ('"' + $projectPath + '"'),
         '-DisableScreenshotWatcher',
-        '-NoBrowser'
+        '-NoBrowser', '-SkipCopilotWarmup', '-AllowParallelTestInstance'
     )
     $child = Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
 

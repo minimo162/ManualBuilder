@@ -180,6 +180,7 @@ function Invoke-MbDictationLoop {
     param(
         [Parameter(Mandatory = $true)][string]$OutputPath,
         [Parameter(Mandatory = $true)][string]$StopPath,
+        [AllowEmptyString()][string]$PausePath = '',
         [Parameter(Mandatory = $true)][long]$StartedAtUtcTicks,
         [int]$MaxPhrases = 2000
     )
@@ -193,6 +194,11 @@ function Invoke-MbDictationLoop {
     try {
         while ($count -lt $MaxPhrases) {
             if (Test-Path -LiteralPath $StopPath -PathType Leaf) { break }
+            if (-not [string]::IsNullOrWhiteSpace($PausePath) -and
+                (Test-Path -LiteralPath $PausePath -PathType Leaf)) {
+                Start-Sleep -Milliseconds 200
+                continue
+            }
 
             $result = $null
             try {
@@ -204,6 +210,9 @@ function Invoke-MbDictationLoop {
                 continue
             }
             if ($null -eq $result) { continue }
+            # 認識待ちの途中で一時停止された発話は、操作ログと対応しないため保存しない。
+            if (-not [string]::IsNullOrWhiteSpace($PausePath) -and
+                (Test-Path -LiteralPath $PausePath -PathType Leaf)) { continue }
 
             # 認識できなかった発話は捨てる。誤った文をCopilotへ渡すより空のほうがよい。
             $status = ''

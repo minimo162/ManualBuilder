@@ -8,6 +8,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$OutputPath,
     [Parameter(Mandatory = $true)][string]$StopPath,
+    [Parameter(Mandatory = $true)][string]$PausePath,
     [Parameter(Mandatory = $true)][string]$StatusPath,
     [Parameter(Mandatory = $true)][long]$StartedAtUtcTicks
 )
@@ -32,7 +33,8 @@ function Write-MbDictationStatus {
 
 try {
     Write-MbDictationStatus -State 'listening' -Message '音声を聞き取っています'
-    $count = Invoke-MbDictationLoop -OutputPath $OutputPath -StopPath $StopPath -StartedAtUtcTicks $StartedAtUtcTicks
+    $count = Invoke-MbDictationLoop -OutputPath $OutputPath -StopPath $StopPath -PausePath $PausePath `
+        -StartedAtUtcTicks $StartedAtUtcTicks
     Write-MbDictationStatus -State 'completed' -Count ([int]$count) -Message ("$count 件の発話を文字にしました")
     exit 0
 } catch {
