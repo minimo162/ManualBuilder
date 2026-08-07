@@ -71,6 +71,8 @@ function New-MbStep {
         videoId     = $null
         annotations = @()
         crop        = [pscustomobject]@{ x = 0.0; y = 0.0; width = 1.0; height = 1.0 }
+        resultAnnotations = @()
+        resultCrop = [pscustomobject]@{ x = 0.0; y = 0.0; width = 1.0; height = 1.0 }
         capture     = New-MbStepCapture
         review      = New-MbStepReview
         createdAt   = $now
@@ -163,13 +165,19 @@ function Repair-MbProject {
             Add-MbPropertyIfMissing $step 'videoId' $null
             Add-MbPropertyIfMissing $step 'annotations' @()
             Add-MbPropertyIfMissing $step 'crop' ([pscustomobject]@{ x = 0.0; y = 0.0; width = 1.0; height = 1.0 })
+            Add-MbPropertyIfMissing $step 'resultAnnotations' @()
+            Add-MbPropertyIfMissing $step 'resultCrop' ([pscustomobject]@{ x = 0.0; y = 0.0; width = 1.0; height = 1.0 })
             Add-MbPropertyIfMissing $step 'capture' (New-MbStepCapture)
             Add-MbPropertyIfMissing $step 'review' (New-MbStepReview)
             Add-MbPropertyIfMissing $step 'createdAt' (Get-MbUtcTimestamp)
             Add-MbPropertyIfMissing $step 'updatedAt' (Get-MbUtcTimestamp)
             $step.annotations = @($step.annotations)
+            $step.resultAnnotations = @($step.resultAnnotations)
             if ($null -eq $step.crop) {
                 $step.crop = [pscustomobject]@{ x = 0.0; y = 0.0; width = 1.0; height = 1.0 }
+            }
+            if ($null -eq $step.resultCrop) {
+                $step.resultCrop = [pscustomobject]@{ x = 0.0; y = 0.0; width = 1.0; height = 1.0 }
             }
             if ($null -eq $step.capture) {
                 $step.capture = New-MbStepCapture
@@ -249,41 +257,46 @@ function Test-MbProject {
             } elseif (-not [string]::IsNullOrWhiteSpace([string]$step.review.action)) {
                 throw '確認済み手順に要確認の操作が残っています。'
             }
-            foreach ($cropProperty in @('x', 'y', 'width', 'height')) {
-                if ($step.crop.PSObject.Properties.Name -notcontains $cropProperty) { throw '切り抜き範囲が不足しています。' }
-                $cropValue = [double]$step.crop.$cropProperty
-                if ([double]::IsNaN($cropValue) -or [double]::IsInfinity($cropValue)) { throw '切り抜き範囲が不正です。' }
-            }
-            $cropX = [double]$step.crop.x
-            $cropY = [double]$step.crop.y
-            $cropWidth = [double]$step.crop.width
-            $cropHeight = [double]$step.crop.height
-            if ($cropX -lt 0 -or $cropY -lt 0 -or $cropWidth -lt 0.05 -or $cropHeight -lt 0.05 -or
-                $cropX -gt 0.95 -or $cropY -gt 0.95 -or ($cropX + $cropWidth) -gt 1.000001 -or ($cropY + $cropHeight) -gt 1.000001) {
-                throw '切り抜き範囲が画像の外です。'
-            }
-            if (@($step.annotations).Count -gt 100) { throw '1手順の注釈は100件までです。' }
-            $annotationIds = New-Object 'System.Collections.Generic.HashSet[string]'
-            foreach ($annotation in @($step.annotations)) {
-                # StrictMode下で生の英語例外にならないよう、必須プロパティの存在を先に確かめる。
-                $annotationProperties = @()
-                if ($null -ne $annotation) { $annotationProperties = @($annotation.PSObject.Properties.Name) }
-                if (($annotationProperties -notcontains 'id') -or ($annotationProperties -notcontains 'type')) {
-                    throw '注釈データの形式が不正です。'
+            foreach ($imageEdits in @(
+                [pscustomobject]@{ crop = $step.crop; annotations = @($step.annotations) },
+                [pscustomobject]@{ crop = $step.resultCrop; annotations = @($step.resultAnnotations) }
+            )) {
+                foreach ($cropProperty in @('x', 'y', 'width', 'height')) {
+                    if ($imageEdits.crop.PSObject.Properties.Name -notcontains $cropProperty) { throw '切り抜き範囲が不足しています。' }
+                    $cropValue = [double]$imageEdits.crop.$cropProperty
+                    if ([double]::IsNaN($cropValue) -or [double]::IsInfinity($cropValue)) { throw '切り抜き範囲が不正です。' }
                 }
-                if ([string]$annotation.id -notmatch '^annotation-[a-f0-9]{32}$') { throw '注釈IDの形式が不正です。' }
-                if (-not $annotationIds.Add([string]$annotation.id)) { throw '注釈IDが重複しています。' }
-                if ([string]$annotation.type -notin @('rect', 'arrow', 'number', 'blackout')) { throw '注釈種類が不正です。' }
-                foreach ($coordinate in @('x1', 'y1', 'x2', 'y2')) {
-                    if ($annotation.PSObject.Properties.Name -notcontains $coordinate) { throw '注釈座標が不足しています。' }
-                    $value = [double]$annotation.$coordinate
-                    if ([double]::IsNaN($value) -or [double]::IsInfinity($value) -or $value -lt 0 -or $value -gt 1) {
-                        throw '注釈座標が範囲外です。'
+                $cropX = [double]$imageEdits.crop.x
+                $cropY = [double]$imageEdits.crop.y
+                $cropWidth = [double]$imageEdits.crop.width
+                $cropHeight = [double]$imageEdits.crop.height
+                if ($cropX -lt 0 -or $cropY -lt 0 -or $cropWidth -lt 0.05 -or $cropHeight -lt 0.05 -or
+                    $cropX -gt 0.95 -or $cropY -gt 0.95 -or ($cropX + $cropWidth) -gt 1.000001 -or ($cropY + $cropHeight) -gt 1.000001) {
+                    throw '切り抜き範囲が画像の外です。'
+                }
+                if (@($imageEdits.annotations).Count -gt 100) { throw '1枚の画像の注釈は100件までです。' }
+                $annotationIds = New-Object 'System.Collections.Generic.HashSet[string]'
+                foreach ($annotation in @($imageEdits.annotations)) {
+                    # StrictMode下で生の英語例外にならないよう、必須プロパティの存在を先に確かめる。
+                    $annotationProperties = @()
+                    if ($null -ne $annotation) { $annotationProperties = @($annotation.PSObject.Properties.Name) }
+                    if (($annotationProperties -notcontains 'id') -or ($annotationProperties -notcontains 'type')) {
+                        throw '注釈データの形式が不正です。'
                     }
+                    if ([string]$annotation.id -notmatch '^annotation-[a-f0-9]{32}$') { throw '注釈IDの形式が不正です。' }
+                    if (-not $annotationIds.Add([string]$annotation.id)) { throw '注釈IDが重複しています。' }
+                    if ([string]$annotation.type -notin @('rect', 'arrow', 'number', 'blackout')) { throw '注釈種類が不正です。' }
+                    foreach ($coordinate in @('x1', 'y1', 'x2', 'y2')) {
+                        if ($annotation.PSObject.Properties.Name -notcontains $coordinate) { throw '注釈座標が不足しています。' }
+                        $value = [double]$annotation.$coordinate
+                        if ([double]::IsNaN($value) -or [double]::IsInfinity($value) -or $value -lt 0 -or $value -gt 1) {
+                            throw '注釈座標が範囲外です。'
+                        }
+                    }
+                    $label = if ($annotationProperties -contains 'label') { [int]$annotation.label } else { 0 }
+                    if ([string]$annotation.type -eq 'number' -and ($label -lt 1 -or $label -gt 99)) { throw '番号注釈は1〜99です。' }
+                    if ([string]$annotation.type -ne 'number' -and $label -ne 0) { throw '番号以外の注釈ラベルが不正です。' }
                 }
-                $label = if ($annotationProperties -contains 'label') { [int]$annotation.label } else { 0 }
-                if ([string]$annotation.type -eq 'number' -and ($label -lt 1 -or $label -gt 99)) { throw '番号注釈は1〜99です。' }
-                if ([string]$annotation.type -ne 'number' -and $label -ne 0) { throw '番号以外の注釈ラベルが不正です。' }
             }
             if ($step.imageId) { [void]$referencedImageIds.Add([string]$step.imageId) }
             if ($step.resultImageId) { [void]$referencedImageIds.Add([string]$step.resultImageId) }
@@ -967,17 +980,19 @@ function Set-MbStepAnnotations {
     param(
         [Parameter(Mandatory = $true)][object]$Project,
         [Parameter(Mandatory = $true)][string]$StepId,
-        [AllowEmptyString()][string]$AnnotationsJson
+        [AllowEmptyString()][string]$AnnotationsJson,
+        [ValidateSet('before', 'result')][string]$Target = 'before'
     )
 
     if ($AnnotationsJson.Length -gt 100000) { throw '注釈データが大きすぎます。' }
-    $target = $null
+    $targetStep = $null
     foreach ($sheet in @($Project.sheets)) {
-        $target = @($sheet.steps | Where-Object { $_.id -eq $StepId }) | Select-Object -First 1
-        if ($target) { break }
+        $targetStep = @($sheet.steps | Where-Object { $_.id -eq $StepId }) | Select-Object -First 1
+        if ($targetStep) { break }
     }
-    if (-not $target) { throw '対象手順が見つかりません。' }
-    if (-not $target.imageId) { throw '画像のない手順には注釈を保存できません。' }
+    if (-not $targetStep) { throw '対象手順が見つかりません。' }
+    $targetImageId = if ($Target -eq 'result') { [string]$targetStep.resultImageId } else { [string]$targetStep.imageId }
+    if ([string]::IsNullOrWhiteSpace($targetImageId)) { throw '画像のない手順には注釈を保存できません。' }
 
     try {
         $parsed = if ([string]::IsNullOrWhiteSpace($AnnotationsJson)) { @() } else { @($AnnotationsJson | ConvertFrom-Json) }
@@ -1021,8 +1036,9 @@ function Set-MbStepAnnotations {
             label = $label
         })
     }
-    $target.annotations = @($normalized)
-    $target.updatedAt = Get-MbUtcTimestamp
+    if ($Target -eq 'result') { $targetStep.resultAnnotations = @($normalized) }
+    else { $targetStep.annotations = @($normalized) }
+    $targetStep.updatedAt = Get-MbUtcTimestamp
 }
 
 function Set-MbStepImageEdits {
@@ -1030,7 +1046,8 @@ function Set-MbStepImageEdits {
         [Parameter(Mandatory = $true)][object]$Project,
         [Parameter(Mandatory = $true)][string]$StepId,
         [AllowEmptyString()][string]$AnnotationsJson,
-        [AllowEmptyString()][string]$CropJson
+        [AllowEmptyString()][string]$CropJson,
+        [ValidateSet('before', 'result')][string]$Target = 'before'
     )
 
     if ($CropJson.Length -gt 1000) { throw '切り抜きデータが大きすぎます。' }
@@ -1058,20 +1075,22 @@ function Set-MbStepImageEdits {
         throw '切り抜き範囲が画像の外です。'
     }
 
-    Set-MbStepAnnotations -Project $Project -StepId $StepId -AnnotationsJson $AnnotationsJson
-    $target = $null
+    Set-MbStepAnnotations -Project $Project -StepId $StepId -AnnotationsJson $AnnotationsJson -Target $Target
+    $targetStep = $null
     foreach ($sheet in @($Project.sheets)) {
-        $target = @($sheet.steps | Where-Object { $_.id -eq $StepId }) | Select-Object -First 1
-        if ($target) { break }
+        $targetStep = @($sheet.steps | Where-Object { $_.id -eq $StepId }) | Select-Object -First 1
+        if ($targetStep) { break }
     }
-    if (-not $target) { throw '対象手順が見つかりません。' }
-    $target.crop = [pscustomobject]@{
+    if (-not $targetStep) { throw '対象手順が見つかりません。' }
+    $normalizedValue = [pscustomobject]@{
         x      = [double]$normalizedCrop.x
         y      = [double]$normalizedCrop.y
         width  = [double]$normalizedCrop.width
         height = [double]$normalizedCrop.height
     }
-    $target.updatedAt = Get-MbUtcTimestamp
+    if ($Target -eq 'result') { $targetStep.resultCrop = $normalizedValue }
+    else { $targetStep.crop = $normalizedValue }
+    $targetStep.updatedAt = Get-MbUtcTimestamp
 }
 
 function Remove-MbStep {

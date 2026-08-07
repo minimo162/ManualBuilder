@@ -401,7 +401,10 @@ function Invoke-MbWordExport {
                 Move-MbWordSelectionToEnd $selection $document
                 Set-MbWordStyle $selection $document -3
                 $selection.ParagraphFormat.Alignment = 0
-                $selection.ParagraphFormat.PageBreakBefore = $false
+                # A step is the smallest reviewable manual unit.  Starting every
+                # subsequent step on a new page prevents its heading/description
+                # from being stranded below the preceding step's image.
+                $selection.ParagraphFormat.PageBreakBefore = ($stepIndex -gt 0)
                 $selection.TypeText($stepHeadingText)
                 $stepHeading = $null
                 try { $stepHeading = $selection.Paragraphs.Item(1); $stepHeading.KeepWithNext = $true } finally { Release-MbWordComObject $stepHeading }
@@ -424,6 +427,12 @@ function Invoke-MbWordExport {
                     if (-not $resultPath -or -not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
                         throw "操作後の結果画像が見つかりません: $($step.resultImageId)"
                     }
+                    $resultRenderedPath = Join-Path $renderDirectory ("word-result-{0:d4}.png" -f $globalStep)
+                    $resultAnnotations = if ($step.PSObject.Properties.Name -contains 'resultAnnotations') { @($step.resultAnnotations) } else { @() }
+                    $resultCrop = if ($step.PSObject.Properties.Name -contains 'resultCrop') { $step.resultCrop } else { $null }
+                    $resultPath = New-MbAnnotatedImage -SourcePath $resultPath -Annotations $resultAnnotations -Crop $resultCrop `
+                        -DestinationPath $resultRenderedPath -TargetDisplayWidth 600 -TargetDisplayHeight 680 -NumberFontName $fontName
+                    if ($resultPath -eq $resultRenderedPath) { [void]$generatedImages.Add($resultRenderedPath) }
                 }
                 if (-not [string]::IsNullOrWhiteSpace([string]$step.imageId)) {
                     $sourcePath = Get-MbImageFilePath -Project $Project -ProjectPath $ProjectPath -ImageId ([string]$step.imageId)

@@ -11,10 +11,58 @@ Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Project.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Capture.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Recorder.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Dictation.psm1')
+Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.LocalDraft.psm1')
+Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.RecorderCopilot.psm1')
 
 $script:MbRecordingJobsRoot = ''
 $script:MbRecordingScriptRoot = ''
 $script:MbRecordingJob = $null
+
+function New-MbRecorderProcessIdentity {
+    param([Parameter(Mandatory = $true)]$Process)
+    try {
+        return [pscustomobject]@{
+            Id = [int]$Process.Id
+            ProcessName = [string]$Process.ProcessName
+            StartTimeUtcTicks = [int64]$Process.StartTime.ToUniversalTime().Ticks
+            ExecutablePath = [string]$Process.Path
+        }
+    } catch { return $null }
+}
+
+function Test-MbRecorderProcessIdentity {
+    param([AllowNull()]$Identity)
+    if ($null -eq $Identity -or [int]$Identity.Id -le 0 -or
+        [string]::IsNullOrWhiteSpace([string]$Identity.ProcessName) -or
+        [int64]$Identity.StartTimeUtcTicks -le 0 -or
+        [string]::IsNullOrWhiteSpace([string]$Identity.ExecutablePath)) { return $false }
+    $process = $null
+    try {
+        $process = Get-Process -Id ([int]$Identity.Id) -ErrorAction Stop
+        return ([string]$process.ProcessName -eq [string]$Identity.ProcessName -and
+            [int64]$process.StartTime.ToUniversalTime().Ticks -eq [int64]$Identity.StartTimeUtcTicks -and
+            [string]::Equals([string]$process.Path, [string]$Identity.ExecutablePath, [StringComparison]::OrdinalIgnoreCase))
+    } catch { return $false }
+    finally { if ($null -ne $process) { try { $process.Dispose() } catch { } } }
+}
+
+function Stop-MbRecorderOwnedProcess {
+    param([AllowNull()]$Identity)
+    if ($null -eq $Identity -or [int]$Identity.Id -le 0) { return $false }
+    $process = $null
+    try {
+        $process = Get-Process -Id ([int]$Identity.Id) -ErrorAction Stop
+        # 所有確認とKillを同じProcessオブジェクト上で行い、その間のPID再利用余地を作らない。
+        if ([string]$process.ProcessName -ne [string]$Identity.ProcessName -or
+            [int64]$process.StartTime.ToUniversalTime().Ticks -ne [int64]$Identity.StartTimeUtcTicks -or
+            -not [string]::Equals([string]$process.Path, [string]$Identity.ExecutablePath, [StringComparison]::OrdinalIgnoreCase)) {
+            return $false
+        }
+        $process.Kill()
+        return $true
+    } catch { return $false }
+    finally { if ($null -ne $process) { try { $process.Dispose() } catch { } } }
+}
 
 function Initialize-MbRecorderServer {
     param(
@@ -58,10 +106,14 @@ function Read-MbRecordingStatus {
     }
     if ($null -eq $status) { return (Get-MbRecordingIdleStatus) }
 
-    # 記録プロセスが落ちたまま recording が残らないようにする。
-    if ([string]$status.state -eq 'recording') {
+    # 記録プロセスが落ちたまま recording / paused が残らないようにする。
+    if ([string]$status.state -in @('recording', 'paused')) {
         $alive = $false
-        try { $alive = $null -ne (Get-Process -Id ([int]$script:MbRecordingJob.ProcessId) -ErrorAction SilentlyContinue) } catch { $alive = $false }
+        try {
+            $alive = if ($script:MbRecordingJob.PSObject.Properties.Name -contains 'ProcessIdentity') {
+                Test-MbRecorderProcessIdentity -Identity $script:MbRecordingJob.ProcessIdentity
+            } else { $false }
+        } catch { $alive = $false }
         if (-not $alive) {
             $status.state = 'failed'
             $status.message = '記録が途中で終わりました。もう一度実行してください。'
@@ -71,7 +123,9 @@ function Read-MbRecordingStatus {
             $uiaWorkerProcessId = [int]$script:MbRecordingJob.UiaWorkerProcessId
             if ($uiaWorkerProcessId -gt 0) {
                 try {
-                    $uiaWorkerAlive = $null -ne (Get-Process -Id $uiaWorkerProcessId -ErrorAction SilentlyContinue)
+                    $uiaWorkerAlive = if ($script:MbRecordingJob.PSObject.Properties.Name -contains 'UiaWorkerProcessIdentity') {
+                        Test-MbRecorderProcessIdentity -Identity $script:MbRecordingJob.UiaWorkerProcessIdentity
+                    } else { $false }
                 } catch { $uiaWorkerAlive = $false }
             }
             if (-not $uiaWorkerAlive) {
@@ -94,7 +148,7 @@ function Start-MbRecordingJob {
     )
 
     $current = Read-MbRecordingStatus
-    if ([string]$current.state -eq 'recording') { return $current }
+    if ([string]$current.state -in @('recording', 'paused')) { return $current }
 
     $capability = Get-MbRecorderCapability
     if (-not $capability.available) { throw ([string]$capability.reason) }
@@ -106,9 +160,14 @@ function Start-MbRecordingJob {
     $jobDirectory = Join-Path $script:MbRecordingJobsRoot $jobId
     $eventsDirectory = Join-Path $jobDirectory 'events'
     [void](New-Item -ItemType Directory -Path $eventsDirectory -Force)
+    $framesDirectory = Join-Path $jobDirectory 'frames'
+    [void](New-Item -ItemType Directory -Path $framesDirectory -Force)
     $statusPath = Join-Path $jobDirectory 'status.json'
     $eventsPath = Join-Path $jobDirectory 'events.jsonl'
+    $framesPath = Join-Path $jobDirectory 'frames.jsonl'
     $stopPath = Join-Path $jobDirectory 'stop.requested'
+    $pausePath = Join-Path $jobDirectory 'pause.requested'
+    $undoPath = Join-Path $jobDirectory 'undo.requested'
     $narrationPath = Join-Path $jobDirectory 'narration.jsonl'
     $narrationStatusPath = Join-Path $jobDirectory 'narration-status.json'
     $uiaTargetPath = Join-Path $jobDirectory 'uia-target.json'
@@ -129,7 +188,7 @@ function Start-MbRecordingJob {
     $quote = { param([string]$Value) '"' + $Value.Replace('"', '\"') + '"' }
     # エクスプローラーや標準ダイアログはクリック直後に対象が消えることがあるため、
     # クリック前のカーソル下を別プロセスで保持する。起動に失敗しても従来のクリック後検索は使える。
-    $uiaWorkerProcessId = 0
+    $uiaWorkerProcessId = 0; $uiaWorkerProcessIdentity = $null
     try {
         $uiaWorkerPath = Join-Path $script:MbRecordingScriptRoot 'Invoke-ManualBuilderUiaRecorder.ps1'
         $uiaArguments = @(
@@ -143,17 +202,22 @@ function Start-MbRecordingJob {
         }
         $uiaWorker = Start-Process -FilePath $powerShellPath -ArgumentList $uiaArguments -WindowStyle Hidden -PassThru
         $uiaWorkerProcessId = [int]$uiaWorker.Id
+        $uiaWorkerProcessIdentity = New-MbRecorderProcessIdentity -Process $uiaWorker
         $uiaWorker.Dispose()
     } catch {
-        $uiaWorkerProcessId = 0
+        $uiaWorkerProcessId = 0; $uiaWorkerProcessIdentity = $null
     }
 
     $arguments = @(
         '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-STA', '-File', (& $quote $workerPath),
         '-EventsDirectory', (& $quote $eventsDirectory),
         '-EventsPath', (& $quote $eventsPath),
+        '-FramesDirectory', (& $quote $framesDirectory),
+        '-FramesPath', (& $quote $framesPath),
         '-StatusPath', (& $quote $statusPath),
         '-StopPath', (& $quote $stopPath),
+        '-PausePath', (& $quote $pausePath),
+        '-UndoPath', (& $quote $undoPath),
         '-JobId', (& $quote $jobId),
         '-UiaTargetPath', (& $quote $uiaTargetPath)
     )
@@ -165,18 +229,19 @@ function Start-MbRecordingJob {
     try {
         $worker = Start-Process -FilePath $powerShellPath -ArgumentList $arguments -WindowStyle Hidden -PassThru
         $processId = [int]$worker.Id
+        $processIdentity = New-MbRecorderProcessIdentity -Process $worker
+        if ($null -eq $processIdentity) { throw '記録プロセスの所有情報を確認できません。' }
         $worker.Dispose()
     } catch {
-        if ($uiaWorkerProcessId -gt 0) {
-            try { (Get-Process -Id $uiaWorkerProcessId -ErrorAction SilentlyContinue).Kill() } catch { }
-        }
+        try { [IO.File]::WriteAllText($stopPath, 'stop', (New-Object Text.UTF8Encoding($false))) } catch { }
+        [void](Stop-MbRecorderOwnedProcess -Identity $uiaWorkerProcessIdentity)
         try { Remove-Item -LiteralPath $jobDirectory -Recurse -Force -ErrorAction SilentlyContinue } catch { }
         throw
     }
 
     # 音声の聞き取りは記録ループと同居できない。並走する別プロセスにする。
     # 起動に失敗しても操作の記録は続けられるので、ここでは止めない。
-    $dictationProcessId = 0
+    $dictationProcessId = 0; $dictationProcessIdentity = $null
     if ($WithNarration) {
         try {
             $dictationWorkerPath = Join-Path $script:MbRecordingScriptRoot 'Invoke-ManualBuilderDictation.ps1'
@@ -184,25 +249,31 @@ function Start-MbRecordingJob {
                 '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-STA', '-File', (& $quote $dictationWorkerPath),
                 '-OutputPath', (& $quote $narrationPath),
                 '-StopPath', (& $quote $stopPath),
+                '-PausePath', (& $quote $pausePath),
                 '-StatusPath', (& $quote $narrationStatusPath),
                 '-StartedAtUtcTicks', ([string]$startedAtUtc.Ticks)
             )
             $dictationWorker = Start-Process -FilePath $powerShellPath -ArgumentList $dictationArguments -WindowStyle Hidden -PassThru
             $dictationProcessId = [int]$dictationWorker.Id
+            $dictationProcessIdentity = New-MbRecorderProcessIdentity -Process $dictationWorker
             $dictationWorker.Dispose()
         } catch {
-            $dictationProcessId = 0
+            $dictationProcessId = 0; $dictationProcessIdentity = $null
         }
     }
 
     $script:MbRecordingJob = [pscustomobject]@{
         JobId = $jobId; ProcessId = $processId; JobDirectory = $jobDirectory
+        ProcessIdentity = $processIdentity
         EventsDirectory = $eventsDirectory; EventsPath = $eventsPath
-        StatusPath = $statusPath; StopPath = $stopPath; StartedAt = Get-Date
+        FramesDirectory = $framesDirectory; FramesPath = $framesPath
+        StatusPath = $statusPath; StopPath = $stopPath; PausePath = $pausePath; UndoPath = $undoPath; StartedAt = Get-Date
         NarrationPath = $narrationPath; NarrationStatusPath = $narrationStatusPath
         DictationProcessId = $dictationProcessId
+        DictationProcessIdentity = $dictationProcessIdentity
         UiaTargetPath = $uiaTargetPath; UiaLogPath = $uiaLogPath
         UiaWorkerProcessId = $uiaWorkerProcessId
+        UiaWorkerProcessIdentity = $uiaWorkerProcessIdentity
     }
     return (Read-MbRecordingStatus)
 }
@@ -210,15 +281,37 @@ function Start-MbRecordingJob {
 function Stop-MbRecordingJob {
     if ($null -eq $script:MbRecordingJob) { return (Get-MbRecordingIdleStatus) }
     $status = Read-MbRecordingStatus
-    if ([string]$status.state -eq 'recording') {
+    if ([string]$status.state -in @('recording', 'paused')) {
         [IO.File]::WriteAllText([string]$script:MbRecordingJob.StopPath, 'stop', (New-Object Text.UTF8Encoding($false)))
         # 記録プロセスが停止を見て後始末を終えるまで少しだけ待つ。
         for ($i = 0; $i -lt 40; $i++) {
             Start-Sleep -Milliseconds 100
             $status = Read-MbRecordingStatus
-            if ([string]$status.state -ne 'recording') { break }
+            if ([string]$status.state -notin @('recording', 'paused')) { break }
         }
     }
+    return $status
+}
+
+function Set-MbRecordingPaused {
+    param([bool]$Paused)
+    if ($null -eq $script:MbRecordingJob) { return (Get-MbRecordingIdleStatus) }
+    $status = Read-MbRecordingStatus
+    if ([string]$status.state -notin @('recording', 'paused')) { return $status }
+    $pausePath = [string]$script:MbRecordingJob.PausePath
+    if ($Paused) {
+        [IO.File]::WriteAllText($pausePath, 'pause', (New-Object Text.UTF8Encoding($false)))
+    } else {
+        Remove-Item -LiteralPath $pausePath -Force -ErrorAction SilentlyContinue
+    }
+    return (Read-MbRecordingStatus)
+}
+
+function Undo-MbLastRecordingEvent {
+    if ($null -eq $script:MbRecordingJob) { return (Get-MbRecordingIdleStatus) }
+    $status = Read-MbRecordingStatus
+    if ([string]$status.state -notin @('recording', 'paused')) { return $status }
+    [IO.File]::WriteAllText([string]$script:MbRecordingJob.UndoPath, 'undo', (New-Object Text.UTF8Encoding($false)))
     return $status
 }
 
@@ -229,22 +322,104 @@ function Merge-MbRecordedEditInteractions {
         [int]$MaxGapMs = 5000
     )
 
+    function Test-SamePosition {
+        param($First, $Second, [double]$Tolerance = 0.045)
+        if ($null -eq $First -or $null -eq $Second) { return $false }
+        if ($First.PSObject.Properties.Name -contains 'rect' -and $null -ne $First.rect -and
+            $Second.PSObject.Properties.Name -contains 'rect' -and $null -ne $Second.rect) {
+            $overlapWidth = [Math]::Min([double]$First.rect.x2, [double]$Second.rect.x2) -
+                [Math]::Max([double]$First.rect.x1, [double]$Second.rect.x1)
+            $overlapHeight = [Math]::Min([double]$First.rect.y2, [double]$Second.rect.y2) -
+                [Math]::Max([double]$First.rect.y1, [double]$Second.rect.y1)
+            if ($overlapWidth -gt 0.0 -and $overlapHeight -gt 0.0) { return $true }
+        }
+        if ($First.PSObject.Properties.Name -contains 'clickPoint' -and $null -ne $First.clickPoint -and
+            $Second.PSObject.Properties.Name -contains 'clickPoint' -and $null -ne $Second.clickPoint) {
+            return [Math]::Abs([double]$First.clickPoint.x - [double]$Second.clickPoint.x) -le $Tolerance -and
+                [Math]::Abs([double]$First.clickPoint.y - [double]$Second.clickPoint.y) -le $Tolerance
+        }
+        return $false
+    }
+
+    function Test-HasPosition {
+        param($Event)
+        return $null -ne $Event -and ((
+            $Event.PSObject.Properties.Name -contains 'rect' -and $null -ne $Event.rect) -or (
+            $Event.PSObject.Properties.Name -contains 'clickPoint' -and $null -ne $Event.clickPoint))
+    }
+
+    function Test-SelfInteraction {
+        param($Event)
+        if ($null -eq $Event) { return $false }
+        $name = ([string]$Event.targetName).Trim()
+        $type = [string]$Event.targetType
+        # 記録開始ボタンと、停止するためにManualBuilderタブへ戻るクリックは
+        # 作業手順ではない。ブラウザのタイトルが前タブのままでも対象名から除外する。
+        if ($type -eq 'ControlType.TabItem' -and $name -match '^ManualBuilder(?:\s|$)') { return $true }
+        return $name -in @('操作を記録して手順書を作る', '操作の記録を開始', '記録を停止', 'ManualBuilderへ戻る')
+    }
+
+    function Get-EvidenceScore {
+        param($Event)
+        $score = 0
+        if (-not [string]::IsNullOrWhiteSpace([string]$Event.targetName)) { $score += 4 }
+        if ([string]$Event.targetSource -notin @('', 'click-point')) { $score += 2 }
+        if ([string]$Event.confidence -eq 'high') { $score += 2 }
+        elseif ([string]$Event.confidence -eq 'medium') { $score += 1 }
+        return $score
+    }
+
+    # 1回のタップ・ダブルクリックがUIAと押下履歴の両方から複数件に見えることがある。
+    # 同じウィンドウの近接点で短時間に続くクリックは1操作にし、最も根拠の強い対象と
+    # 最後の操作後画像を残す。メニュー項目など別位置のクリックは統合しない。
+    $collapsed = New-Object System.Collections.ArrayList
+    foreach ($event in @($Events)) {
+        if (Test-SelfInteraction -Event $event) { continue }
+        $previous = if ($collapsed.Count -gt 0) { $collapsed[$collapsed.Count - 1] } else { $null }
+        $clickKinds = @('click', 'right-click')
+        $canCollapse = $null -ne $previous -and [string]$previous.kind -in $clickKinds -and
+            [string]$event.kind -eq [string]$previous.kind -and
+            [string]$event.windowTitle -eq [string]$previous.windowTitle -and
+            ([int]$event.timeMs - [int]$previous.timeMs) -ge 0 -and
+            ([int]$event.timeMs - [int]$previous.timeMs) -le 450 -and
+            (Test-SamePosition -First $previous -Second $event)
+        if ($canCollapse) {
+            if ((Get-EvidenceScore -Event $event) -gt (Get-EvidenceScore -Event $previous)) {
+                foreach ($propertyName in @('targetName', 'targetType', 'targetSource', 'confidence', 'rect',
+                        'targetCandidates', 'targetCandidateId', 'clickPoint', 'captureRegion')) {
+                    if ($event.PSObject.Properties.Name -contains $propertyName) {
+                        $previous | Add-Member -NotePropertyName $propertyName -NotePropertyValue $event.$propertyName -Force
+                    }
+                }
+            }
+            if ($event.PSObject.Properties.Name -contains 'resultImage' -and
+                -not [string]::IsNullOrWhiteSpace([string]$event.resultImage)) {
+                $previous | Add-Member -NotePropertyName resultImage -NotePropertyValue ([string]$event.resultImage) -Force
+            }
+            # 次の入力との間隔は、クラスタの最初ではなく最後のクリックから判定する。
+            $previous.timeMs = [int]$event.timeMs
+            continue
+        }
+        [void]$collapsed.Add($event)
+    }
+
+    # セルや入力欄をクリックしてそのまま入力した場合は、入力済み画面の1手順だけを残す。
+    # トリプルクリック相当の連続操作も、同じ欄への入力ならまとめて除く。
     $result = New-Object System.Collections.ArrayList
-    $items = @($Events)
-    for ($i = 0; $i -lt $items.Count; $i++) {
-        $current = $items[$i]
-        $next = if (($i + 1) -lt $items.Count) { $items[$i + 1] } else { $null }
-        $isEditFocusClick = $null -ne $current -and [string]$current.kind -eq 'click' -and
-            [string]$current.targetType -eq 'ControlType.Edit'
-        if ($isEditFocusClick -and $null -ne $next -and [string]$next.kind -eq 'input') {
-            $sameWindow = [string]$current.windowTitle -eq [string]$next.windowTitle
-            $sameField = -not [string]::IsNullOrWhiteSpace([string]$current.targetName) -and
-                [string]$current.targetName -eq [string]$next.targetName
-            $gapMs = [int]$next.timeMs - [int]$current.timeMs
-            if ($sameWindow -and $sameField -and $gapMs -ge 0 -and $gapMs -le $MaxGapMs) {
-                # 入力済み画面を持つ次のイベントだけで、どの欄に何を入力したかを示せる。
-                # フォーカスを当てるだけのクリックはマニュアルの1手順に数えない。
-                continue
+    foreach ($current in @($collapsed)) {
+        if ([string]$current.kind -eq 'input') {
+            while ($result.Count -gt 0) {
+                $candidate = $result[$result.Count - 1]
+                $isEditClick = [string]$candidate.kind -eq 'click' -and
+                    [string]$candidate.targetType -in @('ControlType.Edit', 'ControlType.DataItem')
+                $sameField = -not [string]::IsNullOrWhiteSpace([string]$candidate.targetName) -and
+                    [string]$candidate.targetName -eq [string]$current.targetName -and
+                    [string]$candidate.windowTitle -eq [string]$current.windowTitle -and
+                    ((Test-SamePosition -First $candidate -Second $current -Tolerance 0.02) -or
+                        (-not (Test-HasPosition -Event $candidate) -and -not (Test-HasPosition -Event $current)))
+                $gapMs = [int]$current.timeMs - [int]$candidate.timeMs
+                if (-not ($isEditClick -and $sameField -and $gapMs -ge 0 -and $gapMs -le $MaxGapMs)) { break }
+                $result.RemoveAt($result.Count - 1)
             }
         }
         [void]$result.Add($current)
@@ -252,7 +427,7 @@ function Merge-MbRecordedEditInteractions {
     return @($result)
 }
 
-function Get-MbRecordedEvents {
+function Get-MbRecordedRawEvents {
     if ($null -eq $script:MbRecordingJob) { return @() }
     $eventsPath = [string]$script:MbRecordingJob.EventsPath
     if (-not (Test-Path -LiteralPath $eventsPath -PathType Leaf)) { return @() }
@@ -270,7 +445,88 @@ function Get-MbRecordedEvents {
         }
         [void]$events.Add($record)
     }
-    return @(Merge-MbRecordedEditInteractions -Events @($events))
+    return @($events)
+}
+
+function Get-MbRecordedEvents {
+    return @(Merge-MbRecordedEditInteractions -Events @(Get-MbRecordedRawEvents))
+}
+
+function Get-MbRecordedFrames {
+    if ($null -eq $script:MbRecordingJob) { return @() }
+    $framesPath = [string]$script:MbRecordingJob.FramesPath
+    if (-not (Test-Path -LiteralPath $framesPath -PathType Leaf)) { return @() }
+    $frames = New-Object System.Collections.ArrayList
+    foreach ($line in [IO.File]::ReadAllLines($framesPath, [Text.Encoding]::UTF8)) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        try {
+            $frame = $line | ConvertFrom-Json
+            if ($null -ne $frame -and [string]$frame.id -match '^F\d{5}$' -and
+                [string]$frame.image -match '^frame-\d{5}\.jpg$') { [void]$frames.Add($frame) }
+        } catch { }
+    }
+    return @($frames)
+}
+
+function Get-MbRecordedLocalProposals {
+    $events = @(Get-MbRecordedRawEvents)
+    $frames = @(Get-MbRecordedFrames)
+    if ($null -ne $script:MbRecordingJob -and $frames.Count -gt 0) {
+        $frames = @(Add-MbRecorderFrameVisualMetrics -Frames $frames -FramesDirectory ([string]$script:MbRecordingJob.FramesDirectory))
+    }
+    $candidates = @(New-MbRecorderLocalFrameCandidates -Frames $frames -Events $events -MaximumFrames 30)
+    if ($candidates.Count -lt 1) { return @() }
+    $eventMap = @{}
+    foreach ($event in $events) { $eventMap[[int]$event.index] = $event }
+    $result = New-Object System.Collections.ArrayList
+    foreach ($candidate in $candidates) {
+        $groupEvents = @($candidate.eventIds | ForEach-Object {
+            $id = [int]$_
+            if ($eventMap.ContainsKey($id)) { $eventMap[$id] }
+        } | Where-Object { $null -ne $_ })
+        $draftEvent = @($groupEvents | Where-Object {
+            [string]$_.kind -eq 'input' -and -not [string]::IsNullOrWhiteSpace([string]$_.targetName)
+        } | Select-Object -Last 1)
+        if (@($draftEvent).Count -gt 0) { $draftEvent = @($draftEvent)[0] }
+        elseif ($eventMap.ContainsKey([int]$candidate.targetEventId)) { $draftEvent = $eventMap[[int]$candidate.targetEventId] }
+        elseif ($groupEvents.Count -gt 0) { $draftEvent = $groupEvents[0] }
+        else { $draftEvent = $null }
+
+        $targetName = if ($null -ne $draftEvent -and $draftEvent.PSObject.Properties.Name -contains 'targetName') { [string]$draftEvent.targetName } else { '' }
+        $targetType = if ($null -ne $draftEvent -and $draftEvent.PSObject.Properties.Name -contains 'targetType') { [string]$draftEvent.targetType } else { '' }
+        $windowTitle = if ($null -ne $draftEvent -and $draftEvent.PSObject.Properties.Name -contains 'windowTitle') { [string]$draftEvent.windowTitle } else { '' }
+        $targetSource = if ($null -ne $draftEvent -and $draftEvent.PSObject.Properties.Name -contains 'targetSource') { [string]$draftEvent.targetSource } else { '' }
+        $targetConfidence = if ($null -ne $draftEvent -and $draftEvent.PSObject.Properties.Name -contains 'confidence') { [string]$draftEvent.confidence } else { '' }
+        $isVisualChange = [string]$candidate.actionKind -eq 'visual-change'
+        $draft = if ($isVisualChange) {
+            [pscustomobject]@{
+                title = '画面の変化を確認'
+                description = '操作前後を比較し、必要な操作内容を確認します。'
+                reviewRequired = $true
+                reviewReason = '操作イベントが欠けた区間を画面変化から補いました。文章と赤枠を確認してください。'
+            }
+        } else {
+            Get-MbLocalStepDraft -ActionKind ([string]$candidate.actionKind) -TargetName $targetName `
+                -TargetType $targetType -WindowTitle $windowTitle -TargetSource $targetSource `
+                -TargetConfidence $targetConfidence
+        }
+        [void]$result.Add([pscustomobject]@{
+            id = [string]$candidate.id
+            beforeFrame = [string]$candidate.beforeFrame
+            afterFrame = [string]$candidate.afterFrame
+            eventIds = @($candidate.eventIds)
+            targetEventId = [int]$candidate.targetEventId
+            title = [string]$draft.title
+            description = [string]$draft.description
+            confidence = $(if ([bool]$draft.reviewRequired) { 'low' } else { 'medium' })
+            reason = $(if ([bool]$draft.reviewRequired) { [string]$draft.reviewReason } else { 'このPCで記録した操作前後から作成しました。' })
+            timeMs = [int]$candidate.timeMs
+            beforeImage = [string]$candidate.beforeImage
+            afterImage = [string]$candidate.afterImage
+            source = 'local'
+        })
+    }
+    return @($result)
 }
 
 function Get-MbRecordedEventImagePath {
@@ -286,32 +542,26 @@ function New-MbRecorderAnnotationId {
     return 'annotation-' + [guid]::NewGuid().ToString('N')
 }
 
-# 元画像はウィンドウ全体のまま残し、通常表示だけを操作対象の周辺へ寄せる。
-# クリック位置だけのフォールバックは空クリックの可能性があるため、自動切り抜きしない。
-function Get-MbRecorderTargetCrop {
+function Test-MbRecordedSelectionAnchorContext {
     param(
-        [AllowNull()]$Rect,
-        [string]$TargetType = ''
+        [AllowNull()]$Event,
+        [Parameter(Mandatory = $true)]$BeforeFrame,
+        [AllowNull()]$AfterFrame
     )
-
-    if ($TargetType -eq 'ControlType.ClickPoint' -or -not (Test-MbNormalizedRect -Rect $Rect)) { return $null }
-    $targetWidth = [double]$Rect.x2 - [double]$Rect.x1
-    $targetHeight = [double]$Rect.y2 - [double]$Rect.y1
-    if ($targetWidth -le 0 -or $targetHeight -le 0) { return $null }
-
-    # 小さな文字や赤枠を約1.8倍で見せつつ、周辺の文脈も半画面以上残す。
-    $width = [Math]::Min(1.0, [Math]::Max(0.55, $targetWidth + 0.24))
-    $height = [Math]::Min(1.0, [Math]::Max(0.55, $targetHeight + 0.24))
-    if ($width -ge 0.999999 -and $height -ge 0.999999) { return $null }
-
-    $centerX = ([double]$Rect.x1 + [double]$Rect.x2) / 2.0
-    $centerY = ([double]$Rect.y1 + [double]$Rect.y2) / 2.0
-    $x = [Math]::Max(0.0, [Math]::Min(1.0 - $width, $centerX - ($width / 2.0)))
-    $y = [Math]::Max(0.0, [Math]::Min(1.0 - $height, $centerY - ($height / 2.0)))
-    return [pscustomobject]@{
-        x = [Math]::Round($x, 6); y = [Math]::Round($y, 6)
-        width = [Math]::Round($width, 6); height = [Math]::Round($height, 6)
+    if ($null -eq $Event -or $Event.PSObject.Properties.Name -notcontains 'rect' -or
+        $null -eq $Event.rect -or -not (Test-MbNormalizedRect -Rect $Event.rect)) { return $false }
+    $beforeApp = Get-MbRecorderWindowAppKey -WindowTitle ([string]$BeforeFrame.windowTitle)
+    $eventApp = Get-MbRecorderWindowAppKey -WindowTitle ([string]$Event.windowTitle)
+    if ([string]::IsNullOrWhiteSpace($beforeApp) -or $beforeApp -ne $eventApp) { return $false }
+    $beforeTime = [int]$BeforeFrame.timeMs; $eventTime = [int]$Event.timeMs
+    if ([Math]::Abs($eventTime - $beforeTime) -gt 2500) { return $false }
+    if ($null -ne $AfterFrame) {
+        $afterApp = Get-MbRecorderWindowAppKey -WindowTitle ([string]$AfterFrame.windowTitle)
+        $afterTime = [int]$AfterFrame.timeMs
+        if ([string]::IsNullOrWhiteSpace($afterApp) -or $afterApp -ne $beforeApp -or
+            $afterTime -le $beforeTime -or $eventTime -gt ($afterTime + 1000)) { return $false }
     }
+    return $true
 }
 
 function Get-MbRecordedNarration {
@@ -395,7 +645,7 @@ function Import-MbRecordedEvents {
     )
 
     $events = @(Get-MbRecordedEvents)
-    if ($events.Count -eq 0) { return [pscustomobject]@{ added = 0; skipped = 0 } }
+    if ($events.Count -eq 0) { return [pscustomobject]@{ added = 0; skipped = 0; generated = 0; needsReview = 0 } }
 
     # 選択が渡されていれば、その番号だけを取り込む。
     $wanted = $null
@@ -419,6 +669,8 @@ function Import-MbRecordedEvents {
 
     $added = 0
     $skipped = 0
+    $generated = 0
+    $needsReview = 0
     foreach ($record in $events) {
         $index = 0
         try { $index = [int]$record.index } catch { $index = 0 }
@@ -426,6 +678,18 @@ function Import-MbRecordedEvents {
 
         $imagePath = Get-MbRecordedEventImagePath -FileName ([string]$record.image)
         if ([string]::IsNullOrWhiteSpace($imagePath)) { $skipped++; continue }
+
+        $recordTargetType = if ($record.PSObject.Properties.Name -contains 'targetType') { [string]$record.targetType } else { '' }
+        $resultImagePath = ''
+        if ($record.PSObject.Properties.Name -contains 'resultImage' -and
+            -not [string]::IsNullOrWhiteSpace([string]$record.resultImage)) {
+            $resultImagePath = Get-MbRecordedEventImagePath -FileName ([string]$record.resultImage)
+        }
+        # Excelのセル選択は、操作前後を2枚並べても情報が増えない。起動中の灰色画面を
+        # 残すより、セルとシートが表示された操作後画面を1枚だけ使う。
+        $preferResultAsPrimary = $recordTargetType -eq 'ControlType.DataItem' -and
+            -not [string]::IsNullOrWhiteSpace($resultImagePath)
+        if ($preferResultAsPrimary) { $imagePath = $resultImagePath }
 
         $bytes = [IO.File]::ReadAllBytes($imagePath)
         # 同じ静止画でも「入力する」「送信を押す」のように別の操作が続くことがある。
@@ -441,10 +705,7 @@ function Import-MbRecordedEvents {
 
         # クリック後の安定画面は、操作箇所を示す画像とは別の正式な画像資産にする。
         # 取得に失敗した古い録画も、そのまま取り込める。
-        if ($record.PSObject.Properties.Name -contains 'resultImage' -and
-            -not [string]::IsNullOrWhiteSpace([string]$record.resultImage)) {
-            $resultImagePath = Get-MbRecordedEventImagePath -FileName ([string]$record.resultImage)
-            if (-not [string]::IsNullOrWhiteSpace($resultImagePath)) {
+        if (-not $preferResultAsPrimary -and -not [string]::IsNullOrWhiteSpace($resultImagePath)) {
                 try {
                     $resultAsset = Add-MbImageAsset -Project $Project -ProjectPath $ProjectPath `
                         -Bytes ([IO.File]::ReadAllBytes($resultImagePath)) -Source 'recorder'
@@ -455,7 +716,6 @@ function Import-MbRecordedEvents {
                 } catch {
                     # 結果画像だけ壊れていても、クリック前画像の手順は取り込む。
                 }
-            }
         }
 
         $rect = $null
@@ -473,13 +733,10 @@ function Import-MbRecordedEvents {
             })
         }
 
-        $targetType = if ($record.PSObject.Properties.Name -contains 'targetType') { [string]$record.targetType } else { '' }
-        $crop = Get-MbRecorderTargetCrop -Rect $rect -TargetType $targetType
-        if ($null -ne $crop) {
-            [void](Set-MbStepImageEdits -Project $Project -StepId $stepId `
-                -AnnotationsJson (ConvertTo-Json -InputObject $annotation -Depth 5) `
-                -CropJson (ConvertTo-Json -InputObject $crop -Compress))
-        } elseif (@($annotation).Count -gt 0) {
+        $targetType = $recordTargetType
+        # 記録時は画面全体を残す。対象だけへ自動で寄ると、誤検出時に周辺の文脈まで失われるため、
+        # 切り抜きは利用者が編集画面で明示的に行う。
+        if (@($annotation).Count -gt 0) {
             [void](Set-MbStepAnnotations -Project $Project -StepId $stepId -AnnotationsJson (ConvertTo-Json -InputObject $annotation -Depth 5))
         }
 
@@ -542,33 +799,181 @@ function Import-MbRecordedEvents {
             -WindowTitle ([string]$record.windowTitle) -Narration $spoken -TargetType $targetType `
             -TargetSource $targetSource -TargetConfidence $targetConfidence `
             -TargetCandidateId $candidateId -TargetCandidatesJson $candidatesJson -ClickPointJson $clickPointJson)
+
+        # Copilotを待たず、記録できた事実だけから編集可能な初稿を作る。
+        $draft = Get-MbLocalStepDraft -ActionKind ([string]$record.kind) -TargetName $targetName `
+            -TargetType $targetType -WindowTitle ([string]$record.windowTitle) `
+            -TargetSource $targetSource -TargetConfidence $targetConfidence
+        [void](Set-MbStepDraft -Project $Project -StepId $stepId -Title ([string]$draft.title) `
+            -Description ([string]$draft.description) -Note ([string]$draft.note))
+        $generated++
+        if ([bool]$draft.reviewRequired) {
+            [void](Set-MbStepReview -Project $Project -StepId $stepId -Action 'review' -Reason ([string]$draft.reviewReason))
+            $needsReview++
+        } else {
+            [void](Set-MbStepReview -Project $Project -StepId $stepId -Action '' -Reason '')
+        }
         $added++
     }
-    return [pscustomobject]@{ added = $added; skipped = $skipped }
+    return [pscustomobject]@{ added = $added; skipped = $skipped; generated = $generated; needsReview = $needsReview }
+}
+
+# Copilotがコンタクトシートから選んだ原画像と操作群を、編集可能な手順へ変換する。
+function Import-MbRecordedCopilotSelections {
+    param(
+        [Parameter(Mandatory = $true)][object]$Project,
+        [Parameter(Mandatory = $true)][string]$ProjectPath,
+        [Parameter(Mandatory = $true)][string]$SheetId,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$SelectionJson
+    )
+    if ([string]::IsNullOrWhiteSpace($SelectionJson)) { throw '取り込むAI手順候補がありません。' }
+    try { $selection = $SelectionJson | ConvertFrom-Json } catch { throw 'AI手順候補の形式が正しくありません。' }
+    $items = @($selection)
+    if ($selection.PSObject.Properties.Name -contains 'accept') { $items = @($selection.accept) }
+    elseif ($selection.PSObject.Properties.Name -contains 'steps') { $items = @($selection.steps) }
+    if ($items.Count -gt 300) { throw '一度に取り込める手順は300件までです。' }
+
+    $frameMap = @{}
+    foreach ($frame in @(Get-MbRecordedFrames)) { $frameMap[[string]$frame.id] = $frame }
+    $eventMap = @{}
+    foreach ($event in @(Get-MbRecordedRawEvents)) { $eventMap[[int]$event.index] = $event }
+    $added = 0; $skipped = 0; $needsReview = 0
+    foreach ($item in $items) {
+        if ($null -eq $item) { $skipped++; continue }
+        $beforeId = ([string]$item.beforeFrame).Trim().ToUpperInvariant()
+        if (-not $frameMap.ContainsKey($beforeId)) { $skipped++; continue }
+        $beforeFrame = $frameMap[$beforeId]
+        $beforePath = Get-MbRecordedFrameImagePath -FileName ([string]$beforeFrame.image)
+        if ([string]::IsNullOrWhiteSpace($beforePath)) { $skipped++; continue }
+
+        $afterId = if ($item.PSObject.Properties.Name -contains 'afterFrame') { ([string]$item.afterFrame).Trim().ToUpperInvariant() } else { '' }
+        $afterFrame = $null
+        if (-not [string]::IsNullOrWhiteSpace($afterId) -and $afterId -ne $beforeId -and $frameMap.ContainsKey($afterId)) {
+            $afterFrame = $frameMap[$afterId]
+            $beforeApp = Get-MbRecorderWindowAppKey -WindowTitle ([string]$beforeFrame.windowTitle)
+            $afterApp = Get-MbRecorderWindowAppKey -WindowTitle ([string]$afterFrame.windowTitle)
+            if ([string]::IsNullOrWhiteSpace($beforeApp) -or $beforeApp -ne $afterApp -or
+                [int]$afterFrame.timeMs -le [int]$beforeFrame.timeMs) { $skipped++; continue }
+        } else { $afterId = '' }
+
+        $eventIds = New-Object System.Collections.ArrayList
+        if ($item.PSObject.Properties.Name -contains 'eventIds') {
+            foreach ($value in @($item.eventIds)) {
+                $eventId = 0
+                try { $eventId = [int]$value } catch { $eventId = 0 }
+                if ($eventMap.ContainsKey($eventId) -and -not $eventIds.Contains($eventId)) { [void]$eventIds.Add($eventId) }
+            }
+        }
+        $requestedTargetEventId = 0
+        if ($item.PSObject.Properties.Name -contains 'targetEventId') { try { $requestedTargetEventId = [int]$item.targetEventId } catch { } }
+        $validAnchorIds = @($eventIds | Where-Object {
+            $eventMap.ContainsKey([int]$_) -and
+            (Test-MbRecordedSelectionAnchorContext -Event $eventMap[[int]$_] -BeforeFrame $beforeFrame -AfterFrame $afterFrame)
+        })
+        $targetEventId = if ($requestedTargetEventId -gt 0 -and -not $eventIds.Contains($requestedTargetEventId)) {
+            0
+        } elseif ($eventIds.Contains($requestedTargetEventId) -and $requestedTargetEventId -in $validAnchorIds) {
+            $requestedTargetEventId
+        } elseif ($validAnchorIds.Count -eq 1) { [int]$validAnchorIds[0] } else { 0 }
+        $anchor = $(if ($targetEventId -gt 0) { $eventMap[$targetEventId] } else { $null })
+
+        $result = Add-MbImageStep -Project $Project -ProjectPath $ProjectPath -SheetId $SheetId `
+            -Bytes ([IO.File]::ReadAllBytes($beforePath)) -Source 'recorder' -AllowDuplicateStep
+        if ([string]$result.Status -ne 'added') { $skipped++; continue }
+        $stepId = [string]$result.Step.id
+
+        if ($null -ne $afterFrame) {
+            $afterPath = Get-MbRecordedFrameImagePath -FileName ([string]$afterFrame.image)
+            if (-not [string]::IsNullOrWhiteSpace($afterPath)) {
+                try {
+                    $asset = Add-MbImageAsset -Project $Project -ProjectPath $ProjectPath -Bytes ([IO.File]::ReadAllBytes($afterPath)) -Source 'recorder'
+                    $result.Step.resultImageId = [string]$asset.Image.id
+                    $result.Step.imageLayout = 'side-by-side'; $result.Step.imageOrder = 'before-after'
+                } catch { }
+            }
+        }
+
+        $annotations = @()
+        if ($null -ne $anchor -and $anchor.PSObject.Properties.Name -contains 'rect' -and
+            $null -ne $anchor.rect -and (Test-MbNormalizedRect -Rect $anchor.rect)) {
+            $annotations = @([pscustomobject]@{
+                id = New-MbRecorderAnnotationId; type = 'rect'
+                x1 = [Math]::Round([double]$anchor.rect.x1, 6); y1 = [Math]::Round([double]$anchor.rect.y1, 6)
+                x2 = [Math]::Round([double]$anchor.rect.x2, 6); y2 = [Math]::Round([double]$anchor.rect.y2, 6); label = 0
+            })
+            [void](Set-MbStepAnnotations -Project $Project -StepId $stepId -AnnotationsJson (ConvertTo-Json -InputObject $annotations -Depth 5))
+        }
+        $title = ([string]$item.title).Trim()
+        $description = ([string]$item.description).Trim()
+        if ($title.Length -gt 100) { $title = $title.Substring(0, 100) }
+        if ($description.Length -gt 500) { $description = $description.Substring(0, 500) }
+        if ([string]::IsNullOrWhiteSpace($title)) { $title = '手順を確認' }
+        if ([string]::IsNullOrWhiteSpace($description)) { $description = '画面を確認して操作します。' }
+        [void](Set-MbStepDraft -Project $Project -StepId $stepId -Title $title -Description $description -Note '')
+
+        $targetName = $(if ($null -ne $anchor) { [string]$anchor.targetName } else { '' })
+        $targetType = $(if ($null -ne $anchor) { [string]$anchor.targetType } else { '' })
+        $targetSource = $(if ($null -ne $anchor -and $anchor.PSObject.Properties.Name -contains 'targetSource') { [string]$anchor.targetSource } else { '' })
+        $targetConfidence = $(if ($null -ne $anchor -and $anchor.PSObject.Properties.Name -contains 'confidence') { [string]$anchor.confidence } else { '' })
+        $candidateId = $(if ($null -ne $anchor -and $anchor.PSObject.Properties.Name -contains 'targetCandidateId') { [string]$anchor.targetCandidateId } else { '' })
+        $candidatesJson = $(if ($null -ne $anchor -and $anchor.PSObject.Properties.Name -contains 'targetCandidates') { ConvertTo-Json -InputObject @($anchor.targetCandidates) -Depth 8 -Compress } else { '' })
+        $clickPointJson = $(if ($null -ne $anchor -and $anchor.PSObject.Properties.Name -contains 'clickPoint') {
+            ConvertTo-Json -InputObject ([pscustomobject]@{ x = [double]$anchor.clickPoint.x; y = [double]$anchor.clickPoint.y }) -Compress
+        } else { '' })
+        [void](Set-MbStepCapture -Project $Project -StepId $stepId -Kind 'recorded-ai' -VideoTimeMs ([int]$beforeFrame.timeMs) `
+            -ClickLabel $targetName -WindowTitle ([string]$beforeFrame.windowTitle) -TargetType $targetType `
+            -TargetSource $targetSource -TargetConfidence $targetConfidence -TargetCandidateId $candidateId `
+            -TargetCandidatesJson $candidatesJson -ClickPointJson $clickPointJson)
+        $confidence = if ($item.PSObject.Properties.Name -contains 'confidence') { [string]$item.confidence } else { 'low' }
+        if ($confidence -ne 'high' -or @($annotations).Count -eq 0) {
+            $reason = if ($item.PSObject.Properties.Name -contains 'reason') { [string]$item.reason } else { '' }
+            if ([string]::IsNullOrWhiteSpace($reason)) { $reason = 'AIが選んだ画像と手順です。文章と赤枠を確認してください。' }
+            [void](Set-MbStepReview -Project $Project -StepId $stepId -Action 'review' -Reason $reason)
+            $needsReview++
+        } else { [void](Set-MbStepReview -Project $Project -StepId $stepId -Action '' -Reason '') }
+        $added++
+    }
+    return [pscustomobject]@{ added = $added; skipped = $skipped; generated = $added; needsReview = $needsReview }
+}
+
+function Get-MbRecordedFrameImagePath {
+    param([Parameter(Mandatory = $true)][string]$FileName)
+    if ($null -eq $script:MbRecordingJob) { return '' }
+    if ($FileName -notmatch '^frame-\d{5}\.jpg$') { return '' }
+    $path = Join-Path ([string]$script:MbRecordingJob.FramesDirectory) $FileName
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return '' }
+    return $path
+}
+
+function Get-MbRecordingSourceInfo {
+    if ($null -eq $script:MbRecordingJob) { return $null }
+    return [pscustomobject]@{
+        jobId = [string]$script:MbRecordingJob.JobId
+        jobDirectory = [string]$script:MbRecordingJob.JobDirectory
+        eventsPath = [string]$script:MbRecordingJob.EventsPath
+        eventsDirectory = [string]$script:MbRecordingJob.EventsDirectory
+        framesPath = [string]$script:MbRecordingJob.FramesPath
+        framesDirectory = [string]$script:MbRecordingJob.FramesDirectory
+    }
 }
 
 function Remove-MbRecordingJob {
     if ($null -eq $script:MbRecordingJob) { return }
     $job = $script:MbRecordingJob
     $directory = [string]$job.JobDirectory
-    $processId = [int]$job.ProcessId
-    $dictationProcessId = 0
-    if ($job.PSObject.Properties.Name -contains 'DictationProcessId') { $dictationProcessId = [int]$job.DictationProcessId }
-    $uiaWorkerProcessId = 0
-    if ($job.PSObject.Properties.Name -contains 'UiaWorkerProcessId') { $uiaWorkerProcessId = [int]$job.UiaWorkerProcessId }
+    $processIdentities = New-Object System.Collections.ArrayList
+    foreach ($property in @('ProcessIdentity', 'DictationProcessIdentity', 'UiaWorkerProcessIdentity')) {
+        if ($job.PSObject.Properties.Name -contains $property -and $null -ne $job.$property) {
+            [void]$processIdentities.Add($job.$property)
+        }
+    }
     $stopPath = if ($job.PSObject.Properties.Name -contains 'StopPath') { [string]$job.StopPath } else { '' }
     if (-not [string]::IsNullOrWhiteSpace($stopPath)) {
         try { [IO.File]::WriteAllText($stopPath, 'stop', (New-Object Text.UTF8Encoding($false))) } catch { }
     }
     $script:MbRecordingJob = $null
     # まだ記録プロセスが動いていたら止める。放置すると画面を撮り続ける。
-    foreach ($id in @($processId, $dictationProcessId, $uiaWorkerProcessId)) {
-        if ($id -le 0) { continue }
-        try {
-            $process = Get-Process -Id $id -ErrorAction SilentlyContinue
-            if ($null -ne $process) { $process.Kill() }
-        } catch { }
-    }
+    foreach ($identity in @($processIdentities)) { [void](Stop-MbRecorderOwnedProcess -Identity $identity) }
     if ([string]::IsNullOrWhiteSpace($directory)) { return }
     try { Remove-Item -LiteralPath $directory -Recurse -Force -ErrorAction SilentlyContinue } catch { }
 }
@@ -597,11 +1002,18 @@ Export-ModuleMember -Function @(
     'Start-MbRecordingJob',
     'Read-MbRecordingStatus',
     'Stop-MbRecordingJob',
+    'Set-MbRecordingPaused',
+    'Undo-MbLastRecordingEvent',
     'Get-MbRecordedEvents',
+    'Get-MbRecordedRawEvents',
+    'Get-MbRecordedFrames',
+    'Get-MbRecordedLocalProposals',
     'Merge-MbRecordedEditInteractions',
     'Get-MbRecordedEventImagePath',
+    'Get-MbRecordedFrameImagePath',
+    'Get-MbRecordingSourceInfo',
     'Import-MbRecordedEvents',
-    'Get-MbRecorderTargetCrop',
+    'Import-MbRecordedCopilotSelections',
     'Get-MbRecordedNarration',
     'Merge-MbNarrationIntoEvents',
     'Remove-MbRecordingJob',

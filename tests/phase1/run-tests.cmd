@@ -9,6 +9,9 @@ echo.
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-Static.ps1"
 if errorlevel 1 goto :failed
 
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-LocalDraft.ps1"
+if errorlevel 1 goto :failed
+
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-LocalStorage.ps1"
 if errorlevel 1 goto :failed
 
@@ -46,6 +49,10 @@ if errorlevel 1 (
 ) else (
   python "%~dp0Test-CopilotEvalAggregator.py"
   if errorlevel 1 goto :failed
+  python "%~dp0Test-CopilotBenchmarkRuns.py"
+  if errorlevel 1 goto :failed
+  python "%~dp0Test-RecorderCopilotRunEval.py"
+  if errorlevel 1 goto :failed
   python "%~dp0Test-ProductProjectEval.py"
   if errorlevel 1 goto :failed
 )
@@ -54,6 +61,9 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-
 if errorlevel 1 goto :failed
 
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-ExcelUtilities.ps1"
+if errorlevel 1 goto :failed
+
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-OfficeLayoutFixture.ps1"
 if errorlevel 1 goto :failed
 
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-WordUtilities.ps1"
@@ -71,6 +81,12 @@ if errorlevel 1 goto :failed
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-Recorder.ps1"
 if errorlevel 1 goto :failed
 
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-RecorderCopilot.ps1"
+if errorlevel 1 goto :failed
+
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-RecorderCopilotManualTools.ps1"
+if errorlevel 1 goto :failed
+
 rem Scene splitting runs in the browser, so Node checks it. Skipped when Node is absent.
 where node >nul 2>&1
 if errorlevel 1 (
@@ -84,11 +100,11 @@ if errorlevel 1 (
 
 echo.
 echo All Phase 1 foundation tests passed.
-pause
+if not defined CI pause
 exit /b 0
 
 :failed
 echo.
 echo One or more tests failed. Copy the console output and share it.
-pause
+if not defined CI pause
 exit /b 1

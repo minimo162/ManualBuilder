@@ -14,7 +14,13 @@ param(
     [ValidateRange(60, 1800)][int]$ExcelExportTimeoutSec = 300,
     [ValidateRange(60, 1800)][int]$WordExportTimeoutSec = 300,
     [switch]$DisableScreenshotWatcher,
-    [switch]$NoBrowser
+    [switch]$NoBrowser,
+    # 自動テスト専用。NoBrowserはManualBuilderのタブだけを開かない指定で、
+    # 通常のローカル起動でもCopilot用Edgeの事前準備は止めない。
+    [switch]$SkipCopilotWarmup,
+    # 自動E2Eテスト専用。明示したProjectPathとPortごとに別のmutexを使い、
+    # 利用中の通常インスタンスを停止せず隔離プロジェクトを検証する。
+    [switch]$AllowParallelTestInstance
 )
 
 $ErrorActionPreference = 'Stop'
@@ -87,8 +93,19 @@ function Write-MbLog {
 }
 
 function Get-MbMutex {
+    param([AllowEmptyString()][string]$Scope = '')
     $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     $name = "Local\ManualBuilder-$sid"
+    if (-not [string]::IsNullOrWhiteSpace($Scope)) {
+        $sha256 = [Security.Cryptography.SHA256]::Create()
+        try {
+            $scopeBytes = [Text.Encoding]::UTF8.GetBytes($Scope)
+            $scopeHash = ([BitConverter]::ToString($sha256.ComputeHash($scopeBytes))).Replace('-', '').Substring(0, 16)
+            $name += "-Test-$scopeHash"
+        } finally {
+            $sha256.Dispose()
+        }
+    }
     $created = $false
     $abandoned = $false
     $mutex = New-Object System.Threading.Mutex($true, $name, [ref]$created)
@@ -892,7 +909,6 @@ function ConvertTo-MbCurrentWorkspaceHtml {
 function ConvertTo-MbCurrentProjectLibraryHtml {
     $settings = Get-MbWorkspaceSettings -DataRoot $DataRoot
     return ConvertTo-MbProjectLibraryHtml -Projects @(Get-MbProjectCatalog -DataRoot $DataRoot) `
-        -ArchivedProjects @(Get-MbProjectCatalog -DataRoot $DataRoot -Archived) `
         -LastOpenedProjectKey ([string]$settings.lastOpenedProjectKey)
 }
 
@@ -1150,6 +1166,15 @@ function Invoke-MbRoute {
             Write-MbFile -Context $Context -Path $recordedPath -ContentType 'image/jpeg'
             return
         }
+        if ($path -match '^/images/recording/(?<name>frame-\d{5}\.jpg)$') {
+            $recordedPath = Get-MbRecordedFrameImagePath -FileName ([string]$Matches['name'])
+            if ([string]::IsNullOrWhiteSpace($recordedPath)) {
+                Write-MbResponse $Context 'not found' 404 'text/plain; charset=utf-8'
+                return
+            }
+            Write-MbFile -Context $Context -Path $recordedPath -ContentType 'image/jpeg'
+            return
+        }
         switch ($path) {
             '/' {
                 $templatePath = Join-Path $webRoot 'index.html'
@@ -1223,7 +1248,16 @@ function Invoke-MbRoute {
             '/api/recorder/events' {
                 # 画像そのものは別の口から出す。ここでは一覧だけを返す。
                 $events = @(Get-MbRecordedEvents)
-                Write-MbResponse $Context (([pscustomobject]@{ events = $events } | ConvertTo-Json -Depth 8 -Compress)) 200 'application/json; charset=utf-8'
+                $localProposals = @(Get-MbRecordedLocalProposals)
+                Write-MbResponse $Context (([pscustomobject]@{ events = $events; localProposals = $localProposals } | ConvertTo-Json -Depth 10 -Compress)) 200 'application/json; charset=utf-8'
+                return
+            }
+            '/api/recorder/analyze/status' {
+                Write-MbResponse $Context ((Read-MbRecorderCopilotStatus) | ConvertTo-Json -Depth 8 -Compress) 200 'application/json; charset=utf-8'
+                return
+            }
+            '/api/recorder/analyze/result' {
+                Write-MbResponse $Context ((Get-MbRecorderCopilotResult) | ConvertTo-Json -Depth 10 -Compress) 200 'application/json; charset=utf-8'
                 return
             }
             '/api/recorder/capabilities' {
@@ -1366,6 +1400,37 @@ function Invoke-MbRoute {
         return
     }
 
+    if ($path -eq '/api/recorder/pause') {
+        $form = Read-MbForm -Request $request
+        $paused = ([string](Get-MbFormValue -Form $form -Name 'paused')) -match '^(?i:true|1|on|yes)$'
+        $status = Set-MbRecordingPaused -Paused:$paused
+        Write-MbResponse $Context ($status | ConvertTo-Json -Depth 6 -Compress) 200 'application/json; charset=utf-8'
+        return
+    }
+
+    if ($path -eq '/api/recorder/undo') {
+        $status = Undo-MbLastRecordingEvent
+        Write-MbResponse $Context ($status | ConvertTo-Json -Depth 6 -Compress) 200 'application/json; charset=utf-8'
+        return
+    }
+
+    if ($path -eq '/api/recorder/analyze/start') {
+        try {
+            $source = Get-MbRecordingSourceInfo
+            if ($null -eq $source) { throw '記録した画面が見つかりません。' }
+            $status = Start-MbRecorderCopilotJob -SourceInfo $source
+            Write-MbResponse $Context ($status | ConvertTo-Json -Depth 8 -Compress) 200 'application/json; charset=utf-8'
+        } catch {
+            Write-MbResponse $Context (([pscustomobject]@{ message = [string]$_.Exception.Message } | ConvertTo-Json -Compress)) 400 'application/json; charset=utf-8'
+        }
+        return
+    }
+
+    if ($path -eq '/api/recorder/analyze/cancel') {
+        Write-MbResponse $Context ((Request-MbRecorderCopilotCancel) | ConvertTo-Json -Depth 8 -Compress) 200 'application/json; charset=utf-8'
+        return
+    }
+
     # 記録した操作のうち、選ばれたものだけを手順にする。
     if ($path -eq '/api/recorder/import') {
         if (-not $tabId) {
@@ -1383,11 +1448,16 @@ function Invoke-MbRoute {
             $project = Get-MbProject -Path $ProjectPath
             $sheetId = [string]$request.Headers['X-Sheet-Id']
             if ([string]::IsNullOrWhiteSpace($sheetId)) { $sheetId = [string]$project.selectedSheetId }
-            $imported = Import-MbRecordedEvents -Project $project -ProjectPath $ProjectPath -SheetId $sheetId -SelectionJson $selectionJson
+            $imported = if ($selectionJson -match '"beforeFrame"') {
+                Import-MbRecordedCopilotSelections -Project $project -ProjectPath $ProjectPath -SheetId $sheetId -SelectionJson $selectionJson
+            } else {
+                Import-MbRecordedEvents -Project $project -ProjectPath $ProjectPath -SheetId $sheetId -SelectionJson $selectionJson
+            }
             if ([int]$imported.added -gt 0) {
                 [void](Save-MbProject -Project $project -Path $ProjectPath)
                 $script:CaptureVersion++
             }
+            Remove-MbRecorderCopilotJob
             Remove-MbRecordingJob
             Write-MbLog "記録した操作を $([int]$imported.added) 件の手順にしました。" 'OK'
             Write-MbResponse $Context ($imported | ConvertTo-Json -Depth 4 -Compress) 200 'application/json; charset=utf-8'
@@ -1398,6 +1468,7 @@ function Invoke-MbRoute {
     }
 
     if ($path -eq '/api/recorder/discard') {
+        Remove-MbRecorderCopilotJob
         Remove-MbRecordingJob
         Write-MbResponse $Context '{"status":"ok"}' 200 'application/json; charset=utf-8'
         return
@@ -1644,11 +1715,16 @@ function Invoke-MbRoute {
             }
             $declaredLength = [long]$request.ContentLength64
             if ($declaredLength -eq 0 -or $declaredLength -gt (250 * 1024 * 1024)) { throw '取り込めるZIPは250MBまでです。' }
+            Write-MbLog "マニュアルZIPを受信しています: $declaredLength bytes" 'INFO'
             $destination = [IO.File]::Open($packagePath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
             try {
                 $buffer = New-Object byte[] 81920
                 $totalLength = [long]0
-                while (($readLength = $request.InputStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                while ($totalLength -lt $declaredLength) {
+                    $remainingLength = $declaredLength - $totalLength
+                    $requestedLength = [int][Math]::Min([long]$buffer.Length, $remainingLength)
+                    $readLength = $request.InputStream.Read($buffer, 0, $requestedLength)
+                    if ($readLength -le 0) { throw 'ZIPデータを最後まで受信できませんでした。' }
                     $totalLength += [long]$readLength
                     if ($totalLength -gt (250 * 1024 * 1024)) { throw '取り込めるZIPは250MBまでです。' }
                     $destination.Write($buffer, 0, $readLength)
@@ -1657,7 +1733,9 @@ function Invoke-MbRoute {
             } finally {
                 $destination.Dispose()
             }
+            Write-MbLog 'マニュアルZIPを検証しています。' 'INFO'
             [void](Import-MbCatalogProjectPackage -DataRoot $DataRoot -PackagePath $packagePath)
+            Write-MbLog 'マニュアルZIPを取り込みました。' 'OK'
             Write-MbResponse $Context (ConvertTo-MbCurrentProjectLibraryHtml)
         } catch {
             Write-MbResponse $Context $_.Exception.Message 400 'text/plain; charset=utf-8'
@@ -1736,10 +1814,27 @@ function Invoke-MbRoute {
     }
     if ($path -eq '/api/projects/archive') {
         try {
-            if ($usesExplicitProjectPath) { throw '明示プロジェクト指定中はアーカイブできません。' }
-            if (Test-MbOfficeExportActive) { throw 'Office出力中はアーカイブできません。' }
+            if ($usesExplicitProjectPath) { throw '明示プロジェクト指定中は削除できません。' }
+            if (Test-MbOfficeExportActive) { throw 'Office出力中は削除できません。' }
             $key = Get-MbFormValue $form 'projectKey'
             [void](Move-MbCatalogProjectToArchive -DataRoot $DataRoot -ProjectKey $key)
+            if ($script:ActiveProjectKey -eq $key) {
+                $script:ActiveProjectKey = ''
+                $script:ProjectHomeVisible = $true
+                Reset-MbActiveProjectSession
+            }
+            Write-MbResponse $Context (ConvertTo-MbCurrentProjectLibraryHtml)
+        } catch {
+            Write-MbResponse $Context $_.Exception.Message 409 'text/plain; charset=utf-8'
+        }
+        return
+    }
+    if ($path -eq '/api/projects/delete') {
+        try {
+            if ($usesExplicitProjectPath) { throw '明示プロジェクト指定中は削除できません。' }
+            if (Test-MbOfficeExportActive) { throw 'Office出力中は削除できません。' }
+            $key = Get-MbFormValue $form 'projectKey'
+            [void](Remove-MbCatalogProject -DataRoot $DataRoot -ProjectKey $key)
             if ($script:ActiveProjectKey -eq $key) {
                 $script:ActiveProjectKey = ''
                 $script:ProjectHomeVisible = $true
@@ -1963,7 +2058,8 @@ function Invoke-MbRoute {
         '/api/steps/annotations' {
             try {
                 Set-MbStepImageEdits -Project $project -StepId (Get-MbFormValue $form 'stepId') `
-                    -AnnotationsJson (Get-MbFormValue $form 'annotations') -CropJson (Get-MbFormValue $form 'crop')
+                    -AnnotationsJson (Get-MbFormValue $form 'annotations') -CropJson (Get-MbFormValue $form 'crop') `
+                    -Target $(if ((Get-MbFormValue $form 'target') -eq 'result') { 'result' } else { 'before' })
                 [void](Save-MbProject -Project $project -Path $ProjectPath)
                 Write-MbResponse $Context (ConvertTo-MbSaveStatusHtml)
             } catch {
@@ -2081,7 +2177,8 @@ function Invoke-MbRoute {
     }
 }
 
-$mutexInfo = Get-MbMutex
+$mutexScope = if ($AllowParallelTestInstance) { "$ProjectPath|$Port" } else { '' }
+$mutexInfo = Get-MbMutex -Scope $mutexScope
 if (-not $mutexInfo.Acquired) {
     if (-not (Show-MbExistingInstanceNotice)) {
         Write-Host 'ManualBuilderはすでに起動しています。ブラウザーから既存画面を開いてください。' -ForegroundColor Yellow
@@ -2155,9 +2252,21 @@ try {
     Write-Host '  停止するには画面の「終了」または Ctrl+C を使用してください。' -ForegroundColor Yellow
     Write-Host ''
 
+    # Copilotは記録後の場面選択で使うため、利用者が記録を終えてからEdgeの起動を
+    # 待たなくてよいよう、サーバーの待受開始後に非同期で準備する。初期化worker側で
+    # 既存の普段使いEdgeを再利用し、サインイン確認が必要な場合も画面上へ表示する。
+    if (-not $SkipCopilotWarmup) {
+        try {
+            if (Start-MbCopilotWarmup) {
+                Write-MbLog 'Microsoft 365 Copilotの画面を準備しています。' 'INFO'
+            }
+        } catch {
+            # Copilotが使えなくても、ローカル初稿と編集・Office出力は続行できる。
+            Write-MbLog ('Copilotの事前準備を開始できませんでした: ' + $_.Exception.Message) 'WARN'
+        }
+    }
+
     if (-not $NoBrowser) {
-        # 利用者が下書きボタンを押すまで待たず、アプリと同時にCopilot用Edgeを非同期で準備する。
-        try { [void](Start-MbCopilotWarmup) } catch { Write-MbLog ('Copilotの事前準備を開始できませんでした: ' + $_.Exception.Message) 'WARN' }
         Start-Process $url
     }
 

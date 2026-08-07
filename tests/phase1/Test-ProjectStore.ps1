@@ -30,6 +30,7 @@ try {
     Update-MbStep -Project $project -StepId $step.id -Title '申請画面を開く' -Description 'メニューから申請を選択します。' -Note '事前にログインが必要です。'
     Assert-Mb (@($step.annotations).Count -eq 0) '新しい手順の注釈一覧が空である'
     Assert-Mb ([double]$step.crop.width -eq 1 -and [double]$step.crop.height -eq 1) '新しい手順の切り抜き範囲が画像全体である'
+    Assert-Mb (@($step.resultAnnotations).Count -eq 0 -and [double]$step.resultCrop.width -eq 1) '操作後画像にも独立した空の編集状態を持つ'
     Assert-Mb (-not [bool]$step.review.required) '新しい手順は要確認ではない'
     Assert-Mb ([string]$step.imageLayout -eq 'before' -and [string]$step.imageOrder -eq 'before-after') '新しい手順は操作前画像だけを表示する'
     [void](Set-MbStepReview -Project $project -StepId $step.id -Action 'review' -Reason 'Copilotの判断に自信がありません。')
@@ -64,11 +65,14 @@ try {
     [void](Set-MbStepReview -Project $loaded -StepId $loadedStep.id)
     Assert-Mb (-not [bool]$loadedStep.review.required -and [string]::IsNullOrWhiteSpace([string]$loadedStep.review.action)) '明示操作で要確認を解除できる'
     $loadedStep.PSObject.Properties.Remove('crop')
+    $loadedStep.PSObject.Properties.Remove('resultAnnotations')
+    $loadedStep.PSObject.Properties.Remove('resultCrop')
     $loadedStep.PSObject.Properties.Remove('review')
     $loadedStep.PSObject.Properties.Remove('imageLayout')
     $loadedStep.PSObject.Properties.Remove('imageOrder')
     [void](Save-MbProject -Project $loaded -Path $projectPath)
     Assert-Mb ([double]$loadedStep.crop.width -eq 1 -and [double]$loadedStep.crop.height -eq 1) '既存プロジェクトへ画像全体の切り抜き範囲を補完する'
+    Assert-Mb (@($loadedStep.resultAnnotations).Count -eq 0 -and [double]$loadedStep.resultCrop.width -eq 1) '既存プロジェクトへ操作後画像の編集状態を補完する'
     Assert-Mb (-not [bool]$loadedStep.review.required) '既存プロジェクトへ要確認の既定値を補完する'
     Assert-Mb ([string]$loadedStep.imageLayout -eq 'before' -and [string]$loadedStep.imageOrder -eq 'before-after') '既存プロジェクトへ画像配置の既定値を補完する'
 

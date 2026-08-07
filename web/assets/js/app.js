@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const appVersion = '0.42.0';
+  const appVersion = '0.46.0';
   // 番号注釈はSVG属性で指定するためCSS変数を参照できない。
   // 編集画面とExcel・Word出力（New-MbAnnotatedImage）で同じ見た目にするため、基準フォントを揃える。
   const ANNOTATION_NUMBER_FONT = '"BIZ UDPGothic", "BIZ UDPゴシック", "BIZ UDGothic", "BIZ UDゴシック", Meiryo, "Yu Gothic UI", "MS Pゴシック", sans-serif';
@@ -9,9 +9,16 @@
   const ensureCurrentAssets = () => {
     const serverVersion = document.getElementById('workspace')?.dataset.appVersion || '';
     if (!serverVersion || serverVersion === appVersion) return true;
+    const currentUrl = new URL(window.location.href);
+    // 版数を付けて一度読み直した後も不一致なら、起動中サーバーだけが旧版の状態。
+    // 同じURLへのreplaceを繰り返すと画面が点滅し続けるため、再読込は1回で止める。
+    if (currentUrl.searchParams.get('appVersion') === serverVersion) {
+      versionReloadRequested = true;
+      return false;
+    }
     if (!versionReloadRequested) {
       versionReloadRequested = true;
-      const nextUrl = new URL(window.location.href);
+      const nextUrl = currentUrl;
       nextUrl.searchParams.set('appVersion', serverVersion);
       window.location.replace(nextUrl.toString());
     }
@@ -64,7 +71,32 @@
     window.setTimeout(() => toast.remove(), TOAST_TIMEOUT_MS[tone] || TOAST_TIMEOUT_MS.info);
   };
 
+  const closeActionMenus = (except = null) => {
+    document.querySelectorAll('details.action-menu[open]').forEach((menu) => {
+      if (menu !== except) menu.open = false;
+    });
+  };
+
+  // 一般的なメニューと同じく、同時に開くのは1つだけにする。
+  document.addEventListener('toggle', (event) => {
+    const menu = event.target.closest?.('details.action-menu');
+    if (menu?.open) closeActionMenus(menu);
+  }, true);
+  document.addEventListener('click', (event) => {
+    if (!event.target.closest?.('details.action-menu')) closeActionMenus();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    const menu = event.target.closest?.('details.action-menu[open]');
+    if (!menu) return;
+    menu.open = false;
+    menu.querySelector('summary')?.focus();
+    event.preventDefault();
+  });
+
   let deletionUndoBusy = false;
+  let visibleUndoKind = '';
+  let visibleUndoHandler = null;
   const ensureDeletionUndoBar = () => {
     let bar = document.getElementById('deletion-undo');
     if (bar) return bar;
@@ -74,7 +106,7 @@
     bar.hidden = true;
     bar.setAttribute('role', 'status');
     bar.innerHTML = '<span class="deletion-undo__message"></span><button type="button" class="deletion-undo__button">元に戻す</button>';
-    bar.querySelector('.deletion-undo__button')?.addEventListener('click', () => { void undoLastDeletion(); });
+    bar.querySelector('.deletion-undo__button')?.addEventListener('click', () => { void runVisibleUndo(); });
     document.body.appendChild(bar);
     return bar;
   };
@@ -83,15 +115,34 @@
     const bar = ensureDeletionUndoBar();
     const message = bar.querySelector('.deletion-undo__message');
     if (message) message.textContent = label || '直前の削除を元に戻せます';
+    visibleUndoKind = 'deletion';
+    visibleUndoHandler = undoLastDeletion;
     bar.hidden = false;
   };
 
   const hideDeletionUndo = () => {
     const bar = document.getElementById('deletion-undo');
     if (bar) bar.hidden = true;
+    visibleUndoKind = '';
+    visibleUndoHandler = null;
+  };
+
+  const showVisibleUndo = (kind, label, handler) => {
+    const bar = ensureDeletionUndoBar();
+    const message = bar.querySelector('.deletion-undo__message');
+    if (message) message.textContent = label;
+    visibleUndoKind = kind;
+    visibleUndoHandler = handler;
+    bar.hidden = false;
+  };
+
+  const runVisibleUndo = async () => {
+    const handler = visibleUndoHandler;
+    if (typeof handler === 'function') await handler();
   };
 
   const refreshDeletionUndo = async () => {
+    if (visibleUndoKind && visibleUndoKind !== 'deletion') return;
     try {
       const response = await fetch('/api/deletions/status', { headers: sessionHeaders() });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -138,6 +189,17 @@
       }
     }
   };
+
+  // ファイル操作と同じく、入力欄の外では Ctrl/Cmd+Z でも画面下の「元に戻す」を実行する。
+  // 入力欄ではブラウザー標準の文字編集Undoを優先する。
+  document.addEventListener('keydown', (event) => {
+    if (!(event.ctrlKey || event.metaKey) || event.shiftKey || event.key.toLowerCase() !== 'z') return;
+    const target = event.target;
+    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target?.isContentEditable) return;
+    if (!visibleUndoHandler) return;
+    event.preventDefault();
+    void runVisibleUndo();
+  });
 
   const replaceProjectLibrary = (html) => {
     const current = document.getElementById('workspace');
@@ -310,9 +372,10 @@
     });
   };
 
-  const readCardAnnotations = (card) => {
+  const readCardAnnotations = (card, target = 'before') => {
     try {
-      const parsed = JSON.parse(card.querySelector('.step-annotations-data')?.value || '[]');
+      const selector = target === 'result' ? '.step-result-annotations-data' : '.step-annotations-data';
+      const parsed = JSON.parse(card.querySelector(selector)?.value || '[]');
       return Array.isArray(parsed) ? parsed : [];
     } catch {
       return [];
@@ -331,9 +394,10 @@
     return { x, y, width, height };
   };
 
-  const readCardCrop = (card) => {
+  const readCardCrop = (card, target = 'before') => {
     try {
-      return normalizeCrop(JSON.parse(card.querySelector('.step-crop-data')?.value || '{}'));
+      const selector = target === 'result' ? '.step-result-crop-data' : '.step-crop-data';
+      return normalizeCrop(JSON.parse(card.querySelector(selector)?.value || '{}'));
     } catch {
       return fullCrop();
     }
@@ -342,13 +406,14 @@
   const isFullCrop = (crop) => Math.abs(crop.x) < 0.000001 && Math.abs(crop.y) < 0.000001 &&
     Math.abs(crop.width - 1) < 0.000001 && Math.abs(crop.height - 1) < 0.000001;
 
-  const positionCardAnnotationOverlay = (card) => {
-    const frame = card.querySelector('.step-image-button');
-    const viewport = card.querySelector('.step-image-viewport');
-    const image = card.querySelector('.step-image');
-    const overlay = card.querySelector('.step-annotation-overlay');
+  const positionCardAnnotationOverlay = (card, target = 'before') => {
+    const result = target === 'result';
+    const frame = card.querySelector(result ? '.step-result-image__button' : '.step-image-button');
+    const viewport = card.querySelector(result ? '.step-result-image__viewport' : '.step-image-viewport');
+    const image = card.querySelector(result ? '.step-result-image__image' : '.step-image');
+    const overlay = card.querySelector(result ? '.step-result-annotation-overlay' : '.step-annotation-overlay:not(.step-result-annotation-overlay)');
     if (!frame || !viewport || !image || !overlay || !image.naturalWidth || !image.naturalHeight) return;
-    const crop = readCardCrop(card);
+    const crop = readCardCrop(card, target);
     const cropWidth = image.naturalWidth * crop.width;
     const cropHeight = image.naturalHeight * crop.height;
     // 小さな範囲を切り取った場合も、編集画面いっぱいには引き伸ばさない。
@@ -359,7 +424,7 @@
     const isExtremePortraitImage = cropAspectRatio <= (1 / 3);
     const compactImageWidthRatio = isExtremeWideImage ? 0.85 : 1;
     const compactImageHeightRatio = isExtremePortraitImage ? 0.85 : 1;
-    const imageFrame = frame.closest('.step-image-frame');
+    const imageFrame = frame.closest(result ? '.step-result-image' : '.step-image-frame');
     imageFrame?.classList.toggle('step-image-frame--extreme-wide', isExtremeWideImage);
     imageFrame?.classList.toggle('step-image-frame--extreme-portrait', isExtremePortraitImage);
     // 横長用クラスでフレーム高が変わった後の実寸を使って配置する。
@@ -385,18 +450,47 @@
   };
 
   const renderCardAnnotations = (card) => {
-    const overlay = card.querySelector('.step-annotation-overlay');
-    if (!overlay) return;
-    positionCardAnnotationOverlay(card);
-    renderAnnotations(overlay, readCardAnnotations(card));
-    const image = card.querySelector('.step-image');
-    // onloadは代入のたびに前のハンドラーを置き換えるため、画像差し替えを繰り返しても蓄積しない。
-    if (image) image.onload = () => renderCardAnnotations(card);
+    ['before', 'result'].forEach((target) => {
+      const result = target === 'result';
+      const overlay = card.querySelector(result ? '.step-result-annotation-overlay' : '.step-annotation-overlay:not(.step-result-annotation-overlay)');
+      if (!overlay) return;
+      positionCardAnnotationOverlay(card, target);
+      renderAnnotations(overlay, readCardAnnotations(card, target));
+      const image = card.querySelector(result ? '.step-result-image__image' : '.step-image');
+      // onloadは代入のたびに前のハンドラーを置き換えるため、画像差し替えを繰り返しても蓄積しない。
+      if (image) image.onload = () => renderCardAnnotations(card);
+    });
   };
 
   const renderAllCardAnnotations = () => stepCards().forEach(renderCardAnnotations);
 
   const activeStepKey = () => `manualbuilder.activeStep.${selectedSheetId()}`;
+  const stepViewKey = () => `manualbuilder.stepView.${selectedSheetId()}`;
+  let reviewScrollSyncPausedUntil = 0;
+
+  const updateStepPosition = (active) => {
+    const cards = stepCards();
+    const index = Math.max(0, cards.indexOf(active));
+    const position = document.querySelector('[data-step-position]');
+    if (position) position.textContent = cards.length ? `${index + 1} / ${cards.length}` : '0 / 0';
+    const previous = document.querySelector('[data-step-previous]');
+    const next = document.querySelector('[data-step-next]');
+    if (previous) previous.disabled = cards.length < 2 || index <= 0;
+    if (next) next.disabled = cards.length < 2 || index >= cards.length - 1;
+  };
+
+  const applyStepView = (mode, options = {}) => {
+    const workspace = document.getElementById('workspace');
+    if (!workspace || workspace.classList.contains('project-library')) return;
+    const nextMode = mode === 'focus' ? 'focus' : 'review';
+    workspace.classList.toggle('step-view--review', nextMode === 'review');
+    workspace.classList.toggle('step-view--focus', nextMode === 'focus');
+    document.querySelectorAll('[data-step-view]').forEach((button) => {
+      button.setAttribute('aria-pressed', String(button.dataset.stepView === nextMode));
+    });
+    if (options.persist !== false) sessionStorage.setItem(stepViewKey(), nextMode);
+    window.requestAnimationFrame(renderAllCardAnnotations);
+  };
 
   // scrollIntoView に behavior を明示すると、CSSの prefers-reduced-motion 指定を上書きしてしまう。
   // 動きを減らす設定のときは即座に移動させる。
@@ -413,18 +507,48 @@
       if (isActive) jump?.setAttribute('aria-current', 'step');
       else jump?.removeAttribute('aria-current');
     });
+    updateStepPosition(active);
     if (!active) return;
     sessionStorage.setItem(activeStepKey(), active.dataset.stepId);
     window.requestAnimationFrame(() => renderCardAnnotations(active));
     if (options.scroll !== false) {
+      reviewScrollSyncPausedUntil = Date.now() + (prefersReducedMotion() ? 180 : 900);
       active.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'start' });
     }
     if (options.focusDescription) active.querySelector('textarea[name="description"]')?.focus();
   };
 
+  const moveActiveStep = (offset, options = {}) => {
+    const cards = stepCards();
+    if (!cards.length) return false;
+    const current = document.querySelector('.step-card--active');
+    const currentIndex = Math.max(0, cards.indexOf(current));
+    const nextIndex = Math.max(0, Math.min(cards.length - 1, currentIndex + offset));
+    if (nextIndex === currentIndex) return false;
+    setActiveStep(cards[nextIndex].dataset.stepId, { scroll: options.scroll !== false });
+    return true;
+  };
+
+  let reviewScrollFrame = 0;
+  const syncReviewStepFromScroll = () => {
+    const workspace = document.getElementById('workspace');
+    if (!workspace?.classList.contains('step-view--review')) return;
+    if (Date.now() < reviewScrollSyncPausedUntil) return;
+    const cards = stepCards();
+    if (!cards.length) return;
+    const toolbarBottom = document.querySelector('[data-step-review-toolbar]')?.getBoundingClientRect().bottom || 0;
+    const referenceY = toolbarBottom + 28;
+    let visibleCard = cards[0];
+    cards.forEach((card) => {
+      if (card.getBoundingClientRect().top <= referenceY) visibleCard = card;
+    });
+    if (!visibleCard.classList.contains('step-card--active')) {
+      setActiveStep(visibleCard.dataset.stepId, { scroll: false });
+    }
+  };
+
   const selectedStepIds = new Set();
   const finishAttentionSteps = new Map();
-  let stepSelectionMode = false;
   let lastSelectedStepId = '';
 
   const loadFinishAttentionSteps = () => {
@@ -441,33 +565,16 @@
     });
   };
 
-  const setStepSelectionMode = (enabled, options = {}) => {
-    stepSelectionMode = Boolean(enabled);
-    const nav = document.querySelector('.step-nav');
-    nav?.classList.toggle('step-nav--selecting', stepSelectionMode);
-    const button = nav?.querySelector('[data-step-select-mode]');
-    if (button) {
-      button.setAttribute('aria-pressed', String(stepSelectionMode));
-      button.textContent = stepSelectionMode ? '選択を終了' : '複数選択';
-    }
-    if (!stepSelectionMode && options.keepSelection !== true) {
-      selectedStepIds.clear();
-      lastSelectedStepId = '';
-    }
-    updateStepBulkActions();
-  };
-
   function updateStepBulkActions() {
+    const count = selectedStepIds.size;
     document.querySelectorAll('[data-step-nav-item]').forEach((item) => {
       const selected = selectedStepIds.has(item.dataset.stepId || '');
       item.classList.toggle('step-nav__item--selected', selected);
-      const checkbox = item.querySelector('[data-step-select]');
-      if (checkbox) checkbox.checked = selected;
+      item.querySelector('[data-step-jump]')?.setAttribute('aria-pressed', String(selected));
     });
     const actions = document.querySelector('[data-step-bulk-actions]');
-    const count = selectedStepIds.size;
     if (!actions) return;
-    actions.hidden = !stepSelectionMode;
+    actions.hidden = count === 0;
     const label = actions.querySelector('[data-step-selection-count]');
     if (label) label.textContent = `${count}件選択`;
     const target = actions.querySelector('[data-step-bulk-target]');
@@ -479,7 +586,7 @@
 
   const clearStepSelection = () => {
     selectedStepIds.clear();
-    lastSelectedStepId = '';
+    lastSelectedStepId = document.querySelector('.step-card--active')?.dataset.stepId || '';
     updateStepBulkActions();
   };
 
@@ -504,23 +611,52 @@
     });
   };
 
+  const selectStepFromPointer = (stepId, event) => {
+    if (!stepId) return;
+    const additive = Boolean(event.ctrlKey || event.metaKey);
+    const activeId = document.querySelector('.step-card--active')?.dataset.stepId || '';
+    if (event.shiftKey) {
+      const anchor = lastSelectedStepId || activeId || stepId;
+      if (!additive) selectedStepIds.clear();
+      selectStepRange(anchor, stepId, true);
+    } else if (additive) {
+      if (selectedStepIds.size === 0 && activeId) selectedStepIds.add(activeId);
+      if (selectedStepIds.has(stepId)) selectedStepIds.delete(stepId);
+      else selectedStepIds.add(stepId);
+      lastSelectedStepId = stepId;
+    } else {
+      selectedStepIds.clear();
+      lastSelectedStepId = stepId;
+    }
+    setActiveStep(stepId);
+    updateStepBulkActions();
+  };
+
   const projectFinishItems = () => {
     const source = document.querySelector('[data-project-finish-data]')?.value || '[]';
     let items = [];
     try { items = JSON.parse(source); } catch { items = []; }
     const currentSheetId = selectedSheetId();
     const currentSheetName = document.querySelector('.sheet-name-input')?.value || '';
-    const currentItems = stepCards().map((card) => ({
-      sheetId: currentSheetId,
-      sheetName: currentSheetName,
-      stepId: card.dataset.stepId || '',
-      missingText: !card.querySelector('textarea[name="description"]')?.value.trim(),
-      missingImage: !card.querySelector('.step-image'),
-      hasFocusAnnotation: readCardAnnotations(card).some((item) => ['rect', 'number'].includes(item.type)),
-      reviewRequired: Boolean(card.querySelector('[data-step-review-notice]')),
-      reviewAction: card.querySelector('[data-step-review-notice]')?.dataset.reviewAction || '',
-      reviewReason: card.querySelector('[data-step-review-notice] span')?.textContent?.trim() || ''
-    }));
+    const currentItems = stepCards().map((card) => {
+      const layout = card.querySelector('[data-step-visual]')?.dataset.imageLayout || 'before';
+      const visibleAnnotations = layout === 'after'
+        ? readCardAnnotations(card, 'result')
+        : (['side-by-side', 'stacked'].includes(layout)
+          ? [...readCardAnnotations(card, 'before'), ...readCardAnnotations(card, 'result')]
+          : readCardAnnotations(card, 'before'));
+      return {
+        sheetId: currentSheetId,
+        sheetName: currentSheetName,
+        stepId: card.dataset.stepId || '',
+        missingText: !card.querySelector('textarea[name="description"]')?.value.trim(),
+        missingImage: !card.querySelector('.step-image'),
+        hasFocusAnnotation: visibleAnnotations.some((item) => ['rect', 'number'].includes(item.type)),
+        reviewRequired: Boolean(card.querySelector('[data-step-review-notice]')),
+        reviewAction: card.querySelector('[data-step-review-notice]')?.dataset.reviewAction || '',
+        reviewReason: card.querySelector('[data-step-review-notice] span')?.textContent?.trim() || ''
+      };
+    });
     return [...items.filter((item) => item.sheetId !== currentSheetId), ...currentItems];
   };
 
@@ -587,8 +723,7 @@
         selectedStepIds.add(stepId);
       }
     });
-    if (selectedStepIds.size) setStepSelectionMode(true, { keepSelection: true });
-    else updateStepBulkActions();
+    updateStepBulkActions();
   };
 
   const focusFinishTarget = async (kind) => {
@@ -614,7 +749,11 @@
       setActiveStep(next.stepId);
       if (kind === 'text') card.querySelector('textarea[name="description"]')?.focus();
       else if (kind === 'image') card.querySelector('[data-add-image-to-step]')?.focus();
-      else if (kind === 'annotation') window.setTimeout(() => openAnnotationEditor(card), 180);
+      else if (kind === 'annotation') {
+        const layout = card.querySelector('[data-step-visual]')?.dataset.imageLayout || 'before';
+        const editTarget = layout === 'after' ? 'result' : 'before';
+        window.setTimeout(() => openAnnotationEditor(card, editTarget), 180);
+      }
       else if (kind === 'attention') {
         const detail = finishAttentionSteps.get(next.stepId);
         if (detail?.action === 'delete') {
@@ -674,21 +813,8 @@
       item.className = `step-nav__item step-nav__item--${status}`;
       if (finishAttentionSteps.has(card.dataset.stepId || '')) item.classList.add('step-nav__item--attention');
       item.dataset.stepNavItem = '';
+      item.dataset.stepDirectDrag = '';
       item.dataset.stepId = card.dataset.stepId;
-      const drag = document.createElement('button');
-      drag.type = 'button';
-      drag.className = 'step-nav__drag';
-      drag.draggable = true;
-      drag.dataset.stepNavDragHandle = '';
-      drag.title = 'ドラッグ、または ↑↓ キーで並べ替え';
-      drag.setAttribute('aria-label', `手順 ${index + 1} の並べ替え。ドラッグするか、↑↓ キーで移動`);
-      drag.textContent = '⠿';
-      const select = document.createElement('input');
-      select.type = 'checkbox';
-      select.className = 'step-nav__select';
-      select.dataset.stepSelect = '';
-      select.checked = selectedStepIds.has(card.dataset.stepId || '');
-      select.setAttribute('aria-label', `手順 ${index + 1} を選択`);
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'step-nav__main';
@@ -709,17 +835,37 @@
         dot.setAttribute('aria-label', statusLabel);
         button.append(dot);
       }
-      const actions = document.createElement('div');
-      actions.className = 'step-nav__actions';
+      const actions = document.createElement('details');
+      actions.className = 'step-nav__actions action-menu';
+      const more = document.createElement('summary');
+      more.className = 'step-nav__more';
+      more.setAttribute('aria-label', `手順 ${index + 1} の操作`);
+      more.textContent = '…';
+      const menu = document.createElement('div');
+      menu.className = 'action-menu__panel action-menu__panel--right step-nav__menu-panel';
+      const menuItems = [
+        ['この下に手順を追加', 'add', false],
+        ['1つ上へ移動', 'up', index === 0],
+        ['1つ下へ移動', 'down', index === stepCards().length - 1]
+      ];
+      menuItems.forEach(([label, action, disabled]) => {
+        const command = document.createElement('button');
+        command.type = 'button';
+        command.className = 'menu-command';
+        command.textContent = label;
+        command.disabled = disabled;
+        if (action === 'add') command.dataset.stepNavAddAfter = '';
+        else command.dataset.stepNavOrder = action;
+        menu.append(command);
+      });
       const remove = document.createElement('button');
       remove.type = 'button';
-      remove.className = 'step-nav__delete';
+      remove.className = 'menu-command menu-command--danger';
       remove.dataset.stepNavDelete = '';
-      remove.title = 'この手順を削除';
-      remove.setAttribute('aria-label', `手順 ${index + 1} を削除`);
-      remove.textContent = '×';
-      actions.append(remove);
-      item.append(drag, select, button, actions);
+      remove.textContent = '削除';
+      menu.append(remove);
+      actions.append(more, menu);
+      item.append(button, actions);
       fragment.appendChild(item);
     });
     list.replaceChildren(fragment);
@@ -734,10 +880,11 @@
   const initializeWorkspaceView = (activeStepId = '') => {
     loadFinishAttentionSteps();
     rebuildStepNavigation();
+    applyStepView(sessionStorage.getItem(stepViewKey()) || 'review', { persist: false });
     const remembered = activeStepId || sessionStorage.getItem(activeStepKey());
     setActiveStep(remembered, { scroll: false });
     renderAllCardAnnotations();
-    setStepSelectionMode(selectedStepIds.size > 0, { keepSelection: true });
+    updateStepBulkActions();
     updateFinishGuide();
     void refreshDeletionUndo();
   };
@@ -752,17 +899,6 @@
       const labelElement = card.querySelector('.step-card__label');
       if (numberElement) numberElement.textContent = String(number);
       if (labelElement) labelElement.textContent = `手順 ${number}`;
-      const moveUp = card.querySelector('[data-step-move="-1"]');
-      const moveDown = card.querySelector('[data-step-move="1"]');
-      if (moveUp) {
-        moveUp.disabled = index === 0;
-        moveUp.setAttribute('aria-label', `手順 ${number} を1つ上へ`);
-      }
-      if (moveDown) {
-        moveDown.disabled = index === cards.length - 1;
-        moveDown.setAttribute('aria-label', `手順 ${number} を1つ下へ`);
-      }
-      card.querySelector('[data-step-card-delete]')?.setAttribute('aria-label', `手順 ${number} を削除`);
       const image = card.querySelector('.step-image');
       if (image) image.alt = `手順 ${number} のスクリーンショット`;
       card.querySelector('[data-image-preview]')?.setAttribute('aria-label', `手順 ${number} のスクリーンショットを拡大`);
@@ -774,10 +910,54 @@
 
   let reorderQueue = Promise.resolve();
   let lastReorderError = null;
-  const queueStepOrderSave = () => {
+  const undoStepReorder = async ({ sheetId, orderedIds, activeId }) => {
+    const button = ensureDeletionUndoBar().querySelector('.deletion-undo__button');
+    if (!sheetId || !Array.isArray(orderedIds) || !orderedIds.length) return;
+    if (button) {
+      button.disabled = true;
+      button.textContent = '復元中…';
+    }
+    try {
+      saveStatus('saving', '並べ替えを元に戻しています…');
+      const response = await fetch('/api/steps/reorder', {
+        method: 'POST',
+        headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }),
+        body: new URLSearchParams({ sheetId, orderedIds: orderedIds.join(',') })
+      });
+      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      const current = document.getElementById('save-status');
+      if (current) current.outerHTML = await response.text();
+
+      if (selectedSheetId() === sheetId) {
+        const cards = new Map(stepCards().map((card) => [card.dataset.stepId, card]));
+        const orderedCards = orderedIds.map((stepId) => cards.get(stepId)).filter(Boolean);
+        if (orderedCards.length === cards.size) {
+          const container = document.querySelector('.steps');
+          orderedCards.forEach((card) => container?.appendChild(card));
+          refreshStepControls();
+          setActiveStep(cards.has(activeId) ? activeId : orderedIds[0], { scroll: false });
+        }
+      }
+      hideDeletionUndo();
+      showToast('手順の並べ替えを元に戻しました。', 'success');
+      void refreshDeletionUndo();
+    } catch (error) {
+      saveStatus('error', '並べ替えを元に戻せません');
+      showToast(error?.message || '手順の並べ替えを元に戻せませんでした。');
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = '元に戻す';
+      }
+    }
+  };
+
+  const queueStepOrderSave = ({ undoOrder = [] } = {}) => {
     const sheetId = selectedSheetId();
     const orderedIds = stepCards().map((card) => card.dataset.stepId).filter(Boolean);
     if (!sheetId || !orderedIds.length) return;
+    const priorOrder = [...undoOrder].filter(Boolean);
+    const activeId = document.querySelector('.step-card--active')?.dataset.stepId || orderedIds[0];
 
     saveStatus('saving', '並べ替えを保存中…');
     reorderQueue = reorderQueue.then(async () => {
@@ -791,7 +971,11 @@
       if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
       const current = document.getElementById('save-status');
       if (current) current.outerHTML = await response.text();
-      showToast('手順の順序を変更しました。', 'success');
+      if (priorOrder.length === orderedIds.length && priorOrder.join(',') !== orderedIds.join(',')) {
+        showVisibleUndo('step-reorder', '手順の順序を変更しました', () => undoStepReorder({ sheetId, orderedIds: priorOrder, activeId }));
+      } else {
+        showToast('手順の順序を変更しました。', 'success');
+      }
     }).catch((error) => {
       lastReorderError = error || new Error('手順の並べ替えを保存できませんでした。');
       saveStatus('error', '並べ替えを保存できません');
@@ -802,18 +986,30 @@
   const applyStepCardOrder = (orderedCards, activeId = '') => {
     const container = document.querySelector('.steps');
     if (!container || orderedCards.length < 1) return;
+    const undoOrder = stepCards().map((card) => card.dataset.stepId).filter(Boolean);
     orderedCards.forEach((card) => container.appendChild(card));
     refreshStepControls();
     setActiveStep(activeId || orderedCards[0].dataset.stepId, { scroll: false });
-    queueStepOrderSave();
+    const moved = document.querySelector(`[data-step-nav-item][data-step-id="${CSS.escape(activeId)}"]`);
+    if (moved) {
+      moved.classList.add('step-nav__item--moved');
+      window.setTimeout(() => moved.classList.remove('step-nav__item--moved'), 700);
+    }
+    queueStepOrderSave({ undoOrder });
   };
 
-  const moveSingleStep = (card, offset) => {
+  const moveSingleStepTo = (card, action) => {
     const cards = stepCards();
     const index = cards.indexOf(card);
-    const nextIndex = index + offset;
-    if (index < 0 || nextIndex < 0 || nextIndex >= cards.length) return;
-    [cards[index], cards[nextIndex]] = [cards[nextIndex], cards[index]];
+    if (index < 0) return;
+    let nextIndex = index;
+    if (action === 'top') nextIndex = 0;
+    else if (action === 'bottom') nextIndex = cards.length - 1;
+    else if (action === 'up') nextIndex = Math.max(0, index - 1);
+    else if (action === 'down') nextIndex = Math.min(cards.length - 1, index + 1);
+    if (nextIndex === index) return;
+    const [moved] = cards.splice(index, 1);
+    cards.splice(nextIndex, 0, moved);
     applyStepCardOrder(cards, card.dataset.stepId);
   };
 
@@ -934,8 +1130,6 @@
       showToast('移動先のシートを選んでください。');
       return;
     }
-    if (action === 'delete' && !window.confirm(`選択した${stepIds.length}件の手順を削除しますか？`)) return;
-
     actions?.querySelectorAll('button, select').forEach((control) => { control.disabled = true; });
     saveStatus('saving', action === 'move' ? '手順をまとめて移動中…' : '手順をまとめて削除中…');
     try {
@@ -961,6 +1155,7 @@
       });
       selectedStepIds.clear();
       initializeWorkspaceView(action === 'move' ? stepIds[0] : '');
+      if (action === 'delete') showDeletionUndo(`${stepIds.length}件の手順を削除しました`);
       sendHeartbeat();
       showToast(action === 'move'
         ? `${stepIds.length}件を「${targetSheetName}」へ移動しました。`
@@ -1020,6 +1215,7 @@
   const annotationEditor = {
     dialog: null,
     card: null,
+    target: 'before',
     annotations: [],
     crop: fullCrop(),
     history: [],
@@ -1046,8 +1242,12 @@
   const usedNumberLabelsInSheet = () => {
     const used = new Set();
     stepCards().forEach((card) => {
-      const list = (card === annotationEditor.card) ? annotationEditor.annotations : readCardAnnotations(card);
-      list.forEach((item) => {
+      const lists = card === annotationEditor.card
+        ? (annotationEditor.target === 'result'
+          ? [readCardAnnotations(card, 'before'), annotationEditor.annotations]
+          : [annotationEditor.annotations, readCardAnnotations(card, 'result')])
+        : [readCardAnnotations(card, 'before'), readCardAnnotations(card, 'result')];
+      lists.flat().forEach((item) => {
         if (!item || item.type !== 'number') return;
         const value = Math.round(Number(item.label));
         if (Number.isFinite(value) && value >= 1 && value <= 99) used.add(value);
@@ -1214,16 +1414,52 @@
     renderAnnotationEditor();
   };
 
+  const syncCardAnnotationActions = (card, annotations, target = 'before') => {
+    const items = Array.isArray(annotations) ? annotations : [];
+    let count = target === 'result'
+      ? card.querySelector('[data-open-annotation][data-image-edit-target="result"] .annotation-count')
+      : card.querySelector('.image-edit-button .annotation-count');
+    if (target === 'result' && items.length > 0 && !count) {
+      count = document.createElement('span');
+      count.className = 'annotation-count';
+      card.querySelector('[data-open-annotation][data-image-edit-target="result"]')?.appendChild(count);
+    }
+    if (count) count.textContent = String(items.length);
+    if (target === 'result') {
+      if (count) count.setAttribute('aria-label', `注釈 ${items.length}件`);
+      if (items.length === 0) count?.remove();
+      return;
+    }
+    const editCopy = card.querySelector('.image-edit-button__copy');
+    const editTitle = editCopy?.querySelector('strong');
+    const editHint = editCopy?.querySelector('span');
+    const focusRectCount = items.filter((item) => item?.type === 'rect').length;
+    if (editTitle) editTitle.textContent = focusRectCount ? '赤枠を確認・修正' : '赤枠・番号を追加';
+    if (editHint) editHint.textContent = focusRectCount ? '合わない枠は移動・削除できます' : '拡大・切り抜きもここで';
+    const actions = card.querySelector('.image-secondary-actions');
+    let removeButton = actions?.querySelector('[data-remove-focus-rect]');
+    if (focusRectCount && actions && !removeButton) {
+      removeButton = document.createElement('button');
+      removeButton.type = 'button';
+      removeButton.className = 'image-secondary-button image-secondary-button--remove-rect';
+      removeButton.dataset.removeFocusRect = '';
+      removeButton.textContent = '赤枠を外す';
+      actions.prepend(removeButton);
+    } else if (!focusRectCount) {
+      removeButton?.remove();
+    }
+  };
+
   const updateCardImageEdits = (card) => {
     const annotationsJson = JSON.stringify(annotationEditor.annotations);
     const cropJson = JSON.stringify(annotationEditor.crop);
-    const annotationData = card.querySelector('.step-annotations-data');
-    const cropData = card.querySelector('.step-crop-data');
+    const result = annotationEditor.target === 'result';
+    const annotationData = card.querySelector(result ? '.step-result-annotations-data' : '.step-annotations-data');
+    const cropData = card.querySelector(result ? '.step-result-crop-data' : '.step-crop-data');
     if (annotationData) annotationData.value = annotationsJson;
     if (cropData) cropData.value = cropJson;
-    const count = card.querySelector('.annotation-count');
-    if (count) count.textContent = String(annotationEditor.annotations.length);
-    const editButton = card.querySelector('.image-edit-button');
+    syncCardAnnotationActions(card, annotationEditor.annotations, annotationEditor.target);
+    const editButton = card.querySelector(result ? '[data-open-annotation][data-image-edit-target="result"]' : '.image-edit-button');
     let cropBadge = editButton?.querySelector('.crop-badge');
     if (!isFullCrop(annotationEditor.crop) && editButton && !cropBadge) {
       cropBadge = document.createElement('span');
@@ -1237,6 +1473,40 @@
     updateFinishGuide();
   };
 
+  const removeFocusRects = async (card, button) => {
+    if (!card) return;
+    const currentAnnotations = readCardAnnotations(card);
+    const nextAnnotations = currentAnnotations.filter((item) => item?.type !== 'rect');
+    if (nextAnnotations.length === currentAnnotations.length) return;
+    const crop = readCardCrop(card);
+    button.disabled = true;
+    saveStatus('saving', '赤枠を外しています…');
+    try {
+      const response = await fetch('/api/steps/annotations', {
+        method: 'POST',
+        headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }),
+        body: new URLSearchParams({
+          stepId: card.dataset.stepId || '',
+          annotations: JSON.stringify(nextAnnotations),
+          crop: JSON.stringify(crop)
+        })
+      });
+      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      const current = document.getElementById('save-status');
+      if (current) current.outerHTML = await response.text();
+      const annotationData = card.querySelector('.step-annotations-data');
+      if (annotationData) annotationData.value = JSON.stringify(nextAnnotations);
+      syncCardAnnotationActions(card, nextAnnotations);
+      renderCardAnnotations(card);
+      updateFinishGuide();
+      showToast('赤枠を外しました。番号や矢印など、ほかの注釈は残しています。', 'success');
+    } catch (error) {
+      button.disabled = false;
+      saveStatus('error', '赤枠を外せません');
+      showToast(error.message || '赤枠を外せませんでした。');
+    }
+  };
+
   const saveImageEdits = () => {
     const card = annotationEditor.card;
     if (!card) return Promise.resolve(true);
@@ -1247,6 +1517,7 @@
       saveStatus('saving', '画像編集を保存中…');
       const body = new URLSearchParams({
         stepId: card.dataset.stepId || '',
+        target: annotationEditor.target,
         annotations: JSON.stringify(annotationEditor.annotations),
         crop: JSON.stringify(annotationEditor.crop)
       });
@@ -1290,14 +1561,15 @@
   };
 
   const openAdjacentAnnotationEditor = async (offset) => {
-    const imageCards = stepCards().filter((card) => card.querySelector('.step-image'));
+    const selector = annotationEditor.target === 'result' ? '.step-result-image__image' : '.step-image';
+    const imageCards = stepCards().filter((card) => card.querySelector(selector));
     const currentIndex = imageCards.indexOf(annotationEditor.card);
     const target = imageCards[currentIndex + offset];
     if (!target) return;
     window.clearTimeout(annotationEditor.saveTimer);
     if (!await saveImageEdits()) return;
     setActiveStep(target.dataset.stepId, { scroll: false });
-    openAnnotationEditor(target);
+    openAnnotationEditor(target, annotationEditor.target);
   };
 
   const ensureAnnotationEditor = () => {
@@ -1512,13 +1784,15 @@
     return dialog;
   };
 
-  const openAnnotationEditor = (card) => {
-    const image = card.querySelector('.step-image');
+  const openAnnotationEditor = (card, target = 'before') => {
+    const safeTarget = target === 'result' ? 'result' : 'before';
+    const image = card.querySelector(safeTarget === 'result' ? '.step-result-image__image' : '.step-image');
     if (!image) return;
     const dialog = ensureAnnotationEditor();
     annotationEditor.card = card;
-    annotationEditor.annotations = cloneAnnotations(readCardAnnotations(card));
-    annotationEditor.crop = readCardCrop(card);
+    annotationEditor.target = safeTarget;
+    annotationEditor.annotations = cloneAnnotations(readCardAnnotations(card, safeTarget));
+    annotationEditor.crop = readCardCrop(card, safeTarget);
     annotationEditor.history = [imageEditSnapshot()];
     annotationEditor.historyIndex = 0;
     annotationEditor.savedSnapshot = annotationEditor.history[0];
@@ -1529,6 +1803,7 @@
     const editorImage = dialog.querySelector('.annotation-editor__stage img');
     editorImage.src = image.src;
     editorImage.alt = image.alt;
+    dialog.querySelector('.annotation-editor__header strong').textContent = safeTarget === 'result' ? '操作後の画像を編集' : '操作前の画像を編集';
     setAnnotationTool('select');
     setImageEditStatus('saved', '自動保存済み');
     if (!dialog.open) dialog.showModal();
@@ -1665,7 +1940,7 @@
     sendHeartbeat();
   };
 
-  const addStepAfterActive = async (button) => {
+  const addStepAfter = async (afterStepId, button, placementLabel = '指定した手順の直後') => {
     const sheetId = selectedSheetId();
     if (!sheetId) return;
     button.disabled = true;
@@ -1673,7 +1948,6 @@
     try {
       await flushPendingStructuralSaves({ waitForText: true });
       const currentIds = new Set(stepCards().map((card) => card.dataset.stepId || ''));
-      const afterStepId = document.querySelector('.step-card--active')?.dataset.stepId || '';
       const body = new URLSearchParams({ sheetId, afterStepId });
       const response = await fetch('/api/steps/add', {
         method: 'POST',
@@ -1691,12 +1965,18 @@
       initializeWorkspaceView(added?.dataset.stepId || afterStepId);
       added?.querySelector('input[name="title"]')?.focus();
       sendHeartbeat();
-      showToast('現在の手順の直後に新しい手順を追加しました。', 'success');
+      showToast(`${placementLabel}に新しい手順を追加しました。`, 'success');
     } catch (error) {
       button.disabled = false;
       saveStatus('error', '手順を追加できません');
       showToast(error?.message || '手順を追加できませんでした。');
     }
+  };
+
+  const addStepAtEnd = (button) => {
+    const cards = stepCards();
+    const lastStepId = cards.at(-1)?.dataset.stepId || '';
+    return addStepAfter(lastStepId, button, '手順一覧の末尾');
   };
 
   const replaceStepImage = async (file, stepId, source = 'file') => {
@@ -1871,7 +2151,7 @@
     videoCapture.dialog.querySelector(`.video-dialog__step--${phase}`)?.setAttribute('aria-current', 'step');
   };
 
-  const advanceVideoToDraft = (focusNext = false) => {
+  const advanceVideoToEdit = (focusNext = false) => {
     if (!videoCapture.dialog) return;
     const draftButton = videoCapture.dialog.querySelector('[data-video-open-draft]');
     draftButton.hidden = false;
@@ -1974,7 +2254,7 @@
       const cards = [...document.querySelectorAll('.step-card')];
       if (cards.length > before) {
         videoCapture.added += 1;
-        advanceVideoToDraft(true);
+        advanceVideoToEdit(true);
         if (attachVideo) {
           const added = cards.find((card) => !beforeIds.has(card.dataset.stepId));
           setVideoStatus(`${position} の場面を追加しました。動画を送っています…`);
@@ -2079,16 +2359,16 @@
           skipped += 1;
         }
       }
-      if (added > 0) advanceVideoToDraft(true);
+      if (added > 0) advanceVideoToEdit(true);
       const parts = [`${added} 件の手順を作りました`];
       if (skipped > 0) parts.push(`${skipped} 件は同じ画面のため除きました`);
-      if (added > 0) parts.push('次にCopilotで文章を作れます');
+      if (added > 0) parts.push('編集画面で文章と操作箇所を確認できます');
       setVideoStatus(parts.join('・'));
       showToast(`${parts.join('、')}。赤枠と文章は編集画面で直せます。`, 'info');
     } catch (error) {
       if (added > 0) {
-        advanceVideoToDraft(true);
-        setVideoStatus(`${added} 件は追加済みです・次にCopilotで文章を作れます`);
+        advanceVideoToEdit(true);
+        setVideoStatus(`${added} 件は追加済みです・編集画面で確認できます`);
         showToast(`${error.message || '途中で処理を続けられなくなりました。'} ${added}件は追加済みです。`, 'info');
       } else {
         setVideoStatus(error.message || '自動で分けられませんでした');
@@ -2143,7 +2423,7 @@
     dialog.id = 'video-frame-dialog';
     dialog.className = 'video-dialog';
     dialog.setAttribute('aria-label', '録画から手順書を作る');
-    dialog.innerHTML = '<header class="video-dialog__header"><div><strong>録画から手順書を作る</strong><span>場面と操作箇所を抽出したあと、Copilotで文章を作ります</span></div><button type="button" class="video-dialog__close" data-video-close aria-label="閉じる">×</button></header><div class="video-dialog__content"><ol class="video-dialog__steps" aria-label="作成の流れ"><li class="video-dialog__step video-dialog__step--extract"><span>1</span>場面を自動分割</li><li class="video-dialog__step video-dialog__step--draft"><span>2</span>Copilotで文章化</li></ol><video class="video-dialog__player" data-video-player playsinline preload="metadata"></video><p class="video-dialog__error" data-video-error hidden></p><div class="video-dialog__controls"><button type="button" class="button button--ghost" data-video-play>再生</button><button type="button" class="button button--ghost" data-video-step="-1" aria-label="0.1秒戻す">◀ 0.1秒</button><input type="range" class="video-dialog__seek" data-video-seek min="0" max="0" step="0.01" value="0" aria-label="再生位置"><button type="button" class="button button--ghost" data-video-step="1" aria-label="0.1秒進める">0.1秒 ▶</button><span class="video-dialog__time" data-video-time>0:00.0 / 0:00.0</span></div></div><footer class="video-dialog__footer"><details class="video-dialog__advanced"><summary>手動で場面を選ぶ・詳細設定</summary><div class="video-dialog__advanced-panel"><label class="video-dialog__quality"><input type="checkbox" data-video-original>元の解像度で取り込む</label><button type="button" class="button button--ghost" data-video-capture>表示中の場面だけ追加</button><button type="button" class="button button--ghost" data-video-capture-with-movie title="この場面を手順にしたうえで、動画をその手順へ添付します">表示中の場面を動画つきで追加</button></div></details><span class="video-dialog__spacer"></span><span class="video-dialog__count" data-video-status role="status" aria-live="polite">追加: 0件</span><button type="button" class="button button--primary video-dialog__next" data-video-open-draft hidden>次へ：Copilotで文章を作る</button><button type="button" class="button button--primary video-dialog__next" data-video-auto title="画面が切り替わる場面を自動で探し、押された場所に赤枠を付けて手順にします">場面を自動分割する</button><button type="button" class="button button--ghost" data-video-close data-video-cancel-label>キャンセル</button></footer>';
+    dialog.innerHTML = '<header class="video-dialog__header"><div><strong>録画から手順書を作る</strong><span>画面が変わった場面を候補として取り込み、編集画面で仕上げます</span></div><button type="button" class="video-dialog__close" data-video-close aria-label="閉じる">×</button></header><div class="video-dialog__content"><ol class="video-dialog__steps" aria-label="作成の流れ"><li class="video-dialog__step video-dialog__step--extract"><span>1</span>場面を自動分割</li><li class="video-dialog__step video-dialog__step--draft"><span>2</span>編集して仕上げる</li></ol><video class="video-dialog__player" data-video-player playsinline preload="metadata"></video><p class="video-dialog__error" data-video-error hidden></p><div class="video-dialog__controls"><button type="button" class="button button--ghost" data-video-play>再生</button><button type="button" class="button button--ghost" data-video-step="-1" aria-label="0.1秒戻す">◀ 0.1秒</button><input type="range" class="video-dialog__seek" data-video-seek min="0" max="0" step="0.01" value="0" aria-label="再生位置"><button type="button" class="button button--ghost" data-video-step="1" aria-label="0.1秒進める">0.1秒 ▶</button><span class="video-dialog__time" data-video-time>0:00.0 / 0:00.0</span></div></div><footer class="video-dialog__footer"><details class="video-dialog__advanced"><summary>手動で場面を選ぶ・詳細設定</summary><div class="video-dialog__advanced-panel"><label class="video-dialog__quality"><input type="checkbox" data-video-original>元の解像度で取り込む</label><button type="button" class="button button--ghost" data-video-capture>表示中の場面だけ追加</button><button type="button" class="button button--ghost" data-video-capture-with-movie title="この場面を手順にしたうえで、動画をその手順へ添付します">表示中の場面を動画つきで追加</button></div></details><span class="video-dialog__spacer"></span><span class="video-dialog__count" data-video-status role="status" aria-live="polite">追加: 0件</span><button type="button" class="button button--primary video-dialog__next" data-video-open-draft hidden>編集画面で確認</button><button type="button" class="button button--primary video-dialog__next" data-video-auto title="画面が切り替わる場面を探し、要確認の手順候補として取り込みます">場面を自動分割する</button><button type="button" class="button button--ghost" data-video-close data-video-cancel-label>キャンセル</button></footer>';
 
     const player = dialog.querySelector('[data-video-player]');
     videoCapture.dialog = dialog;
@@ -2178,7 +2458,7 @@
     dialog.querySelector('[data-video-auto]').addEventListener('click', () => runAutoScenes());
     dialog.querySelector('[data-video-open-draft]').addEventListener('click', () => {
       dialog.close();
-      openCopilotDialog('draft');
+      void focusFinishTarget('attention');
     });
     dialog.addEventListener('keydown', (event) => {
       if (event.target.matches('[data-video-seek]')) return;
@@ -2580,7 +2860,7 @@
     dialog.className = 'output-review-dialog';
     dialog.setAttribute('aria-label', '仕上げを確認して手順書を出力');
     dialog.innerHTML = '<header class="output-review-dialog__header"><div><strong>仕上げを確認して出力</strong><span>Excelを標準形式、Wordを印刷向けの副形式として、このPCへ作成します</span></div><button type="button" class="output-review-dialog__close" data-output-close aria-label="閉じる">×</button></header>'
-      + '<div class="output-review-dialog__content"><section class="output-review-dialog__summary" aria-label="最終確認"><div><span>全手順</span><strong data-output-total>0件</strong></div><button type="button" data-output-fix="text"><span>説明なし</span><strong data-output-missing-text>0件</strong></button><button type="button" data-output-fix="image"><span>画像なし</span><strong data-output-missing-image>0件</strong></button><div><span>赤枠・番号あり</span><strong data-output-annotated>0件</strong></div><button type="button" data-output-fix="attention"><span>Copilot後の要確認</span><strong data-output-attention>0件</strong></button></section><p class="output-review-dialog__note" data-output-note></p>'
+      + '<div class="output-review-dialog__content"><section class="output-review-dialog__summary" aria-label="最終確認"><div><span>全手順</span><strong data-output-total>0件</strong></div><button type="button" data-output-fix="text"><span>説明なし</span><strong data-output-missing-text>0件</strong></button><button type="button" data-output-fix="image"><span>画像なし</span><strong data-output-missing-image>0件</strong></button><div><span>赤枠・番号あり</span><strong data-output-annotated>0件</strong></div><button type="button" data-output-fix="attention"><span>要確認</span><strong data-output-attention>0件</strong></button></section><p class="output-review-dialog__note" data-output-note></p>'
       + '<section class="output-review-dialog__formats" aria-label="出力形式"><button type="button" class="output-format output-format--recommended" data-output-format="excel"><span class="output-format__badge">標準</span><strong>Excelで作成</strong><span>横長で画像と説明を見比べやすく、出力後も追記できます</span></button><button type="button" class="output-format" data-output-format="word"><strong>Wordで作成</strong><span>印刷しやすい縦型の副形式です</span></button></section></div>'
       + '<footer class="output-review-dialog__footer"><span>出力後の共有や公開は、作成したファイルを利用者が管理します。</span><button type="button" class="button button--ghost" data-output-close>編集に戻る</button></footer>';
     dialog.querySelectorAll('[data-output-close]').forEach((button) => button.addEventListener('click', () => dialog.close()));
@@ -2626,9 +2906,12 @@
     textFix.disabled = metrics.missingText.length === 0;
     imageFix.disabled = metrics.missingImage.length === 0;
     attentionFix.disabled = metrics.attention.length === 0;
-    const issues = metrics.missingText.length + metrics.missingImage.length + metrics.attention.length;
-    dialog.querySelector('[data-output-note]').textContent = issues
-      ? `${issues}箇所に未入力があります。件数を押すと該当手順を直せます。意図した空欄ならそのまま形式を選べます。`
+    const issueLabels = [];
+    if (metrics.missingText.length) issueLabels.push(`説明なし ${metrics.missingText.length}件`);
+    if (metrics.missingImage.length) issueLabels.push(`画像なし ${metrics.missingImage.length}件`);
+    if (metrics.attention.length) issueLabels.push(`要確認 ${metrics.attention.length}件`);
+    dialog.querySelector('[data-output-note]').textContent = issueLabels.length
+      ? `${issueLabels.join('、')}があります。件数を押すと該当手順を直せます。意図した状態ならそのまま形式を選べます。`
       : '文章と画像が揃っています。順番と赤枠・番号を確認したら、形式を選んでください。';
     if (!dialog.open) dialog.showModal();
   };
@@ -2773,9 +3056,9 @@
       openRecorderDialog();
       return;
     }
-    const addStepButton = event.target.closest('[data-add-step-after]');
+    const addStepButton = event.target.closest('[data-add-step-end]');
     if (addStepButton) {
-      void addStepAfterActive(addStepButton);
+      void addStepAtEnd(addStepButton);
       return;
     }
     const copilotDraftButton = event.target.closest('[data-copilot-draft]');
@@ -2810,9 +3093,26 @@
       startExcelExport();
       return;
     }
+    const stepViewButton = event.target.closest('[data-step-view]');
+    if (stepViewButton) {
+      applyStepView(stepViewButton.dataset.stepView || 'review');
+      return;
+    }
+    if (event.target.closest('[data-step-previous]')) {
+      moveActiveStep(-1);
+      return;
+    }
+    if (event.target.closest('[data-step-next]')) {
+      moveActiveStep(1);
+      return;
+    }
     const stepJump = event.target.closest('[data-step-jump]');
     if (stepJump) {
-      setActiveStep(stepJump.dataset.stepJump);
+      selectStepFromPointer(stepJump.dataset.stepJump, event);
+      return;
+    }
+    if (event.target.matches('#step-nav-list')) {
+      clearStepSelection();
       return;
     }
     if (event.target.closest('[data-open-video-picker]')) {
@@ -2824,6 +3124,11 @@
   });
 
   document.body.addEventListener('click', (event) => {
+    const removeFocusRectButton = event.target.closest('[data-remove-focus-rect]');
+    if (removeFocusRectButton) {
+      void removeFocusRects(removeFocusRectButton.closest('.step-card'), removeFocusRectButton);
+      return;
+    }
     const reviewResolveButton = event.target.closest('[data-step-review-resolve]');
     if (reviewResolveButton) {
       void resolveStepReview(reviewResolveButton.closest('.step-card'), reviewResolveButton);
@@ -2834,27 +3139,22 @@
       void focusFinishTarget(finishCheck.dataset.finishCheck);
       return;
     }
-    const selectionModeButton = event.target.closest('[data-step-select-mode], [data-step-select-mode-shortcut]');
-    if (selectionModeButton) {
-      setStepSelectionMode(!stepSelectionMode);
-      if (stepSelectionMode) document.querySelector('.step-nav')?.scrollIntoView({ block: 'nearest' });
-      return;
-    }
-    const stepSelect = event.target.closest('[data-step-select]');
-    if (stepSelect) {
-      const item = stepSelect.closest('[data-step-nav-item]');
-      const stepId = item?.dataset.stepId || '';
-      if (event.shiftKey && lastSelectedStepId && stepId) {
-        selectStepRange(lastSelectedStepId, stepId, stepSelect.checked);
-      }
-      if (stepId) lastSelectedStepId = stepId;
-      window.queueMicrotask(updateStepBulkActions);
+    const organizeShortcut = event.target.closest('[data-step-organize-shortcut]');
+    if (organizeShortcut) {
+      const nav = document.querySelector('.step-nav');
+      nav?.scrollIntoView({ block: 'nearest' });
+      nav?.querySelector('[data-step-jump]')?.focus();
+      showToast('Ctrlキーで追加選択、Shiftキーで範囲選択できます。カードをつかんで移動できます。', 'info');
       return;
     }
     const resultImageButton = event.target.closest('[data-add-result-image], [data-replace-result-image]');
     if (resultImageButton) {
       const card = resultImageButton.closest('.step-card');
       if (!card) return;
+      const replacing = resultImageButton.matches('[data-replace-result-image]');
+      const hasResultEdits = readCardAnnotations(card, 'result').length > 0 || !isFullCrop(readCardCrop(card, 'result'));
+      if (replacing && hasResultEdits &&
+          !window.confirm('操作後画像を差し替えると、操作後に付けた注釈と切り抜きはリセットされます。続けますか？')) return;
       resultImageStepId = card.dataset.stepId || '';
       document.getElementById('result-image-file-input')?.click();
       return;
@@ -2911,7 +3211,7 @@
     const annotationButton = event.target.closest('[data-open-annotation]');
     if (annotationButton) {
       const card = annotationButton.closest('.step-card');
-      if (card) openAnnotationEditor(card);
+      if (card) openAnnotationEditor(card, annotationButton.dataset.imageEditTarget || 'before');
       return;
     }
     const previewButton = event.target.closest('[data-image-preview]');
@@ -2921,14 +3221,14 @@
       const isResultPreview = previewButton.dataset.imagePreviewKind === 'result';
       const dialog = ensureImagePreview();
       const image = dialog.querySelector('img');
-      let previewAnnotations = card && !isResultPreview ? readCardAnnotations(card) : [];
+      let previewAnnotations = card ? readCardAnnotations(card, isResultPreview ? 'result' : 'before') : [];
       if (!card && previewButton.dataset.previewRect) {
         const values = previewButton.dataset.previewRect.split(',').map(Number);
         if (values.length === 4 && values.every(Number.isFinite)) {
           previewAnnotations = [{ id: 'copilot-preview', type: 'rect', x1: values[0], y1: values[1], x2: values[2], y2: values[3] }];
         }
       }
-      const previewCrop = card && !isResultPreview ? readCardCrop(card) : fullCrop();
+      const previewCrop = card ? readCardCrop(card, isResultPreview ? 'result' : 'before') : fullCrop();
       image.onload = () => {
         window.requestAnimationFrame(() => renderImagePreview(dialog, previewAnnotations, previewCrop));
       };
@@ -2964,19 +3264,32 @@
       return;
     }
 
-    const moveButton = event.target.closest('[data-step-move]');
-    if (moveButton) {
-      const card = moveButton.closest('.step-card');
-      if (card) moveSingleStep(card, Number(moveButton.dataset.stepMove));
+    const navAddButton = event.target.closest('[data-step-nav-add-after]');
+    if (navAddButton) {
+      const navItem = navAddButton.closest('[data-step-nav-item]');
+      const menu = navAddButton.closest('details');
+      if (menu) menu.open = false;
+      if (navItem?.dataset.stepId) void addStepAfter(navItem.dataset.stepId, navAddButton);
       return;
     }
 
-    const deleteButton = event.target.closest('[data-step-nav-delete], [data-step-card-delete]');
+    const navOrderButton = event.target.closest('[data-step-nav-order]');
+    if (navOrderButton) {
+      const navItem = navOrderButton.closest('[data-step-nav-item]');
+      const card = stepCards().find((item) => item.dataset.stepId === navItem?.dataset.stepId);
+      const menu = navOrderButton.closest('details');
+      if (menu) menu.open = false;
+      if (card) moveSingleStepTo(card, navOrderButton.dataset.stepNavOrder);
+      return;
+    }
+
+    const deleteButton = event.target.closest('[data-step-nav-delete]');
     if (deleteButton) {
       const navItem = deleteButton.closest('[data-step-nav-item]');
-      const card = deleteButton.closest('.step-card')
-        || stepCards().find((item) => item.dataset.stepId === navItem?.dataset.stepId);
-      if (!card || !window.confirm('この手順を削除しますか？')) return;
+      const card = stepCards().find((item) => item.dataset.stepId === navItem?.dataset.stepId);
+      const menu = deleteButton.closest('details');
+      if (menu) menu.open = false;
+      if (!card) return;
       deleteButton.disabled = true;
       saveStatus('saving', '削除中…');
       void (async () => {
@@ -2998,6 +3311,7 @@
           selectedStepIds.delete(stepId);
           finishAttentionSteps.delete(stepId);
           initializeWorkspaceView();
+          showDeletionUndo('手順を削除しました');
           sendHeartbeat();
           showToast('手順を削除しました。「元に戻す」で復元できます。', 'success');
         } catch (error) {
@@ -3012,16 +3326,6 @@
   });
 
   document.body.addEventListener('change', (event) => {
-    if (event.target.matches('[data-step-select]')) {
-      const item = event.target.closest('[data-step-nav-item]');
-      const stepId = item?.dataset.stepId || '';
-      if (stepId) {
-        if (event.target.checked) selectedStepIds.add(stepId);
-        else selectedStepIds.delete(stepId);
-      }
-      updateStepBulkActions();
-      return;
-    }
     if (event.target.matches('[data-step-bulk-target]')) {
       updateStepBulkActions();
       return;
@@ -3125,7 +3429,7 @@
     }
   });
 
-  const stepDragState = { item: null, order: '', targetSheetId: '', targetSheetName: '', crossSheet: false, validDrop: false };
+  const stepDragState = { item: null, items: [], order: '', targetSheetId: '', targetSheetName: '', crossSheet: false, validDrop: false };
   const sheetDragState = { item: null, order: '', validDrop: false };
   const clearSheetDropTargets = () => {
     document.querySelectorAll('.sheet-nav__item--drop-target')
@@ -3150,7 +3454,7 @@
     const navigation = document.querySelector('.sheet-nav');
     const guide = navigation?.querySelector('[data-sheet-sort-guide]');
     navigation?.classList.toggle('sheet-nav--sorting', Boolean(message));
-    if (guide) guide.textContent = message || '⠿で並べ替え';
+    if (guide) guide.textContent = message || 'シートをつかんで並べ替え。Alt＋↑↓でも移動';
   };
   const clearStepDropPlaceholder = () => {
     document.querySelector('[data-step-drop-placeholder]')?.remove();
@@ -3169,19 +3473,21 @@
     const navigation = document.querySelector('.step-nav');
     const guide = navigation?.querySelector('[data-step-sort-guide]');
     navigation?.classList.toggle('step-nav--sorting', Boolean(message));
-    if (guide) guide.textContent = message || '⠿で並べ替え・別シートへ移動';
+    if (guide) guide.textContent = message || 'カードをつかんで並べ替え。Ctrl・Shiftで複数選択。Alt＋↑↓でも移動';
   };
-  const getStepDropPosition = (placeholder, draggedItem) => {
+  const getStepDropPosition = (placeholder, draggedItems) => {
     if (!placeholder?.parentElement) return 1;
+    const excluded = new Set(draggedItems);
     const orderedEntries = [...placeholder.parentElement.children].filter((entry) =>
-      entry === placeholder || (entry.matches('[data-step-nav-item]') && entry !== draggedItem)
+      entry === placeholder || (entry.matches('[data-step-nav-item]') && !excluded.has(entry))
     );
     return Math.max(1, orderedEntries.indexOf(placeholder) + 1);
   };
-  const positionStepDropPlaceholder = (list, clientY, draggedItem) => {
+  const positionStepDropPlaceholder = (list, clientY, draggedItems) => {
     const placeholder = ensureStepDropPlaceholder();
+    const excluded = new Set(draggedItems);
     const items = [...list.children].filter((entry) =>
-      entry.matches?.('[data-step-nav-item]') && entry !== draggedItem
+      entry.matches?.('[data-step-nav-item]') && !excluded.has(entry)
     );
     const nextItem = items.find((item) => {
       const bounds = item.getBoundingClientRect();
@@ -3190,7 +3496,7 @@
     if (nextItem) list.insertBefore(placeholder, nextItem);
     else list.appendChild(placeholder);
     return {
-      position: getStepDropPosition(placeholder, draggedItem),
+      position: getStepDropPosition(placeholder, draggedItems),
       atEnd: !nextItem
     };
   };
@@ -3226,10 +3532,212 @@
     else if (clientY > bounds.bottom - edge) list.scrollTop += 18;
   };
 
+  let directDragCandidate = null;
+  let suppressDirectDragClick = false;
+
+  const beginDirectStepDrag = (item) => {
+    const stepId = item.dataset.stepId || '';
+    if (!selectedStepIds.has(stepId) || selectedStepIds.size < 2) {
+      selectedStepIds.clear();
+      lastSelectedStepId = stepId;
+      setActiveStep(stepId, { scroll: false });
+      updateStepBulkActions();
+    }
+    stepDragState.items = [...document.querySelectorAll('[data-step-nav-item]')]
+      .filter((entry) => selectedStepIds.has(entry.dataset.stepId || ''));
+    if (!stepDragState.items.length) stepDragState.items = [item];
+    stepDragState.item = item;
+    stepDragState.order = stepCards().map((card) => card.dataset.stepId).join(',');
+    stepDragState.validDrop = false;
+    stepDragState.crossSheet = false;
+    clearStepDropPlaceholder();
+    setStepSortGuide(stepDragState.items.length > 1
+      ? `${stepDragState.items.length}件を青い線の位置へ移動します`
+      : '青い線の位置へドロップします');
+    setSheetSortGuide('別シートへ移す場合はシート名へドロップ');
+    stepDragState.items.forEach((entry) => entry.classList.add('step-nav__item--dragging'));
+  };
+
+  const beginDirectSheetDrag = (item) => {
+    sheetDragState.item = item;
+    sheetDragState.order = [...document.querySelectorAll('[data-sheet-nav-item]')]
+      .map((entry) => entry.dataset.sheetId).join(',');
+    sheetDragState.validDrop = false;
+    clearSheetDropPlaceholder();
+    clearStepDropPlaceholder();
+    setStepSortGuide();
+    setSheetSortGuide('青い線の位置へドロップします');
+    item.classList.add('sheet-nav__item--dragging');
+  };
+
+  const updateDirectStepDrag = (clientX, clientY) => {
+    stepDragState.validDrop = false;
+    autoScrollStepNavigation(clientY);
+    const pointed = document.elementFromPoint(clientX, clientY);
+    const sheetTarget = pointed?.closest?.('[data-sheet-drop-target]');
+    if (sheetTarget && sheetTarget.dataset.sheetId !== selectedSheetId()) {
+      clearStepDropPlaceholder();
+      clearSheetDropTargets();
+      sheetTarget.classList.add('sheet-nav__item--drop-target');
+      stepDragState.targetSheetId = sheetTarget.dataset.sheetId || '';
+      stepDragState.targetSheetName = sheetTarget.querySelector('.sheet-nav__name')?.textContent?.trim() || '選択したシート';
+      stepDragState.validDrop = Boolean(stepDragState.targetSheetId);
+      setSheetSortGuide(`「${stepDragState.targetSheetName}」の末尾へ移動`);
+      setStepSortGuide('別シートの末尾へ移動します');
+      return;
+    }
+    clearSheetDropTargets();
+    setSheetSortGuide('別シートへ移す場合はシート名へドロップ');
+    const list = pointed?.closest?.('#step-nav-list');
+    if (list) {
+      stepDragState.validDrop = true;
+      const drop = positionStepDropPlaceholder(list, clientY, stepDragState.items);
+      setStepSortGuide(drop.atEnd ? `${drop.position}番目（末尾）へ移動` : `${drop.position}番目へ移動`);
+      return;
+    }
+    clearStepDropPlaceholder();
+    setStepSortGuide('手順一覧の移動先へドラッグしてください');
+  };
+
+  const updateDirectSheetDrag = (clientX, clientY) => {
+    const pointed = document.elementFromPoint(clientX, clientY);
+    const list = pointed?.closest?.('.sheet-nav__list');
+    if (!list) {
+      sheetDragState.validDrop = false;
+      clearSheetDropPlaceholder();
+      setSheetSortGuide('シート一覧の移動先へドラッグしてください');
+      return;
+    }
+    sheetDragState.validDrop = true;
+    const drop = positionSheetDropPlaceholder(list, clientX, clientY, sheetDragState.item);
+    setSheetSortGuide(drop.atEnd ? `${drop.position}番目（末尾）へ移動` : `${drop.position}番目へ移動`);
+  };
+
+  const finishDirectStepDrag = (commit) => {
+    const draggedItem = stepDragState.item;
+    if (!draggedItem) return;
+    const undoOrder = stepDragState.order.split(',').filter(Boolean);
+    if (commit && stepDragState.validDrop && stepDragState.targetSheetId) {
+      const stepId = draggedItem.dataset.stepId || '';
+      const stepIds = stepDragState.items.map((item) => item.dataset.stepId).filter(Boolean);
+      const targetSheetId = stepDragState.targetSheetId;
+      const targetSheetName = stepDragState.targetSheetName;
+      stepDragState.crossSheet = true;
+      if (stepIds.length > 1) {
+        const target = document.querySelector('[data-step-bulk-target]');
+        if (target) target.value = targetSheetId;
+        void runBulkStepAction('move');
+      } else {
+        void moveStepToSheet(stepId, targetSheetId, targetSheetName);
+      }
+    } else if (commit) {
+      const placeholder = document.querySelector('[data-step-drop-placeholder]');
+      if (stepDragState.validDrop && placeholder?.parentElement) {
+        stepDragState.items.forEach((item) => placeholder.parentElement.insertBefore(item, placeholder));
+      }
+    }
+    stepDragState.items.forEach((item) => item.classList.remove('step-nav__item--dragging'));
+    clearStepDropPlaceholder();
+    clearSheetDropTargets();
+    setStepSortGuide();
+    setSheetSortGuide();
+    if (!stepDragState.crossSheet) {
+      const navIds = [...document.querySelectorAll('[data-step-nav-item]')]
+        .map((item) => item.dataset.stepId).filter(Boolean);
+      const steps = document.querySelector('.steps');
+      navIds.forEach((stepId) => {
+        const card = stepCards().find((item) => item.dataset.stepId === stepId);
+        if (card) steps?.appendChild(card);
+      });
+      const changed = navIds.join(',') !== stepDragState.order;
+      refreshStepControls();
+      setActiveStep(draggedItem.dataset.stepId || '', { scroll: false });
+      if (changed) queueStepOrderSave({ undoOrder });
+    }
+    stepDragState.item = null;
+    stepDragState.items = [];
+    stepDragState.order = '';
+    stepDragState.crossSheet = false;
+    stepDragState.validDrop = false;
+  };
+
+  const finishDirectSheetDrag = (commit) => {
+    const item = sheetDragState.item;
+    if (!item) return;
+    const placeholder = document.querySelector('[data-sheet-drop-placeholder]');
+    if (commit && sheetDragState.validDrop && placeholder?.parentElement) {
+      placeholder.parentElement.insertBefore(item, placeholder);
+    }
+    item.classList.remove('sheet-nav__item--dragging');
+    clearSheetDropPlaceholder();
+    setSheetSortGuide();
+    const updatedOrder = [...document.querySelectorAll('[data-sheet-nav-item]')]
+      .map((entry) => entry.dataset.sheetId).filter(Boolean).join(',');
+    const changed = updatedOrder !== sheetDragState.order;
+    sheetDragState.item = null;
+    sheetDragState.order = '';
+    sheetDragState.validDrop = false;
+    if (commit && changed) queueSheetOrderSave();
+  };
+
+  document.body.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0 || !['mouse', 'pen'].includes(event.pointerType)) return;
+    const stepMain = event.target.closest('[data-step-jump]');
+    const sheetMain = event.target.closest('.sheet-nav__main');
+    const item = stepMain?.closest('[data-step-nav-item]') || sheetMain?.closest('[data-sheet-nav-item]');
+    if (!item) return;
+    directDragCandidate = {
+      kind: stepMain ? 'step' : 'sheet',
+      item,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      source: event.target,
+      started: false
+    };
+  });
+
+  document.body.addEventListener('pointermove', (event) => {
+    const candidate = directDragCandidate;
+    if (!candidate || candidate.pointerId !== event.pointerId) return;
+    if (!candidate.started) {
+      if (Math.hypot(event.clientX - candidate.startX, event.clientY - candidate.startY) < 6) return;
+      candidate.started = true;
+      suppressDirectDragClick = true;
+      candidate.source.setPointerCapture?.(event.pointerId);
+      if (candidate.kind === 'step') beginDirectStepDrag(candidate.item);
+      else beginDirectSheetDrag(candidate.item);
+    }
+    event.preventDefault();
+    if (candidate.kind === 'step') updateDirectStepDrag(event.clientX, event.clientY);
+    else updateDirectSheetDrag(event.clientX, event.clientY);
+  });
+
+  const endDirectPointerDrag = (event, commit) => {
+    const candidate = directDragCandidate;
+    if (!candidate || candidate.pointerId !== event.pointerId) return;
+    directDragCandidate = null;
+    if (!candidate.started) return;
+    event.preventDefault();
+    candidate.source.releasePointerCapture?.(event.pointerId);
+    if (candidate.kind === 'step') finishDirectStepDrag(commit);
+    else finishDirectSheetDrag(commit);
+    window.setTimeout(() => { suppressDirectDragClick = false; }, 0);
+  };
+
+  document.body.addEventListener('pointerup', (event) => endDirectPointerDrag(event, true));
+  document.body.addEventListener('pointercancel', (event) => endDirectPointerDrag(event, false));
+  document.addEventListener('click', (event) => {
+    if (!suppressDirectDragClick || !event.target.closest('[data-step-jump], .sheet-nav__main')) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    suppressDirectDragClick = false;
+  }, true);
+
   document.body.addEventListener('dragstart', (event) => {
-    const sheetHandle = event.target.closest('[data-sheet-nav-drag-handle]');
-    if (sheetHandle) {
-      const item = sheetHandle.closest('[data-sheet-nav-item]');
+    const sheetItem = event.target.closest('[data-sheet-nav-item]');
+    if (sheetItem) {
+      const item = sheetItem;
       if (!item) return;
       sheetDragState.item = item;
       sheetDragState.order = [...document.querySelectorAll('[data-sheet-nav-item]')]
@@ -3244,20 +3752,34 @@
       window.requestAnimationFrame(() => item.classList.add('sheet-nav__item--dragging'));
       return;
     }
-    const handle = event.target.closest('[data-step-nav-drag-handle]');
-    if (!handle) return;
-    const item = handle.closest('[data-step-nav-item]');
+    const item = event.target.closest('[data-step-nav-item]');
     if (!item) return;
+    if (event.target.closest('.step-nav__actions')) {
+      event.preventDefault();
+      return;
+    }
+    const stepId = item.dataset.stepId || '';
+    if (!selectedStepIds.has(stepId) || selectedStepIds.size < 2) {
+      selectedStepIds.clear();
+      lastSelectedStepId = stepId;
+      setActiveStep(stepId, { scroll: false });
+      updateStepBulkActions();
+    }
+    stepDragState.items = [...document.querySelectorAll('[data-step-nav-item]')]
+      .filter((entry) => selectedStepIds.has(entry.dataset.stepId || ''));
+    if (!stepDragState.items.length) stepDragState.items = [item];
     stepDragState.item = item;
     stepDragState.order = stepCards().map((item) => item.dataset.stepId).join(',');
     stepDragState.validDrop = false;
     stepDragState.crossSheet = false;
     clearStepDropPlaceholder();
-    setStepSortGuide('青い線の位置へドロップします');
+    setStepSortGuide(stepDragState.items.length > 1
+      ? `${stepDragState.items.length}件を青い線の位置へ移動します`
+      : '青い線の位置へドロップします');
     setSheetSortGuide('別シートへ移す場合はシート名へドロップ');
     event.dataTransfer.effectAllowed = 'move';
-    event.dataTransfer.setData('text/plain', item.dataset.stepId || 'step');
-    window.requestAnimationFrame(() => item.classList.add('step-nav__item--dragging'));
+    event.dataTransfer.setData('text/plain', stepId || 'step');
+    window.requestAnimationFrame(() => stepDragState.items.forEach((entry) => entry.classList.add('step-nav__item--dragging')));
   });
 
   document.body.addEventListener('dragenter', (event) => {
@@ -3310,7 +3832,7 @@
     const list = event.target.closest('#step-nav-list');
     if (list) {
       stepDragState.validDrop = true;
-      const drop = positionStepDropPlaceholder(list, event.clientY, draggedItem);
+      const drop = positionStepDropPlaceholder(list, event.clientY, stepDragState.items);
       setStepSortGuide(drop.atEnd
         ? `${drop.position}番目（末尾）へ移動`
         : `${drop.position}番目へ移動`);
@@ -3335,17 +3857,24 @@
     event.stopPropagation();
     if (stepDragState.validDrop && stepDragState.targetSheetId) {
       const stepId = stepDragState.item.dataset.stepId;
+      const stepIds = stepDragState.items.map((item) => item.dataset.stepId).filter(Boolean);
       const targetSheetId = stepDragState.targetSheetId;
       const targetSheetName = stepDragState.targetSheetName;
       stepDragState.crossSheet = true;
       clearStepDropPlaceholder();
       clearSheetDropTargets();
-      void moveStepToSheet(stepId, targetSheetId, targetSheetName);
+      if (stepIds.length > 1) {
+        const target = document.querySelector('[data-step-bulk-target]');
+        if (target) target.value = targetSheetId;
+        void runBulkStepAction('move');
+      } else {
+        void moveStepToSheet(stepId, targetSheetId, targetSheetName);
+      }
       return;
     }
     const placeholder = document.querySelector('[data-step-drop-placeholder]');
     if (stepDragState.validDrop && placeholder?.parentElement) {
-      placeholder.parentElement.insertBefore(stepDragState.item, placeholder);
+      stepDragState.items.forEach((item) => placeholder.parentElement.insertBefore(item, placeholder));
     }
   });
 
@@ -3367,13 +3896,14 @@
 
     const draggedItem = stepDragState.item;
     if (!draggedItem) return;
-    draggedItem.classList.remove('step-nav__item--dragging');
+    stepDragState.items.forEach((item) => item.classList.remove('step-nav__item--dragging'));
     clearStepDropPlaceholder();
     clearSheetDropTargets();
     setStepSortGuide();
     setSheetSortGuide();
     if (stepDragState.crossSheet) {
       stepDragState.item = null;
+      stepDragState.items = [];
       stepDragState.order = '';
       stepDragState.crossSheet = false;
       stepDragState.validDrop = false;
@@ -3387,14 +3917,16 @@
     });
     const updatedOrder = navIds.join(',');
     const changed = updatedOrder !== stepDragState.order;
+    const undoOrder = stepDragState.order.split(',').filter(Boolean);
     const activeId = draggedItem.dataset.stepId;
     stepDragState.item = null;
+    stepDragState.items = [];
     stepDragState.order = '';
     stepDragState.crossSheet = false;
     stepDragState.validDrop = false;
     refreshStepControls();
     setActiveStep(activeId, { scroll: false });
-    if (changed) queueStepOrderSave();
+    if (changed) queueStepOrderSave({ undoOrder });
   });
 
   // ---------------------------------------------------------------
@@ -3427,6 +3959,8 @@
     const list = document.getElementById('step-nav-list');
     if (!list) return false;
     const stepId = item.dataset.stepId || '';
+    const undoOrder = [...list.querySelectorAll('[data-step-nav-item]')]
+      .map((entry) => entry.dataset.stepId).filter(Boolean);
     const position = moveNavItemBy(list, item, offset, '[data-step-nav-item]');
     if (!position) return false;
     // 中央の手順カードもアウトラインと同じ順序へ並べ直す。ドラッグ時と同じ手順。
@@ -3437,9 +3971,9 @@
     });
     refreshStepControls();
     setActiveStep(stepId, { scroll: false });
-    queueStepOrderSave();
+    queueStepOrderSave({ undoOrder });
     // アウトラインは作り直されるため、同じ手順の取っ手へフォーカスを戻して続けて動かせるようにする。
-    document.querySelector(`[data-step-nav-item][data-step-id="${CSS.escape(stepId)}"] [data-step-nav-drag-handle]`)?.focus();
+    document.querySelector(`[data-step-nav-item][data-step-id="${CSS.escape(stepId)}"] [data-step-jump]`)?.focus();
     announceSortGuide(setStepSortGuide, `${position}番目へ移動しました`);
     return true;
   };
@@ -3455,19 +3989,74 @@
   };
 
   document.body.addEventListener('keydown', (event) => {
-    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
-    if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
-    const offset = event.key === 'ArrowUp' ? -1 : 1;
-    const stepHandle = event.target.closest?.('[data-step-nav-drag-handle]');
-    if (stepHandle) {
-      const item = stepHandle.closest('[data-step-nav-item]');
-      if (item && moveStepByKeyboard(item, offset)) event.preventDefault();
+    if ((event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey
+      && (event.key === 'ArrowUp' || event.key === 'ArrowDown')
+      && !document.querySelector('dialog[open]')) {
+      event.preventDefault();
+      moveActiveStep(event.key === 'ArrowUp' ? -1 : 1);
       return;
     }
-    const sheetHandle = event.target.closest?.('[data-sheet-nav-drag-handle]');
-    if (sheetHandle) {
-      const item = sheetHandle.closest('[data-sheet-nav-item]');
-      if (item && moveSheetByKeyboard(item, offset)) event.preventDefault();
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key === 'Enter') {
+      const card = event.target.closest?.('.step-card');
+      if (card) {
+        const cards = stepCards();
+        const currentIndex = cards.indexOf(card);
+        const nextCard = currentIndex >= 0 ? cards[currentIndex + 1] : null;
+        if (nextCard?.dataset.stepId) {
+          event.preventDefault();
+          const fieldName = event.target.matches?.('[name]') ? event.target.getAttribute('name') : 'title';
+          event.target.blur?.();
+          setActiveStep(nextCard.dataset.stepId);
+          window.requestAnimationFrame(() => {
+            const nextField = nextCard.querySelector(`[name="${CSS.escape(fieldName || 'title')}"]`) || nextCard.querySelector('[name="title"]');
+            nextField?.focus({ preventScroll: true });
+          });
+          return;
+        }
+      }
+    }
+    const stepNav = event.target.closest?.('.step-nav');
+    if (stepNav && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
+      event.preventDefault();
+      selectAllSteps();
+      return;
+    }
+    if (event.key === 'Escape' && stepNav && selectedStepIds.size > 1) {
+      event.preventDefault();
+      clearStepSelection();
+      return;
+    }
+    if (stepNav && (event.key === 'Delete' || event.key === 'Backspace') &&
+        !event.target.matches?.('input, textarea, select')) {
+      if (selectedStepIds.size === 0) {
+        const focusedId = event.target.closest?.('[data-step-nav-item]')?.dataset.stepId || '';
+        const activeId = document.querySelector('.step-card--active')?.dataset.stepId || '';
+        const stepId = focusedId || activeId;
+        if (stepId) {
+          selectedStepIds.add(stepId);
+          lastSelectedStepId = stepId;
+          updateStepBulkActions();
+        }
+      }
+      if (selectedStepIds.size > 0) {
+        event.preventDefault();
+        void runBulkStepAction('delete');
+        return;
+      }
+    }
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+    if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    const offset = event.key === 'ArrowUp' ? -1 : 1;
+    const stepItem = event.target.closest?.('[data-step-nav-item]');
+    if (stepItem) {
+      if (selectedStepIds.size > 1) reorderSelectedSteps(offset < 0 ? 'up' : 'down');
+      else moveStepByKeyboard(stepItem, offset);
+      event.preventDefault();
+      return;
+    }
+    const sheetItem = event.target.closest?.('[data-sheet-nav-item]');
+    if (sheetItem && moveSheetByKeyboard(sheetItem, offset)) {
+      event.preventDefault();
     }
   });
 
@@ -3564,8 +4153,11 @@
       return;
     }
     if (!event.detail.successful) {
-      saveStatus('error', '保存できません');
-      showToast('処理を完了できませんでした。入力内容を残したまま、もう一度お試しください。');
+      const contentType = event.detail.xhr?.getResponseHeader?.('Content-Type') || '';
+      const responseText = String(event.detail.xhr?.responseText || '').trim();
+      const serverMessage = contentType.includes('text/plain') && responseText.length <= 300 ? responseText : '';
+      saveStatus('error', path === '/api/steps/update' ? '保存できません' : '処理できません');
+      showToast(serverMessage || '処理を完了できませんでした。入力内容を残したまま、もう一度お試しください。');
     }
   });
 
@@ -3577,6 +4169,12 @@
 
   let scrollTimer = 0;
   window.addEventListener('scroll', () => {
+    if (!reviewScrollFrame) {
+      reviewScrollFrame = window.requestAnimationFrame(() => {
+        reviewScrollFrame = 0;
+        syncReviewStepFromScroll();
+      });
+    }
     window.clearTimeout(scrollTimer);
     scrollTimer = window.setTimeout(rememberScroll, 120);
   }, { passive: true });
@@ -3624,7 +4222,24 @@
   // ---------------------------------------------------------------
   // 操作を記録して手順にする
   // ---------------------------------------------------------------
-  const recorder = { dialog: null, timer: null, events: [], busy: false, active: false };
+  const recorder = {
+    dialog: null,
+    timer: null,
+    events: [],
+    localProposals: [],
+    proposals: [],
+    busy: false,
+    active: false,
+    analysisActive: false,
+    useAi: false,
+    reviewSource: 'local',
+    eventSelection: null,
+    localSelection: null,
+    proposalSelection: null,
+    copilotUnavailableUntil: 0,
+    paused: false,
+    count: 0
+  };
 
   const stopRecorderPolling = () => {
     if (recorder.timer) {
@@ -3644,8 +4259,10 @@
     dialog.querySelector('[data-recorder-import]').hidden = view !== 'review';
     dialog.querySelectorAll('[data-recorder-phase]').forEach((item) => {
       const phase = item.dataset.recorderPhase;
-      const current = (phase === 'record' && view !== 'review') || (phase === 'review' && view === 'review');
-      const done = phase === 'record' && view === 'review';
+      const order = { record: 0, analyze: 1, review: 2 };
+      const currentPhase = view === 'setup' || view === 'recording' ? 'record' : (view === 'analyzing' ? 'analyze' : 'review');
+      const current = phase === currentPhase;
+      const done = order[phase] < order[currentPhase];
       item.classList.toggle('is-current', current);
       item.classList.toggle('is-done', done);
       if (current) item.setAttribute('aria-current', 'step');
@@ -3660,28 +4277,11 @@
     dialog.querySelectorAll('[data-recorder-detail]').forEach((node) => { node.textContent = detail; });
   };
 
-  const recorderApplicationKey = (item) => {
-    const title = String(item?.windowTitle || '').trim();
-    const rules = [
-      [/\bExcel$/i, 'Excel'], [/\bWord$/i, 'Word'], [/Microsoft\s*Edge$/i, 'Edge'],
-      [/Google\s*Chrome$/i, 'Chrome'], [/エクスプローラー$/i, 'エクスプローラー'],
-      [/^ChatGPT$/i, 'ChatGPT'], [/Copilot/i, 'Copilot']
-    ];
-    const known = rules.find(([pattern]) => pattern.test(title));
-    return known ? known[1] : title;
-  };
-
   const getRecommendedRecordedIndexes = (events) => {
-    const counts = new Map();
-    events.forEach((item) => {
-      const key = recorderApplicationKey(item);
-      if (key) counts.set(key, (counts.get(key) || 0) + 1);
-    });
-    const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]);
-    // すべて単発なら、複数アプリをまたぐ正規の手順かもしれないため全件を残す。
-    if (ranked.length === 0 || ranked[0][1] < 2) return new Set(events.map((item) => Number(item.index)));
-    const primary = ranked[0][0];
-    return new Set(events.filter((item) => recorderApplicationKey(item) === primary).map((item) => Number(item.index)));
+    // 手順は Edge → Excel のように複数アプリをまたぐのが普通であり、件数が
+    // 一番多いアプリだけを選ぶと、重複検出が多いアプリほど他を押し出してしまう。
+    // ManualBuilder 自身は記録ワーカー側で除外済みなので、確認画面では全件を残す。
+    return new Set(events.map((item) => Number(item.index)));
   };
 
   const updateRecorderSelectionSummary = () => {
@@ -3691,11 +4291,41 @@
     summary.textContent = `${boxes.filter((box) => box.checked).length} / ${boxes.length} 件を取り込む`;
   };
 
-  const selectRecommendedRecordedEvents = () => {
-    const recommended = getRecommendedRecordedIndexes(recorder.events);
-    recorder.dialog.querySelectorAll('[data-recorder-event]').forEach((row) => {
-      row.querySelector('[data-recorder-accept]').checked = recommended.has(Number(row.dataset.index));
-    });
+  const recorderConfidenceLabel = (confidence) => {
+    if (confidence === 'high') return '確度 高';
+    if (confidence === 'medium') return '要確認';
+    return '要確認（根拠弱）';
+  };
+
+  // Copilotが時系列フレームから選んだ「操作前／操作後」を、大きな画像で確認する。
+  // プログラム側のイベント分割はここでは手順の単位として扱わない。
+  const renderRecordedProposals = (proposals, source = 'proposals') => {
+    const list = recorder.dialog.querySelector('[data-recorder-list]');
+    if (proposals.length === 0) {
+      list.innerHTML = `<p class="copilot-empty">${source === 'local' ? '手順にできる安定した場面がありませんでした。' : 'Copilotが手順として選べる場面を見つけられませんでした。'}</p>`;
+      return;
+    }
+    const token = encodeURIComponent(sessionHeaders()['X-Manual-Token'] || '');
+    list.innerHTML = proposals.map((item, index) => {
+      const beforeSrc = `/images/recording/${encodeURIComponent(item.beforeImage)}?token=${token}`;
+      const afterSrc = item.afterImage
+        ? `/images/recording/${encodeURIComponent(item.afterImage)}?token=${token}`
+        : '';
+      const shots = `<span class="recorder-proposal__shots"><span><small>操作前 ${escapeHtml(item.beforeFrame || '')}</small><img class="recorder-proposal__shot" src="${beforeSrc}" alt="操作前" loading="lazy"></span>`
+        + (afterSrc ? `<span><small>操作後 ${escapeHtml(item.afterFrame || '')}</small><img class="recorder-proposal__shot" src="${afterSrc}" alt="操作後の結果" loading="lazy"></span>` : '')
+        + '</span>';
+      const confidence = String(item.confidence || 'low').toLowerCase();
+      const reviewClass = confidence === 'high' ? '' : ' recorder-proposal--review';
+      const selection = source === 'local' ? recorder.localSelection : recorder.proposalSelection;
+      const selected = selection instanceof Set ? selection.has(index) : true;
+      return `<label class="recorder-proposal${reviewClass}" data-recorder-event data-proposal-index="${index}">
+<span class="recorder-proposal__select"><input type="checkbox" data-recorder-accept${selected ? ' checked' : ''}><span>手順 ${index + 1}</span></span>
+${shots}
+<span class="recorder-proposal__body"><strong>${escapeHtml(item.title || `手順 ${index + 1}`)}</strong><span>${escapeHtml(item.description || '')}</span><small>${escapeHtml(recorderConfidenceLabel(confidence))}${item.reason ? `・${escapeHtml(item.reason)}` : ''}</small></span>
+</label>`;
+    }).join('');
+    list.querySelectorAll('[data-recorder-accept]').forEach((box) => box.addEventListener('change', updateRecorderSelectionSummary));
+    recorder.reviewSource = source;
     updateRecorderSelectionSummary();
   };
 
@@ -3738,7 +4368,9 @@
       const shots = `<span class="recorder-event__shots"><span><small>操作前</small><img class="recorder-event__shot" src="${src}" alt="操作前" loading="lazy"></span>`
         + (resultSrc ? `<span><small>操作後</small><img class="recorder-event__shot" src="${resultSrc}" alt="操作後の結果" loading="lazy"></span>` : '')
         + '</span>';
-      const selected = recommended.has(Number(item.index));
+      const selected = recorder.eventSelection instanceof Set
+        ? recorder.eventSelection.has(Number(item.index))
+        : recommended.has(Number(item.index));
       const reviewReason = selected ? '' : '<small class="recorder-event__review">別のアプリ・要確認</small>';
       return `<label class="recorder-event" data-recorder-event data-index="${item.index}">
 <input type="checkbox" data-recorder-accept${selected ? ' checked' : ''}>
@@ -3748,23 +4380,187 @@ ${shots}
 </label>`;
     }).join('');
     list.querySelectorAll('[data-recorder-accept]').forEach((box) => box.addEventListener('change', updateRecorderSelectionSummary));
+    recorder.reviewSource = 'events';
     updateRecorderSelectionSummary();
+  };
+
+  const rememberRecorderSelection = () => {
+    if (!recorder.dialog) return;
+    if (recorder.reviewSource === 'proposals' || recorder.reviewSource === 'local') {
+      const selection = new Set([...recorder.dialog.querySelectorAll('[data-recorder-event]')]
+        .filter((row) => row.querySelector('[data-recorder-accept]')?.checked)
+        .map((row) => Number(row.dataset.proposalIndex)));
+      if (recorder.reviewSource === 'local') recorder.localSelection = selection;
+      else recorder.proposalSelection = selection;
+      return;
+    }
+    recorder.eventSelection = new Set([...recorder.dialog.querySelectorAll('[data-recorder-event]')]
+      .filter((row) => row.querySelector('[data-recorder-accept]')?.checked)
+      .map((row) => Number(row.dataset.index)));
+  };
+
+  const updateRecorderResultToggle = () => {
+    const button = recorder.dialog?.querySelector('[data-recorder-ai-results]');
+    if (!button) return;
+    button.hidden = recorder.proposals.length === 0;
+    const baseCount = recorder.localProposals.length || recorder.events.length;
+    button.textContent = recorder.reviewSource === 'proposals'
+      ? `このPCで選んだ候補 ${baseCount} 件に戻す`
+      : `Copilotの整理結果 ${recorder.proposals.length} 件を見る`;
+  };
+
+  const setRecorderAiRetryVisible = (visible) => {
+    const button = recorder.dialog?.querySelector('[data-recorder-ai-retry]');
+    if (button) button.hidden = !visible;
+  };
+
+  const toggleRecorderResults = () => {
+    if (recorder.proposals.length === 0) return;
+    rememberRecorderSelection();
+    const useProposals = recorder.reviewSource !== 'proposals';
+    if (useProposals) renderRecordedProposals(recorder.proposals, 'proposals');
+    else if (recorder.localProposals.length > 0) renderRecordedProposals(recorder.localProposals, 'local');
+    else renderRecordedEvents(recorder.events);
+    const excludeButton = recorder.dialog?.querySelector('[data-recorder-exclude-finishing]');
+    if (excludeButton) excludeButton.hidden = useProposals || recorder.localProposals.length > 0;
+    updateRecorderResultToggle();
+    setRecorderMessage(
+      useProposals ? `${recorder.proposals.length} 件のCopilot整理結果` : `${recorder.localProposals.length || recorder.events.length} 件のローカル操作候補`,
+      useProposals
+        ? 'AIが選んだ操作前・操作後です。元の候補へ戻して比較することもできます。'
+        : '記録直後の候補です。チェック状態は切り替え前のまま保持しています。'
+    );
+  };
+
+  const showRecordedEventFallback = (detail = '') => {
+    recorder.analysisActive = false;
+    recorder.proposals = [];
+    recorder.proposalSelection = null;
+    if (recorder.localProposals.length > 0) renderRecordedProposals(recorder.localProposals, 'local');
+    else renderRecordedEvents(recorder.events);
+    const named = recorder.events.filter((item) => item.targetName).length;
+    const candidateCount = recorder.localProposals.length || recorder.events.length;
+    setRecorderMessage(
+      `${candidateCount} 件の操作候補を確認してください`,
+      detail || (candidateCount > 0
+        ? `このPCで安定した操作前後を選びました。うち ${named} 件は操作対象の名前を取得できています。`
+        : '手順にできる操作がありませんでした。もう一度記録してください。')
+    );
+    const excludeButton = recorder.dialog?.querySelector('[data-recorder-exclude-finishing]');
+    if (excludeButton) excludeButton.hidden = recorder.localProposals.length > 0;
+    updateRecorderResultToggle();
+    setRecorderView('review');
+  };
+
+  const loadRecorderAnalysisResult = async () => {
+    const response = await fetch('/api/recorder/analyze/result', { headers: sessionHeaders() });
+    if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+    const payload = await response.json();
+    recorder.proposals = payload.proposals || [];
+    recorder.analysisActive = false;
+    recorder.copilotUnavailableUntil = 0;
+    setRecorderAiRetryVisible(false);
+    if (recorder.proposals.length === 0) throw new Error('必要な場面を選べませんでした。');
+    const reviewCount = recorder.proposals.filter((item) => String(item.confidence || '') !== 'high').length;
+    setRecorderMessage(
+      `${recorder.localProposals.length || recorder.events.length} 件の操作候補を確認できます`,
+      reviewCount > 0
+        ? `Copilotの整理結果 ${recorder.proposals.length} 件も準備できました。うち ${reviewCount} 件は要確認です。`
+        : `Copilotの整理結果 ${recorder.proposals.length} 件も準備できました。必要なら切り替えて比較できます。`
+    );
+    updateRecorderResultToggle();
+    setRecorderView('review');
+  };
+
+  const pollRecorderAnalysis = async () => {
+    try {
+      const response = await fetch('/api/recorder/analyze/status', { headers: sessionHeaders() });
+      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      const status = await response.json();
+      if (status.state === 'queued' || status.state === 'running') {
+        const packet = Number(status.currentPacket || 0);
+        const total = Number(status.totalPackets || 0);
+        const progress = total > 0 ? `（${packet} / ${total}）` : '';
+        setRecorderMessage(
+          `${recorder.localProposals.length || recorder.events.length} 件の操作候補を確認できます`,
+          `${status.message || 'Copilotが必要な場面を選んでいます'}${progress}。待たずにこのまま取り込めます。`
+        );
+        return;
+      }
+      stopRecorderPolling();
+      if (status.state === 'completed') {
+        await loadRecorderAnalysisResult();
+        return;
+      }
+      if (status.state === 'failed' || status.state === 'cancelled') {
+        const serviceUnavailable = status.errorCode === 'COPILOT_SERVICE_UNAVAILABLE'
+          || String(status.message || '').match(/問題が発生|必要な手順を選べません|RECORDER_AI_FAILED/i);
+        showRecordedEventFallback(serviceUnavailable
+          ? 'Copilotを利用できなかったため、待たずにこのPCで記録した操作候補へ切り替えました。画像を見ながら不要な候補だけ外せます。'
+          : (status.message || 'Copilotで場面を整理できなかったため、操作候補をそのまま表示します。'));
+        if (serviceUnavailable) {
+          recorder.copilotUnavailableUntil = Date.now() + (10 * 60 * 1000);
+          setRecorderAiRetryVisible(true);
+        }
+      }
+    } catch (error) {
+      stopRecorderPolling();
+      showRecordedEventFallback(`Copilotの処理状況を確認できませんでした。${error.message || ''}`);
+    }
+  };
+
+  const startRecorderAnalysis = async (background = false) => {
+    recorder.analysisActive = true;
+    recorder.proposals = [];
+    setRecorderAiRetryVisible(false);
+    setRecorderMessage(
+      background ? `${recorder.localProposals.length || recorder.events.length} 件の操作候補を確認できます` : '記録画面を並べています',
+      background
+        ? 'このまま確認・取り込みできます。Copilotは背景で必要な場面を整理しています。'
+        : '原本に近い時系列フレームを一覧にし、Copilotへ渡す準備をしています。'
+    );
+    if (!background) setRecorderView('analyzing');
+    try {
+      const response = await fetch('/api/recorder/analyze/start', { method: 'POST', headers: sessionHeaders() });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload?.message || `HTTP ${response.status}`);
+      stopRecorderPolling();
+      recorder.timer = window.setInterval(pollRecorderAnalysis, 700);
+      await pollRecorderAnalysis();
+    } catch (error) {
+      stopRecorderPolling();
+      showRecordedEventFallback(`Copilotで場面を整理できませんでした。${error.message || ''}`);
+    }
   };
 
   const loadRecordedEvents = async () => {
     const response = await fetch('/api/recorder/events', { headers: sessionHeaders() });
     const payload = response.ok ? await response.json() : { events: [] };
     recorder.events = payload.events || [];
+    recorder.localProposals = payload.localProposals || [];
     recorder.active = false;
-    renderRecordedEvents(recorder.events);
-    const named = recorder.events.filter((item) => item.targetName).length;
-    setRecorderMessage(
-      `${recorder.events.length} 件の操作を記録しました`,
-      recorder.events.length > 0
-        ? `うち ${named} 件は押したボタンの名前まで取得できています。取り込むものを選んでください。`
-        : ''
-    );
-    setRecorderView('review');
+    if (recorder.useAi) {
+      recorder.eventSelection = null;
+      recorder.localSelection = null;
+      recorder.proposalSelection = null;
+      if (recorder.localProposals.length > 0) renderRecordedProposals(recorder.localProposals, 'local');
+      else renderRecordedEvents(recorder.events);
+      const excludeButton = recorder.dialog?.querySelector('[data-recorder-exclude-finishing]');
+      if (excludeButton) excludeButton.hidden = recorder.localProposals.length > 0;
+      updateRecorderResultToggle();
+      setRecorderView('review');
+      if (Date.now() < recorder.copilotUnavailableUntil) {
+        setRecorderMessage(
+          `${recorder.localProposals.length || recorder.events.length} 件の操作候補を確認できます`,
+          '前回Copilotが応答しなかったため、今回は画像を送らずローカル候補を表示しています。必要なら再確認できます。'
+        );
+        setRecorderAiRetryVisible(true);
+        return;
+      }
+      await startRecorderAnalysis(true);
+      return;
+    }
+    showRecordedEventFallback('このPCで安定した操作前後を選びました。画像を見ながら、不要な候補だけ外せます。');
   };
 
   const pollRecorderStatus = async () => {
@@ -3773,10 +4569,26 @@ ${shots}
       if (!response.ok) return;
       const status = await response.json();
       if (status.state === 'recording') {
+        recorder.paused = false;
+        recorder.count = Number(status.count || 0);
+        const pauseButton = recorder.dialog?.querySelector('[data-recorder-pause]');
+        const undoButton = recorder.dialog?.querySelector('[data-recorder-undo]');
+        if (pauseButton) pauseButton.textContent = '一時停止';
+        if (undoButton) undoButton.disabled = recorder.count < 1;
         setRecorderMessage(
           `${status.count} 件の操作を記録中`,
           status.warning || (status.lastTarget ? `直前: ${status.lastTarget}` : 'この画面は最小化しても記録は続きます。')
         );
+        return;
+      }
+      if (status.state === 'paused') {
+        recorder.paused = true;
+        recorder.count = Number(status.count || 0);
+        const pauseButton = recorder.dialog?.querySelector('[data-recorder-pause]');
+        const undoButton = recorder.dialog?.querySelector('[data-recorder-undo]');
+        if (pauseButton) pauseButton.textContent = '記録を再開';
+        if (undoButton) undoButton.disabled = recorder.count < 1;
+        setRecorderMessage(`${recorder.count} 件を記録・一時停止中`, '休憩や記録外の操作が終わったら［記録を再開］を押してください。');
         return;
       }
       if (status.state === 'idle') return;
@@ -3794,6 +4606,12 @@ ${shots}
 
   const startRecording = async () => {
     recorder.active = true;
+    recorder.analysisActive = false;
+    recorder.localProposals = [];
+    recorder.proposals = [];
+    recorder.useAi = recorder.dialog.querySelector('[data-recorder-ai]').checked;
+    recorder.paused = false;
+    recorder.count = 0;
     setRecorderMessage('記録の準備をしています', '');
     setRecorderView('recording');
     try {
@@ -3826,6 +4644,46 @@ ${shots}
     }
   };
 
+  const setRecordingPaused = async () => {
+    if (!recorder.active || recorder.busy) return;
+    const nextPaused = !recorder.paused;
+    const body = new URLSearchParams();
+    body.set('paused', nextPaused ? 'true' : 'false');
+    try {
+      const response = await fetch('/api/recorder/pause', {
+        method: 'POST',
+        headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' }),
+        body: body.toString()
+      });
+      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      recorder.paused = nextPaused;
+      const button = recorder.dialog.querySelector('[data-recorder-pause]');
+      button.textContent = nextPaused ? '記録を再開' : '一時停止';
+      setRecorderMessage(
+        nextPaused ? `${recorder.count} 件を記録・一時停止中` : `${recorder.count} 件の操作を記録中`,
+        nextPaused ? '一時停止中の操作は手順に入りません。' : '記録を再開しました。'
+      );
+    } catch (error) {
+      showToast(error.message || '一時停止を切り替えられませんでした。');
+    }
+  };
+
+  const undoLastRecording = async () => {
+    if (!recorder.active || recorder.count < 1 || recorder.busy) return;
+    try {
+      const response = await fetch('/api/recorder/undo', { method: 'POST', headers: sessionHeaders() });
+      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      recorder.count = Math.max(0, recorder.count - 1);
+      recorder.dialog.querySelector('[data-recorder-undo]').disabled = recorder.count < 1;
+      setRecorderMessage(
+        recorder.paused ? `${recorder.count} 件を記録・一時停止中` : `${recorder.count} 件の操作を記録中`,
+        '直前の操作を取り消しました。'
+      );
+    } catch (error) {
+      showToast(error.message || '直前の操作を取り消せませんでした。');
+    }
+  };
+
   const stopRecording = async () => {
     setRecorderMessage('記録を終了しています', '');
     try {
@@ -3848,16 +4706,34 @@ ${shots}
     await loadRecordedEvents();
   };
 
-  const importRecordedEvents = async () => {
-    if (recorder.busy) return;
-    const accept = [...recorder.dialog.querySelectorAll('[data-recorder-event]')]
-      .filter((item) => item.querySelector('[data-recorder-accept]').checked)
-      .map((item) => Number(item.dataset.index));
+  const importRecordedEvents = async (acceptedIndexes = null, automatic = false) => {
+    if (recorder.busy) return false;
+    const accept = Array.isArray(acceptedIndexes)
+      ? acceptedIndexes
+      : recorder.reviewSource === 'proposals' && recorder.proposals.length > 0
+        ? [...recorder.dialog.querySelectorAll('[data-recorder-event]')]
+          .filter((item) => item.querySelector('[data-recorder-accept]').checked)
+          .map((item) => recorder.proposals[Number(item.dataset.proposalIndex)])
+          .filter(Boolean)
+        : recorder.reviewSource === 'local' && recorder.localProposals.length > 0
+          ? [...recorder.dialog.querySelectorAll('[data-recorder-event]')]
+            .filter((item) => item.querySelector('[data-recorder-accept]').checked)
+            .map((item) => recorder.localProposals[Number(item.dataset.proposalIndex)])
+            .filter(Boolean)
+        : [...recorder.dialog.querySelectorAll('[data-recorder-event]')]
+          .filter((item) => item.querySelector('[data-recorder-accept]').checked)
+          .map((item) => Number(item.dataset.index));
     if (accept.length === 0) {
       showToast('取り込む操作を1件以上選んでください。');
-      return;
+      return false;
     }
     recorder.busy = true;
+    if (recorder.analysisActive) {
+      stopRecorderPolling();
+      recorder.analysisActive = false;
+      await fetch('/api/recorder/analyze/cancel', { method: 'POST', headers: sessionHeaders() }).catch(() => { });
+    }
+    const existingStepIds = new Set(stepCards().map((card) => card.dataset.stepId || ''));
     try {
       const response = await fetch('/api/recorder/import', {
         method: 'POST',
@@ -3867,23 +4743,27 @@ ${shots}
       if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
       const result = await response.json();
       recorder.events = [];
+      recorder.localProposals = [];
+      recorder.proposals = [];
+      recorder.analysisActive = false;
       recorder.active = false;
       recorder.dialog.close();
       await refreshWorkspace();
+      const firstAddedCard = stepCards().find((card) => !existingStepIds.has(card.dataset.stepId || ''));
+      if (firstAddedCard?.dataset.stepId) {
+        setActiveStep(firstAddedCard.dataset.stepId);
+        firstAddedCard.querySelector('input[name="title"]')?.focus({ preventScroll: true });
+      }
       const parts = [`${result.added} 件の手順を作りました`];
       if (result.skipped > 0) parts.push(`${result.skipped} 件は画像を読み取れず除きました`);
-      if (result.added > 0) {
-        showToast(`${parts.join('、')}。Copilotで赤枠候補と文章を確認します。`, 'info');
-        try {
-          await openCopilotDialog('draft');
-        } catch (error) {
-          showToast(`手順は取り込み済みです。Copilotの確認画面だけ開けませんでした。${error.message || ''}`);
-        }
-      } else {
-        showToast(parts.join('、'));
-      }
+      if (result.needsReview > 0) parts.push(`${result.needsReview} 件は確認が必要です`);
+      showToast(`${parts.join('、')}。そのまま編集できます。`, result.needsReview > 0 ? 'info' : 'success');
+      if (result.needsReview > 0) await focusFinishTarget('attention');
+      return true;
     } catch (error) {
-      showToast(error.message || '記録した操作を取り込めませんでした。');
+      const detail = error.message || '記録した操作を取り込めませんでした。';
+      showToast(automatic ? `自動で手順を作れませんでした。${detail}` : detail);
+      return false;
     } finally {
       recorder.busy = false;
     }
@@ -3895,12 +4775,13 @@ ${shots}
     dialog.id = 'recorder-dialog';
     dialog.className = 'copilot-dialog';
     dialog.setAttribute('aria-label', '操作を記録して手順にする');
-    dialog.innerHTML = '<header class="copilot-dialog__header"><div><strong>操作を記録して手順書を作る</strong><span>記録、操作確認、Copilot提案の順に進みます</span></div><button type="button" class="copilot-dialog__close" data-recorder-close aria-label="閉じる">×</button></header>'
+    dialog.innerHTML = '<header class="copilot-dialog__header"><div><strong>操作を記録して手順書を作る</strong><span>録画全体から必要な場面を選び、編集できる手順にします</span></div><button type="button" class="copilot-dialog__close" data-recorder-close aria-label="閉じる">×</button></header>'
       + '<div class="copilot-dialog__content">'
-      + '<ol class="recorder-flow" aria-label="作成の流れ"><li data-recorder-phase="record"><span>1</span>操作を記録</li><li data-recorder-phase="review"><span>2</span>使う操作を確認</li><li data-recorder-phase="copilot"><span>3</span>Copilotの提案</li></ol>'
+      + '<ol class="recorder-flow" aria-label="作成の流れ"><li data-recorder-phase="record"><span>1</span>操作を記録</li><li data-recorder-phase="analyze"><span>2</span>場面を選ぶ</li><li data-recorder-phase="review"><span>3</span>確認して編集</li></ol>'
       + '<section data-recorder-view="setup">'
       + '<p class="copilot-note">クリックや入力の時刻、画面、ウィンドウ名、操作対象の候補を記録します。<strong>押したキーそのものは保存しません</strong>が、入力した文字は画面画像に写ります。隠したい箇所は、取り込み後に「画像を編集」から黒塗りしてください。</p>'
-      + '<div class="recorder-scope"><strong>普段の画面をそのまま記録</strong><span>Edge、Excel、エクスプローラーなど、いつものアプリで操作してください。記録中に行った他アプリの操作も候補に入るため、終了後に不要な操作を外してください。Copilotは保存した赤枠候補から合うものを選び、候補がなければ「枠なし」を提案します。</span></div>'
+      + '<div class="recorder-scope"><strong>普段の画面をそのまま記録</strong><span>Edge、Excel、エクスプローラーなど、いつものアプリで操作してください。記録後、このPCがクリックと画面変化から安定した操作前・操作後をすぐに選びます。クリック情報は赤枠候補の手がかりにも使います。</span></div>'
+      + '<label class="copilot-option"><input type="checkbox" data-recorder-ai><span><strong>必要ならCopilotでも場面を整理する</strong><small>番号付きの一覧画像をMicrosoft 365 Copilotへ送り、このPCの候補と比較できます。待たずに取り込みできます。</small></span></label>'
       + '<label class="copilot-option"><input type="checkbox" data-recorder-narration><span>操作しながら話した内容も記録する</span></label>'
       + '<p class="copilot-note copilot-note--warn" data-recorder-narration-note hidden>マイクを使い、<strong>音声はMicrosoftのオンライン音声認識へ送られます</strong>。Windowsの音声入力（Win+H）と同じ仕組みです。話した内容は手順の手がかりとして使い、そのまま文章にはしません。</p>'
       + '<p class="copilot-capability" data-recorder-capability></p>'
@@ -3909,11 +4790,17 @@ ${shots}
       + '<section data-recorder-view="recording" hidden>'
       + '<div class="copilot-dialog__state" role="status" aria-live="polite"><strong data-recorder-message>記録しています</strong><span data-recorder-detail></span></div>'
       + '<p class="copilot-note">普段お使いのEdgeやアプリで、記録したい操作を行ってから［記録を終了］を押してください。この画面に戻る操作は記録されません。</p>'
+      + '<div class="recorder-controller" aria-label="記録の操作"><button type="button" class="button button--secondary" data-recorder-pause>一時停止</button><button type="button" class="button button--ghost" data-recorder-undo disabled>直前の操作を取り消す</button></div>'
+      + '</section>'
+      + '<section data-recorder-view="analyzing" hidden>'
+      + '<div class="copilot-dialog__state" role="status" aria-live="polite"><strong data-recorder-message>記録画面を並べています</strong><span data-recorder-detail></span></div>'
+      + '<div class="recorder-analysis"><span class="recorder-analysis__pulse" aria-hidden="true"></span><div><strong>Copilotが録画全体を見て場面を選択中</strong><p>連続クリック、読込中の画面、ManualBuilderへ戻る操作を除き、理解に必要な場合だけ操作後の画面も残します。</p></div></div>'
+      + '<button type="button" class="button button--ghost" data-recorder-use-events>Copilotを待たず操作候補を確認する</button>'
       + '</section>'
       + '<section data-recorder-view="review" hidden>'
       + '<div class="copilot-dialog__state"><strong data-recorder-message></strong><span data-recorder-detail></span></div>'
-      + '<p class="copilot-note">最も多く操作したアプリを「おすすめ」として選びました。別アプリの操作も下に残しているため、必要なら追加できます。</p>'
-      + '<div class="recorder-review-tools"><strong data-recorder-selection-summary></strong><div><button type="button" class="button button--ghost button--small" data-recorder-select-recommended>おすすめだけ</button><button type="button" class="button button--ghost button--small" data-recorder-select-all>すべて選択</button><button type="button" class="button button--ghost button--small" data-recorder-exclude-finishing>保存・終了を外す</button></div></div>'
+      + '<p class="copilot-note">画像を大きく確認し、不要な手順だけチェックを外してください。取り込み後は文章、順番、赤枠、操作前／操作後の並べ方を自由に直せます。</p>'
+      + '<div class="recorder-review-tools"><strong data-recorder-selection-summary></strong><div><button type="button" class="button button--secondary button--small" data-recorder-ai-results hidden>Copilotの整理結果を見る</button><button type="button" class="button button--ghost button--small" data-recorder-ai-retry hidden>Copilotを再確認</button><button type="button" class="button button--ghost button--small" data-recorder-select-all>すべて選択</button><button type="button" class="button button--ghost button--small" data-recorder-exclude-finishing>保存・終了を外す</button></div></div>'
       + '<div class="recorder-list" data-recorder-list></div>'
       + '</section>'
       + '</div>'
@@ -3922,14 +4809,14 @@ ${shots}
       + '<button type="button" class="button button--ghost" data-recorder-close>閉じる</button>'
       + '<button type="button" class="button button--primary" data-recorder-start>記録を開始</button>'
       + '<button type="button" class="button button--primary" data-recorder-stop hidden>記録を終了</button>'
-      + '<button type="button" class="button button--primary" data-recorder-import hidden>選んだ操作を取り込み、Copilotへ</button>'
+      + '<button type="button" class="button button--primary" data-recorder-import hidden>選んだ操作を取り込んで編集</button>'
       + '</footer>';
     document.body.appendChild(dialog);
     recorder.dialog = dialog;
 
     const requestClose = () => {
       if (recorder.active && !window.confirm('操作を記録中です。記録を終了して破棄しますか？')) return;
-      if (!recorder.active && recorder.events.length > 0 && !window.confirm('まだ取り込んでいない操作を破棄しますか？')) return;
+      if (!recorder.active && (recorder.events.length > 0 || recorder.localProposals.length > 0 || recorder.proposals.length > 0) && !window.confirm('まだ取り込んでいない記録を破棄しますか？')) return;
       dialog.close();
     };
     dialog.querySelectorAll('[data-recorder-close]').forEach((button) => {
@@ -3944,19 +4831,34 @@ ${shots}
       dialog.querySelector('[data-recorder-narration-note]').hidden = !event.target.checked;
     });
     dialog.querySelector('[data-recorder-stop]').addEventListener('click', () => stopRecording());
-    dialog.querySelector('[data-recorder-select-recommended]').addEventListener('click', selectRecommendedRecordedEvents);
+    dialog.querySelector('[data-recorder-pause]').addEventListener('click', () => setRecordingPaused());
+    dialog.querySelector('[data-recorder-undo]').addEventListener('click', () => undoLastRecording());
     dialog.querySelector('[data-recorder-select-all]').addEventListener('click', () => {
       dialog.querySelectorAll('[data-recorder-accept]').forEach((box) => { box.checked = true; });
       updateRecorderSelectionSummary();
     });
     dialog.querySelector('[data-recorder-exclude-finishing]').addEventListener('click', excludeRecordedFinishingSequence);
+    dialog.querySelector('[data-recorder-ai-results]').addEventListener('click', toggleRecorderResults);
+    dialog.querySelector('[data-recorder-ai-retry]').addEventListener('click', async () => {
+      recorder.copilotUnavailableUntil = 0;
+      await startRecorderAnalysis(true);
+    });
+    dialog.querySelector('[data-recorder-use-events]').addEventListener('click', async () => {
+      stopRecorderPolling();
+      recorder.analysisActive = false;
+      await fetch('/api/recorder/analyze/cancel', { method: 'POST', headers: sessionHeaders() }).catch(() => { });
+      showRecordedEventFallback('Copilotの処理を待たず、クリックと入力から作った操作候補を表示しています。');
+    });
     dialog.querySelector('[data-recorder-import]').addEventListener('click', () => importRecordedEvents());
     dialog.addEventListener('close', () => {
       stopRecorderPolling();
       // 開始途中・記録中を含め、取り込まずに閉じたらプロセスと記録画像を片付ける。
-      const shouldDiscard = recorder.active || recorder.events.length > 0;
+      const shouldDiscard = recorder.active || recorder.analysisActive || recorder.events.length > 0 || recorder.localProposals.length > 0 || recorder.proposals.length > 0;
       recorder.active = false;
+      recorder.analysisActive = false;
       recorder.events = [];
+      recorder.localProposals = [];
+      recorder.proposals = [];
       if (shouldDiscard) {
         fetch('/api/recorder/discard', { method: 'POST', headers: sessionHeaders() }).catch(() => { });
       }
@@ -3967,6 +4869,14 @@ ${shots}
   const openRecorderDialog = async () => {
     const dialog = createRecorderDialog();
     recorder.events = [];
+    recorder.localProposals = [];
+    recorder.proposals = [];
+    recorder.analysisActive = false;
+    recorder.reviewSource = 'local';
+    recorder.eventSelection = null;
+    recorder.localSelection = null;
+    recorder.proposalSelection = null;
+    recorder.useAi = false;
     setRecorderView('setup');
     setRecorderMessage('', '');
 
@@ -3974,6 +4884,8 @@ ${shots}
     capability.hidden = false;
     capability.textContent = '記録できるか確認しています…';
     const narrationToggle = dialog.querySelector('[data-recorder-narration]');
+    const aiToggle = dialog.querySelector('[data-recorder-ai]');
+    aiToggle.checked = false;
     narrationToggle.checked = false;
     dialog.querySelector('[data-recorder-narration-note]').hidden = true;
     let available = false;

@@ -735,6 +735,67 @@ function Get-MbExcelStepCardLayout {
     }
 }
 
+# Excelの自動改ページは画像カードの途中でも分割する。カードの実高さを使って、
+# 1ページに収まる組み合わせだけをまとめ、次のカードの先頭へ明示的な改ページを置く。
+function Get-MbExcelPageBreakRows {
+    param(
+        [Parameter(Mandatory = $true)][object[]]$Cards,
+        [ValidateRange(100, 2000)][double]$MaximumPageHeight = 700
+    )
+    $breakRows = New-Object System.Collections.ArrayList
+    $pageHeight = 0.0
+    foreach ($card in @($Cards)) {
+        if ($null -eq $card) { continue }
+        $startRow = [int]$card.StartRow
+        $height = [double]$card.Height
+        if ($startRow -le 0 -or $height -le 0) { continue }
+        if ($pageHeight -gt 0 -and ($pageHeight + $height) -gt $MaximumPageHeight) {
+            [void]$breakRows.Add($startRow)
+            $pageHeight = 0.0
+        }
+        $pageHeight += $height
+    }
+    return @($breakRows)
+}
+
+function Add-MbExcelStepPageBreak {
+    param(
+        [Parameter(Mandatory = $true)][object]$Worksheet,
+        [ValidateRange(1, 100000)][int]$StartRow
+    )
+    $pageBreaks = $null
+    $beforeRange = $null
+    $pageBreak = $null
+    try {
+        $pageBreaks = $Worksheet.HPageBreaks
+        $beforeRange = $Worksheet.Range("A${StartRow}:L${StartRow}")
+        $pageBreak = $pageBreaks.Add($beforeRange)
+    } finally {
+        Release-MbExcelComObject $pageBreak
+        Release-MbExcelComObject $beforeRange
+        Release-MbExcelComObject $pageBreaks
+    }
+}
+
+# 注釈は最終的にExcelへ置く大きさを基準に描画する。操作前と操作後で同じ計算を
+# 共有し、細長い画像だけExcel側で85%へ縮めたときも線・番号の見かけを揃える。
+function Get-MbExcelAnnotationRenderTarget {
+    param(
+        [ValidateRange(1, 100000)][int]$ImageWidth,
+        [ValidateRange(1, 100000)][int]$ImageHeight,
+        [AllowNull()][object]$Crop
+    )
+
+    $cropWidthRatio = if ($null -ne $Crop -and $Crop.PSObject.Properties.Name -contains 'width') { [double]$Crop.width } else { 1.0 }
+    $cropHeightRatio = if ($null -ne $Crop -and $Crop.PSObject.Properties.Name -contains 'height') { [double]$Crop.height } else { 1.0 }
+    $effectivePixelWidth = [double]$ImageWidth * $cropWidthRatio
+    $effectivePixelHeight = [double]$ImageHeight * $cropHeightRatio
+    return [pscustomobject]@{
+        Width = if ($effectivePixelHeight -gt 0 -and ($effectivePixelWidth / $effectivePixelHeight) -ge 3.0) { 646 } else { 760 }
+        Height = if ($effectivePixelWidth -gt 0 -and ($effectivePixelHeight / $effectivePixelWidth) -ge 3.0) { 620 } else { 880 }
+    }
+}
+
 function Add-MbExcelStepCard {
     param(
         [Parameter(Mandatory = $true)][object]$Worksheet,
@@ -1298,7 +1359,11 @@ function Invoke-MbExcelExport {
                     Release-MbExcelComObject $sheetHeader
                 }
 
+                # 印刷設定とタイトル行を先に確定してから画像を配置する。画像配置後に改ページを
+                # 追加すると、Excelが画像の一部をタイトル行より上へ複製する場合があるため。
+                Set-MbExcelPrintLayout -Application $excel -Worksheet $worksheet -Landscape $true -RepeatRows '$1:$2'
                 $startRow = 3
+                $printPageHeight = 0.0
                 $steps = @($sheetModel.steps)
                 for ($stepIndex = 0; $stepIndex -lt $steps.Count; $stepIndex++) {
                     Test-MbExcelCancellation -CancelPath $CancelPath
@@ -1322,16 +1387,9 @@ function Invoke-MbExcelExport {
                         $annotations = @($step.annotations)
                         $crop = if ($step.PSObject.Properties.Name -contains 'crop') { $step.crop } else { $null }
                         $renderedPath = Join-Path $renderDirectory ("$($step.id).png")
-                        $cropWidthRatio = if ($null -ne $crop -and $crop.PSObject.Properties.Name -contains 'width') { [double]$crop.width } else { 1.0 }
-                        $cropHeightRatio = if ($null -ne $crop -and $crop.PSObject.Properties.Name -contains 'height') { [double]$crop.height } else { 1.0 }
-                        $effectivePixelWidth = [double]$image.width * $cropWidthRatio
-                        $effectivePixelHeight = [double]$image.height * $cropHeightRatio
-                        $renderTargetWidth = if ($effectivePixelHeight -gt 0 -and ($effectivePixelWidth / $effectivePixelHeight) -ge 3.0) { 646 } else { 760 }
-                        # 22行の画像領域（余白と85%制限を反映）は約620px相当。
-                        # 注釈の線幅・番号径も最終配置倍率と一致させる。
-                        $renderTargetHeight = if ($effectivePixelWidth -gt 0 -and ($effectivePixelHeight / $effectivePixelWidth) -ge 3.0) { 620 } else { 880 }
+                        $renderTarget = Get-MbExcelAnnotationRenderTarget -ImageWidth ([int]$image.width) -ImageHeight ([int]$image.height) -Crop $crop
                         $imagePath = New-MbAnnotatedImage -SourcePath $sourcePath -Annotations $annotations -Crop $crop `
-                            -DestinationPath $renderedPath -TargetDisplayWidth $renderTargetWidth -TargetDisplayHeight $renderTargetHeight -MaximumDisplayScale 1.5 -NumberFontName $bodyFont
+                            -DestinationPath $renderedPath -TargetDisplayWidth ([int]$renderTarget.Width) -TargetDisplayHeight ([int]$renderTarget.Height) -MaximumDisplayScale 1.5 -NumberFontName $bodyFont
                         if ($imagePath -eq $renderedPath) { [void]$generatedImages.Add($renderedPath) }
                         if ($step.PSObject.Properties.Name -contains 'resultImageId' -and
                             -not [string]::IsNullOrWhiteSpace([string]$step.resultImageId)) {
@@ -1339,15 +1397,24 @@ function Invoke-MbExcelExport {
                             if (-not $resultSourcePath -or -not (Test-Path -LiteralPath $resultSourcePath -PathType Leaf)) {
                                 throw "操作後の結果画像が見つかりません: $($step.resultImageId)"
                             }
+                            $resultAnnotations = if ($step.PSObject.Properties.Name -contains 'resultAnnotations') { @($step.resultAnnotations) } else { @() }
+                            $resultCrop = if ($step.PSObject.Properties.Name -contains 'resultCrop') { $step.resultCrop } else { $null }
+                            $resultImage = @($Project.images | Where-Object { $_.id -eq $step.resultImageId }) | Select-Object -First 1
+                            if (-not $resultImage) { throw "操作後の結果画像が見つかりません: $($step.resultImageId)" }
+                            $resultRenderTarget = Get-MbExcelAnnotationRenderTarget -ImageWidth ([int]$resultImage.width) -ImageHeight ([int]$resultImage.height) -Crop $resultCrop
+                            $resultRenderedPath = Join-Path $renderDirectory ("$($step.id)-result.png")
+                            $resultImagePath = New-MbAnnotatedImage -SourcePath $resultSourcePath -Annotations $resultAnnotations -Crop $resultCrop `
+                                -DestinationPath $resultRenderedPath -TargetDisplayWidth ([int]$resultRenderTarget.Width) -TargetDisplayHeight ([int]$resultRenderTarget.Height) -MaximumDisplayScale 1.5 -NumberFontName $bodyFont
+                            if ($resultImagePath -eq $resultRenderedPath) { [void]$generatedImages.Add($resultRenderedPath) }
                             $imageLayout = if ($step.PSObject.Properties.Name -contains 'imageLayout') { [string]$step.imageLayout } else { 'before' }
                             $imageOrder = if ($step.PSObject.Properties.Name -contains 'imageOrder') { [string]$step.imageOrder } else { 'before-after' }
                             if ($imageOrder -notin @('before-after', 'after-before')) { $imageOrder = 'before-after' }
                             if ($imageLayout -eq 'after') {
-                                $imagePath = $resultSourcePath
+                                $imagePath = $resultImagePath
                             } elseif ($imageLayout -in @('side-by-side', 'stacked')) {
                                 $comparisonPath = Join-Path $renderDirectory ("$($step.id)-before-after.png")
                                 $orientation = if ($imageLayout -eq 'side-by-side') { 'horizontal' } else { 'vertical' }
-                                $imagePath = New-MbBeforeAfterImage -BeforePath $imagePath -AfterPath $resultSourcePath `
+                                $imagePath = New-MbBeforeAfterImage -BeforePath $imagePath -AfterPath $resultImagePath `
                                     -DestinationPath $comparisonPath -FontName $bodyFont -Orientation $orientation -Order $imageOrder
                                 [void]$generatedImages.Add($comparisonPath)
                             }
@@ -1356,9 +1423,30 @@ function Invoke-MbExcelExport {
                     }
 
                     $videoLinkPath = if ($videoPlan.StepLinks.ContainsKey([string]$step.id)) { [string]$videoPlan.StepLinks[[string]$step.id] } else { '' }
+                    $printImageWidth = 0
+                    $printImageHeight = 0
+                    $printHasImage = [bool]($imagePath -and (Test-Path -LiteralPath $imagePath -PathType Leaf))
+                    if ($printHasImage) {
+                        $printImage = $null
+                        try {
+                            $printImage = [Drawing.Image]::FromFile($imagePath)
+                            $printImageWidth = [int]$printImage.Width
+                            $printImageHeight = [int]$printImage.Height
+                        } finally { if ($printImage) { $printImage.Dispose() } }
+                    }
+                    $printLayout = Get-MbExcelStepCardLayout -Description ([string]$step.description) -Note ([string]$step.note) `
+                        -ImageWidth $printImageWidth -ImageHeight $printImageHeight -HasImage $printHasImage
+                    $printLabelRows = 1 + $(if (-not [string]::IsNullOrWhiteSpace([string]$step.note)) { 1 } else { 0 })
+                    $printCardHeight = 30.0 + 16.0 + (20.0 * $printLabelRows) + `
+                        (26.0 * ([int]$printLayout.ContentRows - $printLabelRows))
+                    if ($printPageHeight -gt 0 -and ($printPageHeight + $printCardHeight) -gt 700.0) {
+                        Add-MbExcelStepPageBreak -Worksheet $worksheet -StartRow $startRow
+                        $printPageHeight = 0.0
+                    }
                     $startRow = Add-MbExcelStepCard -Worksheet $worksheet -StartRow $startRow -StepNumber ($stepIndex + 1) `
                         -Title ([string]$step.title) -Description ([string]$step.description) -Note ([string]$step.note) `
                         -ImagePath $imagePath -FontName $bodyFont -VideoLinkPath $videoLinkPath
+                    $printPageHeight += $printCardHeight
                 }
 
                 if ($steps.Count -eq 0) {
@@ -1380,7 +1468,6 @@ function Invoke-MbExcelExport {
 
                 $used = $null
                 try { $used = $worksheet.UsedRange; $used.Font.Name = $bodyFont } finally { Release-MbExcelComObject $used }
-                Set-MbExcelPrintLayout -Application $excel -Worksheet $worksheet -Landscape $true -RepeatRows '$1:$2'
                 Set-MbExcelWorksheetView -Application $excel -Worksheet $worksheet -FreezeRows 2
             } finally { Release-MbExcelComObject $worksheet }
         }
@@ -1621,6 +1708,8 @@ Export-ModuleMember -Function @(
     'Get-MbSafeExcelWorksheetName',
     'Test-MbExcelWorksheetName',
     'Get-MbExcelStepCardLayout',
+    'Get-MbExcelPageBreakRows',
+    'Get-MbExcelAnnotationRenderTarget',
     'New-MbAnnotatedImage',
     'New-MbBeforeAfterImage',
     'Invoke-MbExcelExport'

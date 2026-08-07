@@ -7,8 +7,12 @@
 param(
     [Parameter(Mandatory = $true)][string]$EventsDirectory,
     [Parameter(Mandatory = $true)][string]$EventsPath,
+    [Parameter(Mandatory = $true)][string]$FramesDirectory,
+    [Parameter(Mandatory = $true)][string]$FramesPath,
     [Parameter(Mandatory = $true)][string]$StatusPath,
     [Parameter(Mandatory = $true)][string]$StopPath,
+    [Parameter(Mandatory = $true)][string]$PausePath,
+    [Parameter(Mandatory = $true)][string]$UndoPath,
     [Parameter(Mandatory = $true)][string]$JobId,
     [AllowEmptyString()][string]$IgnoreTitlePatterns = '',
     [AllowEmptyString()][string]$DomTargetPath = '',
@@ -28,9 +32,14 @@ try {
     if (-not (Test-Path -LiteralPath $EventsDirectory)) {
         [void](New-Item -ItemType Directory -Path $EventsDirectory -Force)
     }
+    if (-not (Test-Path -LiteralPath $FramesDirectory)) {
+        [void](New-Item -ItemType Directory -Path $FramesDirectory -Force)
+    }
 
     [void](Invoke-MbRecordingLoop -EventsDirectory $EventsDirectory -EventsPath $EventsPath `
-        -StatusPath $StatusPath -StopPath $StopPath -JobId $JobId -IgnoreTitlePatterns $patterns `
+        -FramesDirectory $FramesDirectory -FramesPath $FramesPath `
+        -StatusPath $StatusPath -StopPath $StopPath -PausePath $PausePath -UndoPath $UndoPath `
+        -JobId $JobId -IgnoreTitlePatterns $patterns `
         -DomTargetPath $DomTargetPath -UiaTargetPath $UiaTargetPath)
     exit 0
 } catch {

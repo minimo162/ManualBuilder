@@ -129,9 +129,40 @@ if (appJs) {
   check('HTML出力の呼び出しが残っていない', !appJs.includes('data-export-html') && !appJs.includes('/api/export/html'));
   check('Excelを標準、Wordを副形式として案内する', appJs.includes('Excelを標準形式、Wordを印刷向けの副形式'));
   check('完成ファイルの共有は手動だと案内する', appJs.includes('完成ファイルを手動でコピーまたは送付してください'));
-  check('録画レビューで主要アプリをおすすめ選択する', appJs.includes('getRecommendedRecordedIndexes'));
+  const recommendation = appJs.match(/const getRecommendedRecordedIndexes = \(events\) => \{([\s\S]*?)\n  \};/);
+  let multiAppSelected = false;
+  if (recommendation) {
+    const selectRecorded = new Function('events', recommendation[1]);
+    const selected = selectRecorded([
+      { index: 1, windowTitle: '申請 - Microsoft Edge' },
+      { index: 2, windowTitle: 'Book1 - Excel' },
+      { index: 3, windowTitle: 'Book1 - Excel' }
+    ]);
+    multiAppSelected = selected instanceof Set && [1, 2, 3].every((index) => selected.has(index));
+  }
+  check('録画レビューでEdgeとExcelを件数に関係なく既定選択する', multiAppSelected);
+  check('録画レビューでAI候補を大きな操作前・操作後画像として確認する', appJs.includes('renderRecordedProposals') && appJs.includes('recorder-proposal__shot'));
   check('録画レビューで保存・終了操作を一括除外できる', appJs.includes('excludeRecordedFinishingSequence'));
   check('録画レビューで選択件数を表示する', appJs.includes('data-recorder-selection-summary'));
+  check('録画終了後はローカル候補を先に表示してCopilotを背景処理にする',
+    appJs.includes("renderRecordedProposals(recorder.localProposals, 'local')") && appJs.includes('待たずにこのまま取り込めます'));
+  check('Copilot結果は一覧を自動置換せず利用者が切り替えて比較する',
+    appJs.includes('data-recorder-ai-results') && appJs.includes('toggleRecorderResults') &&
+    appJs.includes('このPCで選んだ候補 ${baseCount} 件に戻す'));
+  check('Copilotは既定で送信せず利用者が必要な場合だけ選べる',
+    appJs.includes('必要ならCopilotでも場面を整理する') &&
+    appJs.includes('aiToggle.checked = false') && appJs.includes('useAi: false'));
+  check('ローカル候補も操作前・操作後の大きな画像で表示して取り込む',
+    appJs.includes('recorder.localProposals = payload.localProposals || []') &&
+    appJs.includes("recorder.reviewSource === 'local'") && appJs.includes('recorder.localProposals[Number(item.dataset.proposalIndex)]'));
+  check('Copilot障害時も記録内容を失わずローカル候補へ移る',
+    appJs.includes('COPILOT_SERVICE_UNAVAILABLE') &&
+    appJs.includes('Copilotを利用できなかったため、待たずにこのPCで記録した操作候補へ切り替えました'));
+  check('背景AI中に取り込むとAIだけ中止してローカル候補を保存する',
+    appJs.includes("fetch('/api/recorder/analyze/cancel'") && appJs.includes("recorder.reviewSource === 'proposals'"));
+  check('Copilotサービス障害後は10分間画像を再送せず手動で再確認できる',
+    appJs.includes('copilotUnavailableUntil') && appJs.includes('10 * 60 * 1000') &&
+    appJs.includes('data-recorder-ai-retry') && appJs.includes('今回は画像を送らずローカル候補を表示しています'));
 }
 
 // ---------------------------------------------------------------
@@ -143,14 +174,40 @@ if (appJs) {
   check('キーボードでもシートを並べ替えられる', appJs.includes('moveSheetByKeyboard'));
   check('通知を積んで出す', appJs.includes('TOAST_LIMIT'));
   check('通知を閉じられる', appJs.includes('toast__close'));
+  check('サーバーが返した具体的な失敗理由を表示する', appJs.includes("contentType.includes('text/plain')") && appJs.includes('serverMessage ||'));
   check('動きを減らす設定を尊重する', appJs.includes('prefers-reduced-motion'));
   check('Copilot後に仕上げ状況を集計する', appJs.includes('updateFinishGuide'));
   check('未完了手順へ移動できる', appJs.includes('focusFinishTarget'));
   check('選択手順を一括で並べ替えられる', appJs.includes('reorderSelectedSteps'));
+  check('手順の並べ替えを画面下から元に戻せる', appJs.includes("showVisibleUndo('step-reorder'") && appJs.includes('undoStepReorder'));
+  check('入力欄の外ではCtrl・Command+Zでも直前操作を元に戻せる', appJs.includes('visibleUndoHandler') && appJs.includes("event.key.toLowerCase() !== 'z'"));
   check('Shiftで範囲選択できる', appJs.includes('selectStepRange'));
-  check('現在手順の直後へ追加できる', appJs.includes('addStepAfterActive'));
+  check('Ctrl・Commandクリックでカードを追加選択できる', appJs.includes('selectStepFromPointer') && appJs.includes('event.ctrlKey || event.metaKey'));
+  check('選択したカードをまとめて直接ドラッグできる', appJs.includes('stepDragState.items') && appJs.includes("selectedStepIds.has(entry.dataset.stepId || '')"));
+  check('ドラッグ後も専用取っ手の古い案内へ戻らない', !appJs.includes('⠿で並べ替え'));
+  check('通常追加と任意位置への挿入を分ける', appJs.includes('addStepAtEnd') && appJs.includes('addStepAfter'));
+  check('手順行メニューから定位置へ移動できる', appJs.includes('moveSingleStepTo') && appJs.includes('data-step-nav-order'));
+  check('操作メニューを1つだけ開き外側とEscで閉じる', appJs.includes('closeActionMenus') && appJs.includes("event.key !== 'Escape'"));
+  check('手順削除は取り消し可能な即時操作にする', appJs.includes("showDeletionUndo('手順を削除しました')") && !appJs.includes("window.confirm('この手順を削除しますか？')"));
+  check('選択または表示中の手順をDeleteキーでも削除できる', appJs.includes("event.key === 'Delete' || event.key === 'Backspace'") &&
+    appJs.includes('selectedStepIds.size === 0') && appJs.includes('focusedId || activeId') && appJs.includes("runBulkStepAction('delete')"));
   check('注釈編集で前後の画像へ移動できる', appJs.includes('openAdjacentAnnotationEditor'));
+  check('操作前と操作後の画像編集を分けて保存する', appJs.includes("annotationEditor.target") && appJs.includes("target: annotationEditor.target") && appJs.includes("readCardAnnotations(card, 'result')"));
+  check('操作後だけ表示する手順は仕上げ確認から操作後の画像編集を開く',
+    appJs.includes("const editTarget = layout === 'after' ? 'result' : 'before'") && appJs.includes('openAnnotationEditor(card, editTarget)'));
+  check('同じ手順の操作前と操作後で番号注釈を重複させない',
+    appJs.includes("annotationEditor.target === 'result'") &&
+    appJs.includes("[readCardAnnotations(card, 'before'), annotationEditor.annotations]") &&
+    appJs.includes("[annotationEditor.annotations, readCardAnnotations(card, 'result')]"));
+  check('操作後画像の差し替え前に専用の注釈と切り抜きが消えることを確認する',
+    appJs.includes("readCardAnnotations(card, 'result').length > 0") &&
+    appJs.includes("readCardCrop(card, 'result')") && appJs.includes('操作後に付けた注釈と切り抜きはリセットされます'));
+  check('一覧確認と1件編集を切り替えられる', appJs.includes('applyStepView') && appJs.includes('step-view--review'));
+  check('クリックせずキーで前後の手順へ移動できる', appJs.includes('moveActiveStep') && appJs.includes("event.key === 'ArrowDown'"));
+  check('移動中のスクロール追跡で手順が戻らない', appJs.includes('reviewScrollSyncPausedUntil') && appJs.includes('Date.now() < reviewScrollSyncPausedUntil'));
+  check('誤った赤枠だけをその場で外せる', appJs.includes('removeFocusRects') && appJs.includes("item?.type !== 'rect'"));
   check('出力前に完成状態を確認できる', appJs.includes('openOutputReviewDialog'));
+  check('出力前の不足内容を文章・画像・要確認に分ける', appJs.includes("issueLabels.push(`説明なし") && appJs.includes("issueLabels.push(`画像なし") && appJs.includes("issueLabels.push(`要確認"));
   check('Copilotの不要候補をシート別の要確認として残す', appJs.includes('suggestedDeletes') && appJs.includes('selectCopilotDeleteCandidatesOnCurrentSheet'));
   check('Copilotの曖昧候補も要確認として残す', appJs.includes('suggestedReviews') && appJs.includes('data-visual-uncertain'));
   check('赤枠候補なしを初期未選択の要確認にする', appJs.includes('!draft.targetCandidateId || draft.visualConfident === false'));
@@ -181,6 +238,8 @@ if (appCss) {
   check('ハイコントラストでもフォーカスが見える', appCss.includes('forced-colors: active'));
   check('未入力の目印を狭い画面で切り捨てない', !appCss.includes('max-width: 32px'));
   check('削除取り消しを消えない操作バーで表示する', appCss.includes('.deletion-undo') && appCss.includes('.deletion-undo__button'));
+  check('一覧確認で全カードと大きな画像を表示する', appCss.includes('.workspace.step-view--review .step-card') && appCss.includes('height: clamp(500px, 68vh, 820px)'));
+  check('選択中かつ表示中の手順も複数選択色を保つ', appCss.includes('.step-nav__item--active.step-nav__item--selected'));
 }
 
 const indexHtmlText = read('web/index.html');

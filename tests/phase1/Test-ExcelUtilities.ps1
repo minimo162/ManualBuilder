@@ -164,6 +164,24 @@ try {
     Assert-Mb ($mixedWidthLines -lt $fullWidthOnlyLines) '半角英数字を実表示幅に近い文字数として見積もる'
     Assert-Mb ($screenLayout.NextRowOffset -eq ($screenLayout.ContentRows + 2)) '次のカード開始行を可変高さから計算する'
 
+    $pageBreakRows = @(Get-MbExcelPageBreakRows -Cards @(
+        [pscustomobject]@{ StartRow = 3; Height = 398.0 },
+        [pscustomobject]@{ StartRow = 19; Height = 404.0 },
+        [pscustomobject]@{ StartRow = 35; Height = 242.0 },
+        [pscustomobject]@{ StartRow = 45; Height = 500.0 }
+    ))
+    Assert-Mb (($pageBreakRows -join ',') -eq '19,45') '画像カードを分割せず収まる手順だけ同じ印刷ページへまとめる'
+
+    $normalRenderTarget = Get-MbExcelAnnotationRenderTarget -ImageWidth 1920 -ImageHeight 1080 -Crop $null
+    $wideRenderTarget = Get-MbExcelAnnotationRenderTarget -ImageWidth 1920 -ImageHeight 500 -Crop $null
+    $portraitRenderTarget = Get-MbExcelAnnotationRenderTarget -ImageWidth 500 -ImageHeight 2000 -Crop $null
+    $croppedWideRenderTarget = Get-MbExcelAnnotationRenderTarget -ImageWidth 1920 -ImageHeight 1080 `
+        -Crop ([pscustomobject]@{ x = 0.0; y = 0.0; width = 1.0; height = 0.2 })
+    Assert-Mb ($normalRenderTarget.Width -eq 760 -and $normalRenderTarget.Height -eq 880) '通常画像の注釈表示基準を維持する'
+    Assert-Mb ($wideRenderTarget.Width -eq 646 -and $wideRenderTarget.Height -eq 880) '極端な横長画像の注釈表示基準をExcel配置へ合わせる'
+    Assert-Mb ($portraitRenderTarget.Width -eq 760 -and $portraitRenderTarget.Height -eq 620) '極端な縦長画像の注釈表示基準をExcel配置へ合わせる'
+    Assert-Mb ($croppedWideRenderTarget.Width -eq 646) '切り抜き後の比率で注釈表示基準を決める'
+
     $statusPath = Join-Path $testRoot 'status.json'
     $status = [pscustomobject]@{ state = 'queued'; message = '開始'; updatedAt = '' }
     & $excelModule { param($Path, $Value) Write-MbExcelStatus -StatusPath $Path -Status $Value } $statusPath $status
