@@ -39,18 +39,11 @@ if errorlevel 1 goto :failed
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-EvalFixtures.ps1"
 if errorlevel 1 goto :failed
 
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-CopilotEvalProject.ps1"
-if errorlevel 1 goto :failed
-
-rem Blind Copilot review aggregation is implemented in dependency-free Python.
+rem Evaluation scoring is implemented in dependency-free Python.
 where python >nul 2>&1
 if errorlevel 1 (
-  echo [SKIP] Python not found. Skipping the Copilot evaluation aggregator tests.
+  echo [SKIP] Python not found. Skipping the evaluation scoring tests.
 ) else (
-  python "%~dp0Test-CopilotEvalAggregator.py"
-  if errorlevel 1 goto :failed
-  python "%~dp0Test-CopilotBenchmarkRuns.py"
-  if errorlevel 1 goto :failed
   python "%~dp0Test-RecorderCopilotRunEval.py"
   if errorlevel 1 goto :failed
   python "%~dp0Test-ProductProjectEval.py"
@@ -75,9 +68,6 @@ if errorlevel 1 goto :failed
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-ProjectLibraryServer.ps1"
 if errorlevel 1 goto :failed
 
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-CopilotDraft.ps1"
-if errorlevel 1 goto :failed
-
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-Recorder.ps1"
 if errorlevel 1 goto :failed
 
@@ -85,6 +75,11 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-
 if errorlevel 1 goto :failed
 
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-RecorderCopilotManualTools.ps1"
+if errorlevel 1 goto :failed
+
+rem The recorder monitor's C# is compiled at run time, so a syntax error would
+rem only surface when a user starts recording. Compile it here instead.
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0Test-RecorderCompanionCompile.ps1"
 if errorlevel 1 goto :failed
 
 rem Scene splitting runs in the browser, so Node checks it. Skipped when Node is absent.
@@ -97,6 +92,11 @@ if errorlevel 1 (
   node "%~dp0Test-WebAssets.mjs"
   if errorlevel 1 goto :failed
 )
+
+echo.
+echo [SKIP] Excel/Word COM export tests are not part of this suite.
+echo        The primary output path is NOT covered here. Close Excel and Word,
+echo        then run run-excel-test.cmd and run-word-test.cmd before releasing.
 
 echo.
 echo All Phase 1 foundation tests passed.

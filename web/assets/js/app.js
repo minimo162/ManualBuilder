@@ -39,6 +39,18 @@
     return { ...base, 'X-Tab-Id': tabId, ...extra };
   };
 
+  // 通信失敗を、利用者が次の一手を選べる日本語にする。
+  // 以前は describeHttpFailure(response.status) を投げていたため、サーバー障害時に
+  // 出力ダイアログの見出しが「HTTP 500」の4文字になっていた。
+  const describeHttpFailure = (status) => {
+    const code = Number(status) || 0;
+    if (code === 403) return 'この画面の情報が古くなっています。ブラウザーを再読み込みしてください。入力内容は保存されています。';
+    if (code === 404) return 'この操作は見つかりませんでした。ブラウザーを再読み込みしてください。';
+    if (code === 409) return '保存できません。ほかのアプリがファイルを使っています。少し待ってから、もう一度お試しください。';
+    if (code >= 500) return 'ManualBuilderの内部で問題が起きました。入力内容は保存されています。アプリを再起動してから、もう一度お試しください。';
+    return '処理を完了できませんでした。入力内容はそのまま残っています。もう一度お試しください。';
+  };
+
   const saveStatus = (state, message) => {
     const target = document.getElementById('save-status');
     if (!target) return;
@@ -164,7 +176,7 @@
     if (visibleUndoKind && visibleUndoKind !== 'deletion') return;
     try {
       const response = await fetch('/api/deletions/status', { headers: sessionHeaders() });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (!response.ok) throw new Error(describeHttpFailure(response.status));
       const status = await response.json();
       if (status.available) showDeletionUndo(status.label);
       else hideDeletionUndo();
@@ -188,7 +200,7 @@
         body: new URLSearchParams()
       });
       const html = await response.text();
-      if (!response.ok) throw new Error(html || `HTTP ${response.status}`);
+      if (!response.ok) throw new Error(html || describeHttpFailure(response.status));
       const workspace = document.getElementById('workspace');
       if (!workspace) throw new Error('編集画面を更新できません。');
       workspace.outerHTML = html;
@@ -243,7 +255,7 @@
         headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }),
         body: new URLSearchParams({ projectKey })
       });
-      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      if (!response.ok) throw new Error(await response.text() || describeHttpFailure(response.status));
       const blob = await response.blob();
       const encodedName = response.headers.get('X-Mb-Download-Name') || '';
       let fileName = 'ManualBuilder-project.zip';
@@ -278,7 +290,7 @@
         headers: sessionHeaders({ 'Content-Type': 'application/zip' }),
         body: file
       });
-      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      if (!response.ok) throw new Error(await response.text() || describeHttpFailure(response.status));
       replaceProjectLibrary(await response.text());
       showToast('マニュアルを新しい項目として取り込みました。', 'success');
     } catch (error) {
@@ -487,11 +499,16 @@
   const stepViewKey = () => `manualbuilder.stepView.${selectedSheetId()}`;
   let reviewScrollSyncPausedUntil = 0;
 
-  const updateStepPosition = (active) => {
+  const updateStepPosition = (active, { announce = false } = {}) => {
     const cards = stepCards();
     const index = Math.max(0, cards.indexOf(active));
     const position = document.querySelector('[data-step-position]');
-    if (position) position.textContent = cards.length ? `${index + 1} / ${cards.length}` : '0 / 0';
+    if (position) {
+      // スクロール追従では読み上げない。基準線をカードが通過するたびに割り込むと、
+      // 読み上げ中の本文が中断され、一覧を読み進められなくなる。
+      position.setAttribute('aria-live', announce ? 'polite' : 'off');
+      position.textContent = cards.length ? `${index + 1} / ${cards.length}` : '0 / 0';
+    }
     const previous = document.querySelector('[data-step-previous]');
     const next = document.querySelector('[data-step-next]');
     if (previous) previous.disabled = cards.length < 2 || index <= 0;
@@ -507,15 +524,13 @@
     document.querySelectorAll('[data-step-view]').forEach((button) => {
       button.setAttribute('aria-pressed', String(button.dataset.stepView === nextMode));
     });
-    document.querySelectorAll('.step-card button, .step-card input, .step-card textarea, .step-card select, .step-card summary').forEach((control) => {
-      const keepInReview = control.matches('[data-image-preview], [data-step-edit], [data-step-review-resolve]');
-      if (nextMode === 'review' && !keepInReview) {
-        control.tabIndex = -1;
-        control.dataset.reviewTabDisabled = 'true';
-      } else if (control.dataset.reviewTabDisabled === 'true') {
-        control.removeAttribute('tabindex');
-        delete control.dataset.reviewTabDisabled;
-      }
+    // 一覧確認でもカード内のコントロールをTab順から外さない。
+    // 以前はタブ停止数を減らすため tabIndex=-1 にしていたが、既定表示がこのモードで、
+    // 手順名・説明・補足の入力欄も「赤枠を確認・修正」も画面に見えたまま操作できた。
+    // 見えているのにキーボードだけ届かない状態になっていたため、外すのをやめる。
+    document.querySelectorAll('.step-card [data-review-tab-disabled]').forEach((control) => {
+      control.removeAttribute('tabindex');
+      delete control.dataset.reviewTabDisabled;
     });
     if (options.persist !== false) sessionStorage.setItem(stepViewKey(), nextMode);
     window.requestAnimationFrame(renderAllCardAnnotations);
@@ -536,7 +551,7 @@
       if (isActive) jump?.setAttribute('aria-current', 'step');
       else jump?.removeAttribute('aria-current');
     });
-    updateStepPosition(active);
+    updateStepPosition(active, { announce: options.announce === true });
     if (!active) return;
     sessionStorage.setItem(activeStepKey(), active.dataset.stepId);
     window.requestAnimationFrame(() => renderCardAnnotations(active));
@@ -554,7 +569,8 @@
     const currentIndex = Math.max(0, cards.indexOf(current));
     const nextIndex = Math.max(0, Math.min(cards.length - 1, currentIndex + offset));
     if (nextIndex === currentIndex) return false;
-    setActiveStep(cards[nextIndex].dataset.stepId, { scroll: options.scroll !== false });
+    // 「前へ／次へ」は利用者の明示的な移動なので、位置を読み上げる。
+    setActiveStep(cards[nextIndex].dataset.stepId, { scroll: options.scroll !== false, announce: true });
     return true;
   };
 
@@ -714,7 +730,7 @@
     if (attention) attention.textContent = `${metrics.attention.length}件`;
     const attentionButton = guide.querySelector('[data-finish-check="attention"]');
     if (attentionButton) attentionButton.setAttribute('aria-label', metrics.attention.length
-      ? `未確認の ${metrics.attention.length} 件へ移動`
+      ? `要確認の ${metrics.attention.length} 件へ移動`
       : '要確認の項目はありません');
     guide.querySelector('[data-finish-check="text"]')?.classList.toggle('finish-guide__check--warn', metrics.missingText.length > 0);
     guide.querySelector('[data-finish-check="image"]')?.classList.toggle('finish-guide__check--warn', metrics.missingImage.length > 0);
@@ -723,7 +739,7 @@
       const issueCount = metrics.missingText.length + metrics.missingImage.length + metrics.attention.length;
       summary.textContent = issueCount
         ? `確認をおすすめする項目が ${issueCount} 件あります`
-        : '文章と画像が揃いました。Excelに出力できます';
+        : '説明と画像が揃いました。Excel・Wordで作成できます';
     }
   };
 
@@ -736,7 +752,7 @@
       body: new URLSearchParams({ sheetId: target.sheetId })
     });
     const html = await response.text();
-    if (!response.ok) throw new Error(html || `HTTP ${response.status}`);
+    if (!response.ok) throw new Error(html || describeHttpFailure(response.status));
     const workspace = document.getElementById('workspace');
     if (!workspace) throw new Error('編集画面を更新できません。');
     workspace.outerHTML = html;
@@ -813,7 +829,7 @@
         body: new URLSearchParams({ stepId: card.dataset.stepId })
       });
       const html = await response.text();
-      if (!response.ok) throw new Error(html || `HTTP ${response.status}`);
+      if (!response.ok) throw new Error(html || describeHttpFailure(response.status));
       const workspace = document.getElementById('workspace');
       if (!workspace) throw new Error('編集画面を更新できません。');
       workspace.outerHTML = html;
@@ -912,7 +928,7 @@
     updateStepBulkActions();
   };
 
-  const initializeWorkspaceView = (activeStepId = '') => {
+  const initializeWorkspaceView = (activeStepId = '', options = {}) => {
     loadFinishAttentionSteps();
     rebuildStepNavigation();
     applyStepView(sessionStorage.getItem(stepViewKey()) || 'review', { persist: false });
@@ -922,6 +938,15 @@
     updateStepBulkActions();
     updateFinishGuide();
     void refreshDeletionUndo();
+    // 削除・移動・並べ替えは画面全体を作り直すため、フォーカスされていた要素がDOMから消え、
+    // フォーカスが文書先頭へ落ちる。キーボードだけの利用者が連続で削除すると、
+    // そのたびにスキップリンクからTabをやり直すことになるので、手順一覧へ戻す。
+    if (options.restoreFocus) {
+      window.requestAnimationFrame(() => {
+        const active = document.querySelector('.step-nav__item--active [data-step-jump]');
+        (active || document.getElementById('editor-main'))?.focus({ preventScroll: true });
+      });
+    }
   };
 
   const stepCards = () => [...document.querySelectorAll('.steps > .step-card')];
@@ -959,7 +984,7 @@
         headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }),
         body: new URLSearchParams({ sheetId, orderedIds: orderedIds.join(',') })
       });
-      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      if (!response.ok) throw new Error(await response.text() || describeHttpFailure(response.status));
       const current = document.getElementById('save-status');
       if (current) current.outerHTML = await response.text();
 
@@ -1003,7 +1028,7 @@
         headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }),
         body
       });
-      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      if (!response.ok) throw new Error(await response.text() || describeHttpFailure(response.status));
       const current = document.getElementById('save-status');
       if (current) current.outerHTML = await response.text();
       if (priorOrder.length === orderedIds.length && priorOrder.join(',') !== orderedIds.join(',')) {
@@ -1106,7 +1131,7 @@
         headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }),
         body
       });
-      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      if (!response.ok) throw new Error(await response.text() || describeHttpFailure(response.status));
       const current = document.getElementById('save-status');
       if (current) current.outerHTML = await response.text();
     }).catch((error) => {
@@ -1137,13 +1162,13 @@
         body
       });
       const html = await response.text();
-      if (!response.ok) throw new Error(html || `HTTP ${response.status}`);
+      if (!response.ok) throw new Error(html || describeHttpFailure(response.status));
       const workspace = document.getElementById('workspace');
       if (!workspace) throw new Error('編集画面を更新できません。');
       workspace.outerHTML = html;
       const nextWorkspace = document.getElementById('workspace');
       if (nextWorkspace && window.htmx?.process) window.htmx.process(nextWorkspace);
-      initializeWorkspaceView(stepId);
+      initializeWorkspaceView(stepId, { restoreFocus: true });
       sendHeartbeat();
       showToast(`手順を「${targetSheetName || '移動先シート'}」の末尾へ移動しました。`, 'success');
     } catch (error) {
@@ -1177,7 +1202,7 @@
         body
       });
       const html = await response.text();
-      if (!response.ok) throw new Error(html || `HTTP ${response.status}`);
+      if (!response.ok) throw new Error(html || describeHttpFailure(response.status));
       const workspace = document.getElementById('workspace');
       if (!workspace) throw new Error('編集画面を更新できません。');
       workspace.outerHTML = html;
@@ -1189,7 +1214,7 @@
         if (detail) finishAttentionSteps.set(stepId, { ...detail, sheetId: targetSheetId });
       });
       selectedStepIds.clear();
-      initializeWorkspaceView(action === 'move' ? stepIds[0] : '');
+      initializeWorkspaceView(action === 'move' ? stepIds[0] : '', { restoreFocus: true });
       if (action === 'delete') showDeletionUndo(`${stepIds.length}件の手順を削除しました`);
       sendHeartbeat();
       showToast(action === 'move'
@@ -1526,7 +1551,7 @@
           crop: JSON.stringify(crop)
         })
       });
-      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      if (!response.ok) throw new Error(await response.text() || describeHttpFailure(response.status));
       const current = document.getElementById('save-status');
       if (current) current.outerHTML = await response.text();
       const annotationData = card.querySelector('.step-annotations-data');
@@ -1562,7 +1587,7 @@
           headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }),
           body
         });
-        if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+        if (!response.ok) throw new Error(await response.text() || describeHttpFailure(response.status));
         const current = document.getElementById('save-status');
         if (current) current.outerHTML = await response.text();
         annotationEditor.savedSnapshot = snapshot;
@@ -1907,7 +1932,7 @@
       }),
       body: file
     });
-    if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+    if (!response.ok) throw new Error(await response.text() || describeHttpFailure(response.status));
     syncCaptureSnapshot(await response.text(), true);
   };
 
@@ -1964,7 +1989,7 @@
 
   const refreshWorkspace = async (activeStepId = '') => {
     const response = await fetch('/ui/workspace', { headers: sessionHeaders() });
-    if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+    if (!response.ok) throw new Error(await response.text() || describeHttpFailure(response.status));
     const current = document.getElementById('workspace');
     if (!current) throw new Error('編集画面を更新できません。');
     current.outerHTML = await response.text();
@@ -1990,7 +2015,7 @@
         body
       });
       const html = await response.text();
-      if (!response.ok) throw new Error(html || `HTTP ${response.status}`);
+      if (!response.ok) throw new Error(html || describeHttpFailure(response.status));
       const workspace = document.getElementById('workspace');
       if (!workspace) throw new Error('編集画面を更新できません。');
       workspace.outerHTML = html;
@@ -2034,7 +2059,7 @@
     const text = await response.text();
     let result = null;
     try { result = JSON.parse(text); } catch { result = { message: text }; }
-    if (!response.ok) throw new Error(result.message || `HTTP ${response.status}`);
+    if (!response.ok) throw new Error(result.message || describeHttpFailure(response.status));
     if (result.state === 'duplicate') {
       saveStatus('saved', '保存済み');
       showToast(result.message || '同じ画像が設定されています。', 'info');
@@ -2050,7 +2075,7 @@
     if (!isSupportedImage(file)) throw new Error('PNG、JPEG、BMP画像を選択してください。');
     if (file.size > 20 * 1024 * 1024) throw new Error('画像は20MB以下にしてください。');
     await flushPendingStructuralSaves({ waitForText: true });
-    saveStatus('saving', '操作後画像を追加中…');
+    saveStatus('saving', '結果画像を追加中…');
     const response = await fetch('/api/images/result', {
       method: 'POST',
       headers: sessionHeaders({
@@ -2064,10 +2089,10 @@
     const text = await response.text();
     let result = null;
     try { result = JSON.parse(text); } catch { result = { message: text }; }
-    if (!response.ok) throw new Error(result.message || `HTTP ${response.status}`);
+    if (!response.ok) throw new Error(result.message || describeHttpFailure(response.status));
     await refreshWorkspace(stepId);
     saveStatus('saved', '保存済み');
-    showToast(result.message || '操作後画像を追加しました。', 'success');
+    showToast(result.message || '結果画像を追加しました。', 'success');
   };
 
   const saveStepImageLayout = async (card, layout, order) => {
@@ -2085,7 +2110,7 @@
     if (!response.ok) {
       let message = text;
       try { message = JSON.parse(text).message || text; } catch { }
-      throw new Error(message || `HTTP ${response.status}`);
+      throw new Error(message || describeHttpFailure(response.status));
     }
     await refreshWorkspace(stepId);
     saveStatus('saved', '保存済み');
@@ -2095,7 +2120,7 @@
     const stepId = card?.dataset.stepId || '';
     if (!stepId) return;
     await flushPendingStructuralSaves({ waitForText: true });
-    saveStatus('saving', '操作後画像を外しています…');
+    saveStatus('saving', '結果画像を外しています…');
     const response = await fetch('/api/images/result/remove', {
       method: 'POST',
       headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }),
@@ -2105,11 +2130,11 @@
     if (!response.ok) {
       let message = text;
       try { message = JSON.parse(text).message || text; } catch { }
-      throw new Error(message || `HTTP ${response.status}`);
+      throw new Error(message || describeHttpFailure(response.status));
     }
     await refreshWorkspace(stepId);
     saveStatus('saved', '保存済み');
-    showToast('操作後画像を外しました。', 'info');
+    showToast('結果画像を外しました。', 'info');
   };
 
   const undoStepImageReplacement = async (card, button) => {
@@ -2125,7 +2150,7 @@
       const text = await response.text();
       let result = null;
       try { result = JSON.parse(text); } catch { result = { message: text }; }
-      if (!response.ok) throw new Error(result.message || `HTTP ${response.status}`);
+      if (!response.ok) throw new Error(result.message || describeHttpFailure(response.status));
       updateReplacedImageCard(card, result);
       saveStatus('saved', '保存済み');
       showToast(result.message || '元の画像へ戻しました。', 'info');
@@ -2248,7 +2273,7 @@
     });
     let result = null;
     try { result = await response.json(); } catch { result = null; }
-    if (!response.ok) throw new Error(result?.message || `HTTP ${response.status}`);
+    if (!response.ok) throw new Error(result?.message || describeHttpFailure(response.status));
     return true;
   };
 
@@ -2330,7 +2355,7 @@
       headers: sessionHeaders(headers),
       body: blob
     });
-    if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+    if (!response.ok) throw new Error(await response.text() || describeHttpFailure(response.status));
     syncCaptureSnapshot(await response.text(), true);
   };
 
@@ -2429,7 +2454,7 @@
         headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }),
         body: new URLSearchParams({ stepId }).toString()
       });
-      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      if (!response.ok) throw new Error(await response.text() || describeHttpFailure(response.status));
       card.querySelector('[data-step-video]')?.remove();
       saveStatus('saved', '保存済み');
       showToast('動画を外しました。', 'info');
@@ -2495,7 +2520,7 @@
     player.addEventListener('error', () => {
       if (!player.getAttribute('src')) return;
       const error = dialog.querySelector('[data-video-error]');
-      error.textContent = 'この動画は再生できません。mp4（H.264）またはwebmで録画し直してください。';
+      error.textContent = 'この動画は再生できません。mp4またはwebm形式で録画し直してください。';
       error.hidden = false;
       dialog.querySelectorAll('[data-video-capture], [data-video-capture-with-movie], [data-video-auto]').forEach((item) => { item.disabled = true; });
     });
@@ -2583,7 +2608,7 @@
     const response = await fetch(path, options);
     let result = null;
     try { result = await response.json(); } catch { }
-    if (!response.ok) throw new Error(result?.message || `HTTP ${response.status}`);
+    if (!response.ok) throw new Error(result?.message || describeHttpFailure(response.status));
     return result;
   };
 
@@ -2593,7 +2618,7 @@
     dialog.id = 'excel-export-dialog';
     dialog.className = 'excel-export-dialog';
     dialog.setAttribute('aria-label', 'Excelで作成');
-    dialog.innerHTML = '<header class="excel-export-dialog__header"><div><strong>Excelで作成</strong><span>現在の内容をこのPCへ出力します</span></div><button type="button" class="excel-export-dialog__close" data-export-close aria-label="閉じる">×</button></header><div class="excel-export-dialog__content"><div class="excel-export-dialog__state" role="status" aria-live="polite"><span class="excel-export-dialog__mark" data-export-mark aria-hidden="true"></span><div><strong data-export-message>準備しています</strong><span data-export-detail>プロジェクトを保存しています</span></div></div><div class="excel-export-progress" role="progressbar" aria-label="Excel作成の進捗" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span data-export-progress></span></div><p class="excel-export-dialog__path" data-export-path hidden></p><p class="excel-export-dialog__note" data-export-local-note hidden>PC内に作成しました。共有や公開が必要な場合は、完成ファイルを手動でコピーまたは送付してください。</p><p class="excel-export-dialog__note" data-export-video-note hidden></p><details class="excel-export-dialog__mappings" data-export-mappings hidden><summary>出力シート名を確認</summary><ul></ul></details><p class="excel-export-dialog__error" data-export-error hidden></p></div><footer class="excel-export-dialog__footer"><button type="button" class="button button--ghost" data-export-cancel>中止</button><span class="excel-export-dialog__spacer"></span><button type="button" class="button button--ghost" data-export-open="folder" hidden>保存先を開く</button><button type="button" class="button button--primary" data-export-open="file" hidden>Excelを開く</button><button type="button" class="button button--ghost" data-export-close data-export-done hidden>閉じる</button></footer>';
+    dialog.innerHTML = '<header class="excel-export-dialog__header"><div><strong>Excelで作成</strong><span>現在の内容をこのPCへ出力します</span></div><button type="button" class="excel-export-dialog__close" data-export-close aria-label="閉じる">×</button></header><div class="excel-export-dialog__content"><div class="excel-export-dialog__state" role="status" aria-live="polite"><span class="excel-export-dialog__mark" data-export-mark aria-hidden="true"></span><div><strong data-export-message>準備しています</strong><span data-export-detail>マニュアルを保存しています</span></div></div><div class="excel-export-progress" role="progressbar" aria-label="Excel作成の進捗" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span data-export-progress></span></div><p class="excel-export-dialog__path" data-export-path hidden></p><p class="excel-export-dialog__note" data-export-local-note hidden>PC内に作成しました。共有や公開が必要な場合は、完成ファイルを手動でコピーまたは送付してください。</p><p class="excel-export-dialog__note" data-export-video-note hidden></p><details class="excel-export-dialog__mappings" data-export-mappings hidden><summary>出力シート名を確認</summary><ul></ul></details><p class="excel-export-dialog__error" data-export-error hidden></p></div><footer class="excel-export-dialog__footer"><button type="button" class="button button--ghost" data-export-cancel>中止</button><span class="excel-export-dialog__spacer"></span><button type="button" class="button button--ghost" data-export-open="folder" hidden>保存先を開く</button><button type="button" class="button button--primary" data-export-open="file" hidden>Excelを開く</button><button type="button" class="button button--primary" data-export-retry hidden>もう一度作成</button><button type="button" class="button button--ghost" data-export-close data-export-done hidden>閉じる</button></footer>';
     dialog.querySelectorAll('[data-export-close]').forEach((button) => {
       button.addEventListener('click', () => dialog.close());
     });
@@ -2607,6 +2632,7 @@
         showToast(error.message || 'Excel作成を中止できませんでした。');
       }
     });
+    dialog.querySelector('[data-export-retry]').addEventListener('click', () => startExcelExport());
     dialog.querySelectorAll('[data-export-open]').forEach((button) => {
       button.addEventListener('click', async () => {
         button.disabled = true;
@@ -2639,18 +2665,33 @@
     const dialog = ensureExcelExportDialog();
     const state = status.state || 'failed';
     const percent = Math.max(0, Math.min(100, Number(status.percent) || 0));
+    // Excelが開いていて安全に中止した場合は、Word側と同じ扱いにする。
+    // 記録の対象がExcel操作であることが多く、この中止は日常的に起きる。
+    const safeStop = state === 'failed' && [
+      'MB_CONNECTED_TO_EXISTING_EXCEL',
+      'MB_EXCEL_OWNERSHIP_UNRESOLVED_WITH_EXISTING',
+    ].includes(status.errorCode || '');
     excelExport.state = state;
     dialog.dataset.state = state;
-    dialog.querySelector('[data-export-message]').textContent = status.message || 'Excel出力の状態を確認できません';
+    dialog.querySelector('[data-export-message]').textContent = safeStop
+      ? 'Excelが開いているため、作成を開始しませんでした'
+      : (status.message || 'Excel出力の状態を確認できません');
     const detail = dialog.querySelector('[data-export-detail]');
     if (state === 'running' || state === 'queued' || state === 'finalizing') {
       detail.textContent = status.totalSteps > 0
         ? `${status.currentStep || 0} / ${status.totalSteps} 手順 · ${percent}%`
         : `${percent}%`;
     } else if (state === 'completed') {
-      detail.textContent = '注釈を含む全シートの作成が完了しました';
+      // 極端に縦長・横長の画像は、カード幅では読める大きさにならない。
+      // 黙って細い帯のまま渡さず、どの手順を切り抜けばよいかを名指しで伝える。
+      const narrow = Array.isArray(status.narrowImageSteps) ? status.narrowImageSteps : [];
+      detail.textContent = narrow.length > 0
+        ? `注釈を含む全シートの作成が完了しました。手順 ${narrow.join('、')} は画像が細く表示されています。読みにくい場合は「画像を編集」の切り抜きで必要な範囲だけにしてください`
+        : '注釈を含む全シートの作成が完了しました';
     } else if (state === 'cancelled') {
-      detail.textContent = 'プロジェクトの編集内容はそのまま残っています';
+      detail.textContent = 'マニュアルの編集内容はそのまま残っています';
+    } else if (safeStop) {
+      detail.textContent = '開いているExcelブックとManualBuilderの入力内容には影響していません。Excelをすべて閉じてから、もう一度作成してください';
     } else {
       detail.textContent = '入力内容は変更されていません。内容を確認して再実行できます';
     }
@@ -2696,6 +2737,11 @@
     dialog.querySelector('[data-export-cancel]').disabled = false;
     dialog.querySelectorAll('[data-export-open]').forEach((button) => { button.hidden = state !== 'completed'; });
     dialog.querySelector('[data-export-done]').hidden = active;
+    // 失敗・中止のときは、その場で作り直せるようにする。失敗の多くは「Excelを閉じ忘れた」で、
+    // すぐ直せるのに、閉じて出力ボタンを探し直す往復を強いていた。
+    const retryButton = dialog.querySelector('[data-export-retry]');
+    retryButton.hidden = !(state === 'failed' || state === 'cancelled');
+    retryButton.textContent = safeStop ? 'Excelを閉じたので、もう一度作成' : 'もう一度作成';
     dialog.querySelector('[data-export-mark]').textContent = state === 'completed' ? '✓' : state === 'failed' ? '!' : state === 'cancelled' ? '×' : '';
     setExcelExportButtonsBusy(active);
     if (active) startExcelExportPolling();
@@ -2750,7 +2796,7 @@
     let result = null;
     try { result = await response.json(); } catch { }
     if (!response.ok) {
-      const error = new Error(result?.message || `HTTP ${response.status}`);
+      const error = new Error(result?.message || describeHttpFailure(response.status));
       error.code = result?.errorCode || '';
       throw error;
     }
@@ -2763,7 +2809,7 @@
     dialog.id = 'word-export-dialog';
     dialog.className = 'excel-export-dialog word-export-dialog';
     dialog.setAttribute('aria-label', 'Wordで作成');
-    dialog.innerHTML = '<header class="excel-export-dialog__header"><div><strong>Wordで作成</strong><span>縦型の操作マニュアルをこのPCへ出力します</span></div><button type="button" class="excel-export-dialog__close" data-word-export-close aria-label="閉じる">×</button></header><div class="excel-export-dialog__content"><div class="excel-export-dialog__state" role="status" aria-live="polite"><span class="excel-export-dialog__mark" data-word-export-mark aria-hidden="true"></span><div><strong data-word-export-message>準備しています</strong><span data-word-export-detail>プロジェクトを保存しています</span></div></div><div class="excel-export-progress" role="progressbar" aria-label="Word作成の進捗" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span data-word-export-progress></span></div><p class="excel-export-dialog__path" data-word-export-path hidden></p><p class="excel-export-dialog__note" data-word-export-local-note hidden>PC内に作成しました。共有や公開が必要な場合は、完成ファイルを手動でコピーまたは送付してください。</p><p class="excel-export-dialog__error" data-word-export-error hidden></p></div><footer class="excel-export-dialog__footer"><button type="button" class="button button--ghost" data-word-export-cancel>中止</button><button type="button" class="button button--ghost" data-word-export-fallback hidden>Excelで作成</button><span class="excel-export-dialog__spacer"></span><button type="button" class="button button--ghost" data-word-export-open="folder" hidden>保存先を開く</button><button type="button" class="button button--primary" data-word-export-open="file" hidden>Wordを開く</button><button type="button" class="button button--ghost" data-word-export-close data-word-export-done hidden>閉じる</button></footer>';
+    dialog.innerHTML = '<header class="excel-export-dialog__header"><div><strong>Wordで作成</strong><span>縦型の操作マニュアルをこのPCへ出力します</span></div><button type="button" class="excel-export-dialog__close" data-word-export-close aria-label="閉じる">×</button></header><div class="excel-export-dialog__content"><div class="excel-export-dialog__state" role="status" aria-live="polite"><span class="excel-export-dialog__mark" data-word-export-mark aria-hidden="true"></span><div><strong data-word-export-message>準備しています</strong><span data-word-export-detail>マニュアルを保存しています</span></div></div><div class="excel-export-progress" role="progressbar" aria-label="Word作成の進捗" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span data-word-export-progress></span></div><p class="excel-export-dialog__path" data-word-export-path hidden></p><p class="excel-export-dialog__note" data-word-export-local-note hidden>PC内に作成しました。共有や公開が必要な場合は、完成ファイルを手動でコピーまたは送付してください。</p><p class="excel-export-dialog__error" data-word-export-error hidden></p></div><footer class="excel-export-dialog__footer"><button type="button" class="button button--ghost" data-word-export-cancel>中止</button><button type="button" class="button button--ghost" data-word-export-fallback hidden>Excelで作成</button><span class="excel-export-dialog__spacer"></span><button type="button" class="button button--ghost" data-word-export-open="folder" hidden>保存先を開く</button><button type="button" class="button button--primary" data-word-export-open="file" hidden>Wordを開く</button><button type="button" class="button button--primary" data-word-export-retry hidden>もう一度作成</button><button type="button" class="button button--ghost" data-word-export-close data-word-export-done hidden>閉じる</button></footer>';
     dialog.querySelectorAll('[data-word-export-close]').forEach((button) => button.addEventListener('click', () => dialog.close()));
     dialog.querySelector('[data-word-export-cancel]').addEventListener('click', async () => {
       const button = dialog.querySelector('[data-word-export-cancel]');
@@ -2779,6 +2825,7 @@
         finally { button.disabled = false; }
       });
     });
+    dialog.querySelector('[data-word-export-retry]').addEventListener('click', () => startWordExport());
     dialog.querySelector('[data-word-export-fallback]').addEventListener('click', () => {
       dialog.close();
       startExcelExport();
@@ -2816,7 +2863,7 @@
     } else if (state === 'completed') {
       detail.textContent = `${status.pageCount || 0} ページ · 表紙、目次、編集済み画像を含みます`;
     } else if (state === 'cancelled') {
-      detail.textContent = 'プロジェクトの編集内容はそのまま残っています';
+      detail.textContent = 'マニュアルの編集内容はそのまま残っています';
     } else if (safeStop) {
       detail.textContent = '開いているWord文書とManualBuilderの入力内容には影響していません';
     } else {
@@ -2841,6 +2888,9 @@
     dialog.querySelector('[data-word-export-cancel]').disabled = false;
     dialog.querySelectorAll('[data-word-export-open]').forEach((button) => { button.hidden = state !== 'completed'; });
     dialog.querySelector('[data-word-export-done]').hidden = active;
+    const wordRetryButton = dialog.querySelector('[data-word-export-retry]');
+    wordRetryButton.hidden = !(state === 'failed' || state === 'cancelled');
+    wordRetryButton.textContent = safeStop ? 'Wordを閉じたので、もう一度作成' : 'もう一度作成';
     dialog.querySelector('[data-word-export-mark]').textContent = state === 'completed' ? '✓' : state === 'failed' ? '!' : state === 'cancelled' ? '×' : '';
     setWordExportButtonsBusy(active);
     if (active) startWordExportPolling(); else stopWordExportPolling();
@@ -2881,9 +2931,9 @@
     if (outputReviewDialog) return outputReviewDialog;
     const dialog = document.createElement('dialog');
     dialog.className = 'output-review-dialog';
-    dialog.setAttribute('aria-label', 'Excel・Wordで出力');
-    dialog.innerHTML = '<header class="output-review-dialog__header"><div><strong>Excel・Wordで出力</strong><span>ボタンを押すと、このPCにファイルを作成します</span></div><button type="button" class="output-review-dialog__close" data-output-close aria-label="閉じる">×</button></header>'
-      + '<div class="output-review-dialog__content"><section class="output-review-dialog__summary" aria-label="出力前の確認"><div><span>全手順</span><strong data-output-total>0件</strong></div><button type="button" data-output-fix="text"><span>説明なし</span><strong data-output-missing-text>0件</strong></button><button type="button" data-output-fix="image"><span>画像なし</span><strong data-output-missing-image>0件</strong></button><button type="button" data-output-fix="attention"><span>確認待ち</span><strong data-output-attention>0件</strong></button></section><p class="output-review-dialog__note" data-output-note></p>'
+    dialog.setAttribute('aria-label', 'Excel・Wordで作成');
+    dialog.innerHTML = '<header class="output-review-dialog__header"><div><strong>Excel・Wordで作成</strong><span>ボタンを押すと、このPCにファイルを作成します</span></div><button type="button" class="output-review-dialog__close" data-output-close aria-label="閉じる">×</button></header>'
+      + '<div class="output-review-dialog__content"><section class="output-review-dialog__summary" aria-label="出力前の確認"><div><span>全手順</span><strong data-output-total>0件</strong></div><button type="button" data-output-fix="text"><span>説明なし</span><strong data-output-missing-text>0件</strong></button><button type="button" data-output-fix="image"><span>画像なし</span><strong data-output-missing-image>0件</strong></button><button type="button" data-output-fix="attention"><span>要確認</span><strong data-output-attention>0件</strong></button></section><p class="output-review-dialog__note" data-output-note></p>'
       + '<section class="output-review-dialog__formats" aria-label="出力形式"><button type="button" class="output-format output-format--recommended" data-output-format="excel"><span class="output-format__badge">おすすめ</span><strong>Excelファイルを作成</strong><span>画像と説明を見比べやすく、出力後も追記できます</span></button><button type="button" class="output-format" data-output-format="word"><strong>Wordファイルを作成</strong><span>印刷しやすい縦型です</span></button></section></div>'
       + '<footer class="output-review-dialog__footer"><span>出力後の共有や公開は、作成したファイルを利用者が管理します。</span><button type="button" class="button button--ghost" data-output-close>編集に戻る</button></footer>';
     dialog.querySelectorAll('[data-output-close]').forEach((button) => button.addEventListener('click', () => dialog.close()));
@@ -2932,10 +2982,10 @@
     const issueLabels = [];
     if (metrics.missingText.length) issueLabels.push(`説明なし ${metrics.missingText.length}件`);
     if (metrics.missingImage.length) issueLabels.push(`画像なし ${metrics.missingImage.length}件`);
-    if (metrics.attention.length) issueLabels.push(`確認待ち ${metrics.attention.length}件`);
+    if (metrics.attention.length) issueLabels.push(`要確認 ${metrics.attention.length}件`);
     dialog.querySelector('[data-output-note]').textContent = issueLabels.length
       ? `${issueLabels.join('、')}があります。件数を押すと該当手順を直せます。意図した状態ならそのまま形式を選べます。`
-      : '文章と画像が揃っています。作成するファイルを選んでください。';
+      : '説明と画像が揃っています。作成するファイルを選んでください。';
     if (!dialog.open) dialog.showModal();
     window.requestAnimationFrame(() => dialog.querySelector('[data-output-format="excel"]')?.focus());
   };
@@ -3045,7 +3095,7 @@
             body: new URLSearchParams({ sheetId: sheetDeleteButton.dataset.sheetId || '' })
           });
           const html = await response.text();
-          if (!response.ok) throw new Error(html || `HTTP ${response.status}`);
+          if (!response.ok) throw new Error(html || describeHttpFailure(response.status));
           const workspace = document.getElementById('workspace');
           if (!workspace) throw new Error('編集画面を更新できません。');
           workspace.outerHTML = html;
@@ -3322,7 +3372,7 @@
             body: new URLSearchParams({ stepId })
           });
           const html = await response.text();
-          if (!response.ok) throw new Error(html || `HTTP ${response.status}`);
+          if (!response.ok) throw new Error(html || describeHttpFailure(response.status));
           const workspace = document.getElementById('workspace');
           if (!workspace) throw new Error('編集画面を更新できません。');
           workspace.outerHTML = html;
@@ -3330,7 +3380,7 @@
           if (nextWorkspace && window.htmx?.process) window.htmx.process(nextWorkspace);
           selectedStepIds.delete(stepId);
           finishAttentionSteps.delete(stepId);
-          initializeWorkspaceView();
+          initializeWorkspaceView('', { restoreFocus: true });
           showDeletionUndo('手順を削除しました');
           sendHeartbeat();
           showToast('手順を削除しました。「元に戻す」で復元できます。', 'success');
@@ -3375,8 +3425,8 @@
       replacementStepId = '';
       if (!file || !stepId) return;
       replaceStepImage(file, stepId).catch((error) => {
-        saveStatus('error', '差し替えできません');
-        showToast(error.message || '画像を差し替えできませんでした。');
+        saveStatus('error', '差し替えられません');
+        showToast(error.message || '画像を差し替えられませんでした。');
       });
       return;
     }
@@ -3387,8 +3437,8 @@
       resultImageStepId = '';
       if (!file || !stepId) return;
       setStepResultImage(file, stepId).catch((error) => {
-        saveStatus('error', '操作後画像を追加できません');
-        showToast(error.message || '操作後画像を追加できませんでした。');
+        saveStatus('error', '結果画像を追加できません');
+        showToast(error.message || '結果画像を追加できませんでした。');
       });
     }
   });
@@ -3493,7 +3543,7 @@
     const navigation = document.querySelector('.step-nav');
     const guide = navigation?.querySelector('[data-step-sort-guide]');
     navigation?.classList.toggle('step-nav--sorting', Boolean(message));
-    if (guide) guide.textContent = message || 'カードをつかんで並べ替え。Ctrl・Shiftで複数選択。Alt＋↑↓でも移動';
+    if (guide) guide.textContent = message || '手順をつかんで並べ替え。Ctrl・Shiftで複数選択。Alt＋↑↓でも移動';
   };
   const getStepDropPosition = (placeholder, draggedItems) => {
     if (!placeholder?.parentElement) return 1;
@@ -4176,8 +4226,11 @@
       const contentType = event.detail.xhr?.getResponseHeader?.('Content-Type') || '';
       const responseText = String(event.detail.xhr?.responseText || '').trim();
       const serverMessage = contentType.includes('text/plain') && responseText.length <= 300 ? responseText : '';
-      saveStatus('error', path === '/api/steps/update' ? '保存できません' : '処理できません');
-      showToast(serverMessage || '処理を完了できませんでした。入力内容を残したまま、もう一度お試しください。');
+      // 保存系はどれも「保存できません」に揃える。トップバーは短い状態語だけを出し、
+      // 理由と次の一手はトーストへ回す（長文を入れるとトップバーが押し広げられる）。
+      const savePaths = ['/api/steps/update', '/api/project/title', '/api/sheets/rename'];
+      saveStatus('error', savePaths.includes(path) ? '保存できません' : '処理できません');
+      showToast(serverMessage || describeHttpFailure(event.detail.xhr?.status));
     }
   });
 
@@ -4310,7 +4363,7 @@
     bar.className = 'recorder-complete-bar';
     bar.setAttribute('role', 'status');
     const reviewCount = Number(result?.needsReview || 0);
-    bar.innerHTML = `<span><strong>${Number(result?.added || 0)}件を追加しました</strong>${reviewCount > 0 ? `・要確認 ${reviewCount}件` : '・確認待ちはありません'}</span>`
+    bar.innerHTML = `<span><strong>${Number(result?.added || 0)}件を追加しました</strong>${reviewCount > 0 ? `・要確認 ${reviewCount}件` : '・要確認はありません'}</span>`
       + '<span class="recorder-complete-bar__actions"><button type="button" class="button button--secondary button--small" data-recorder-continue>続けて記録</button>'
       + (reviewCount > 0 ? '<button type="button" class="button button--ghost button--small" data-recorder-review-attention>要確認だけ編集</button>' : '')
       + '<button type="button" class="recorder-complete-bar__close" aria-label="記録結果の案内を閉じる">×</button></span>';
@@ -4379,7 +4432,9 @@
     const button = row.querySelector('[data-recorder-toggle]');
     if (button) {
       button.setAttribute('aria-pressed', selected ? 'true' : 'false');
-      button.textContent = selected ? 'この手順を使う' : '除外しました';
+      // ボタン名は「今の状態」ではなく「押すと起きること」を示す。
+      // 採用中に「この手順を使う」と出すと、使いたい人が押して除外してしまう。
+      button.textContent = selected ? 'この手順を除外' : 'この手順を使う';
     }
   };
 
@@ -4455,7 +4510,7 @@
         : '';
       return `<article class="recorder-proposal${reviewClass}${selected ? '' : ' is-excluded'}" data-recorder-event data-proposal-index="${index}" data-review-required="${reviewRequired ? 'true' : 'false'}" data-selected="${selected ? 'true' : 'false'}">
 ${shots}
-<div class="recorder-proposal__body"><span class="recorder-proposal__status">${reviewRequired ? '確認が必要' : 'そのまま使えます'}</span><strong>手順 ${index + 1}　${escapeRecorderHtml(item.title || '')}</strong><span>${escapeRecorderHtml(item.description || '')}</span>${reviewRequired ? `<p class="recorder-proposal__reason">${escapeRecorderHtml(reviewReason)}</p>` : ''}${reviewEditor}<div class="recorder-proposal__actions"><button type="button" class="button button--secondary button--small" data-recorder-toggle aria-pressed="${selected ? 'true' : 'false'}">${selected ? 'この手順を使う' : '除外しました'}</button></div><details class="recorder-source-evidence"><summary>元の操作を見る</summary><p>${escapeRecorderHtml(transformationReason)}</p><p>${operationCount} 件の元操作は、除外してもこのプロジェクト内に残ります。</p></details></div>
+<div class="recorder-proposal__body"><span class="recorder-proposal__status">${reviewRequired ? '要確認' : 'そのまま使えます'}</span><strong>手順 ${index + 1}　${escapeRecorderHtml(item.title || '')}</strong><span>${escapeRecorderHtml(item.description || '')}</span>${reviewRequired ? `<p class="recorder-proposal__reason">${escapeRecorderHtml(reviewReason)}</p>` : ''}${reviewEditor}<div class="recorder-proposal__actions"><button type="button" class="button button--secondary button--small" data-recorder-toggle aria-pressed="${selected ? 'true' : 'false'}">${selected ? 'この手順を除外' : 'この手順を使う'}</button></div><details class="recorder-source-evidence"><summary>元の操作を見る</summary><p>${escapeRecorderHtml(transformationReason)}</p><p>${operationCount} 件の元操作は、除外してもこのマニュアル内に残ります。</p></details></div>
 </article>`;
     }).join('');
     bindRecorderRowControls(list);
@@ -4491,7 +4546,7 @@ ${shots}
       const fallback = item.targetType === 'ControlType.ClickPoint';
       const label = item.targetName || (fallback ? 'クリック位置（対象を特定できませんでした）' : '（名前を取得できませんでした）');
       const kind = item.kind === 'input' ? '入力' : (item.kind === 'right-click' ? '右クリック' : 'クリック');
-      const source = item.targetSource === 'DOM' ? 'Edgeの候補' : '';
+      const source = item.targetSource === 'DOM' ? 'Edgeの画面から取得' : '';
       const detail = fallback
         ? `${kind}・対象不明（空クリックならチェックを外せます）`
         : [kind, source, item.windowTitle || ''].filter(Boolean).join('・');
@@ -4509,7 +4564,7 @@ ${shots}
       const reviewRequired = fallback || !item.targetName || !selected;
       return `<article class="recorder-event${selected ? '' : ' is-excluded'}" data-recorder-event data-index="${item.index}" data-review-required="${reviewRequired ? 'true' : 'false'}" data-selected="${selected ? 'true' : 'false'}">
 ${shots}
-<span class="recorder-event__body"><strong>操作 ${item.index}　${escapeRecorderHtml(label)}</strong><span>${escapeRecorderHtml(detail)}</span>${reviewReason}<button type="button" class="button button--secondary button--small" data-recorder-toggle aria-pressed="${selected ? 'true' : 'false'}">${selected ? 'この手順を使う' : '除外しました'}</button></span>
+<span class="recorder-event__body"><strong>操作 ${item.index}　${escapeRecorderHtml(label)}</strong><span>${escapeRecorderHtml(detail)}</span>${reviewReason}<button type="button" class="button button--secondary button--small" data-recorder-toggle aria-pressed="${selected ? 'true' : 'false'}">${selected ? 'この手順を除外' : 'この手順を使う'}</button></span>
 <span class="recorder-event__index">${item.index}</span>
 </article>`;
     }).join('');
@@ -4539,7 +4594,7 @@ ${shots}
     setRecorderMessage(
       candidateCount > 0 ? `${candidateCount} 件の手順を作成・確認が必要なのは ${reviewCount} 件` : '操作を記録できませんでした',
       candidateCount > 0
-        ? (detail || (reviewCount > 0 ? '確認が必要な手順だけを表示しています。問題なければそのまま手順を作成できます。' : '確認が必要な箇所はありません。そのまま手順を作成します。'))
+        ? (detail || (reviewCount > 0 ? '要確認の手順だけを表示しています。問題なければそのまま手順を作成できます。' : '確認が必要な箇所はありません。そのまま手順を作成します。'))
         : '対象アプリで操作して、もう一度お試しください。'
     );
     const excludeButton = recorder.dialog?.querySelector('[data-recorder-exclude-finishing]');
@@ -4680,7 +4735,7 @@ ${shots}
         body: body.toString()
       });
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload?.message || `HTTP ${response.status}`);
+      if (!response.ok) throw new Error(payload?.message || describeHttpFailure(response.status));
       // 開始要求の途中でダイアログを閉じた場合も、記録を裏で走らせたままにしない。
       if (!recorder.dialog.open) {
         recorder.active = false;
@@ -4708,7 +4763,7 @@ ${shots}
         headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' }),
         body: body.toString()
       });
-      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      if (!response.ok) throw new Error(await response.text() || describeHttpFailure(response.status));
       recorder.paused = nextPaused;
       const button = recorder.dialog.querySelector('[data-recorder-pause]');
       button.textContent = nextPaused ? '記録を再開' : '一時停止';
@@ -4733,7 +4788,7 @@ ${shots}
     const previousCount = recorder.count;
     try {
       const response = await fetch('/api/recorder/undo', { method: 'POST', headers: sessionHeaders() });
-      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      if (!response.ok) throw new Error(await response.text() || describeHttpFailure(response.status));
       const status = await response.json();
       recorder.count = Number(status.count || 0);
       updateRecorderLivePreview(status);
@@ -4756,7 +4811,7 @@ ${shots}
     setRecorderMessage('記録を終了しています', '');
     try {
       const response = await fetch('/api/recorder/stop', { method: 'POST', headers: sessionHeaders() });
-      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      if (!response.ok) throw new Error(await response.text() || describeHttpFailure(response.status));
       const status = await response.json();
       if (status.state === 'recording') {
         setRecorderMessage('記録の終了を待っています', '終了処理が終わると確認画面へ進みます。');
@@ -4821,7 +4876,7 @@ ${shots}
         headers: sessionHeaders({ 'Content-Type': 'application/json; charset=UTF-8', 'X-Sheet-Id': selectedSheetId() }),
         body: JSON.stringify({ accept, decisions })
       });
-      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      if (!response.ok) throw new Error(await response.text() || describeHttpFailure(response.status));
       const result = await response.json();
       recorder.events = [];
       recorder.localProposals = [];
@@ -4862,7 +4917,7 @@ ${shots}
       + '<section data-recorder-view="setup">'
       + '<p class="recorder-quick-start" id="recorder-quick-start"><strong>［記録を開始］</strong> → 対象のアプリで普段どおり操作 → 記録レシートで確認・終了</p>'
       + '<div class="recorder-scope"><strong>普段の画面をそのまま記録</strong><span>Edge、Excel、エクスプローラーなど、いつものアプリで操作してください。クリックと画面変化から操作前・操作後を選びます。</span></div>'
-      + '<p class="recorder-privacy-alert"><strong>入力した文字や通知も画面画像に写ります。</strong>機密情報を閉じてから記録を始めてください。取り込まなかった元画像も、作成根拠としてプロジェクト内に残ります。</p>'
+      + '<p class="recorder-privacy-alert"><strong>入力した文字や通知も画面画像に写ります。</strong>機密情報を閉じてから記録を始めてください。取り込まなかった元画像も、作成根拠としてこのマニュアル内に残ります。</p>'
       + '<details class="recorder-advanced"><summary>うまく撮れない場合の設定</summary><label class="recorder-capture-quality"><span><strong>操作後画面を撮るまで</strong><small>通常は「標準」のままで問題ありません。読込途中の画面が多い場合だけ長めにします。</small></span><select data-recorder-result-delay><option value="300">すぐ（0.3秒）</option><option value="700" selected>標準（0.7秒）</option><option value="1200">ゆっくり（1.2秒）</option><option value="2000">とてもゆっくり（2.0秒）</option></select></label></details>'
       + '<details class="recorder-recorded-info"><summary>記録される情報とプライバシー</summary><div><p>対応しているクリックと入力活動、その時刻、画面、ウィンドウ名、操作対象の候補を記録します。ドラッグ、スクロール、特殊な画面などは自動で確定できず、確認が必要になる場合があります。</p><p><strong>押したキーそのものは保存しません</strong>が、入力した文字は画面画像に写ります。画像と操作情報はこのPCの外へ送信しません。</p><p>黒塗りは出力画像を隠すための編集です。元の記録画像を完全に削除する機能ではありません。元画像はプロジェクトを削除するまでこのPCに残ります。</p></div></details>'
       + '<div class="recorder-capability-status"><p class="copilot-capability" id="recorder-capability-message" data-recorder-capability role="status" aria-live="polite" aria-atomic="true"></p><button type="button" class="button button--ghost button--small" data-recorder-capability-retry aria-describedby="recorder-capability-message" hidden>記録環境を再確認</button></div>'
@@ -4879,10 +4934,10 @@ ${shots}
       + '<div class="recorder-analysis"><span class="recorder-analysis__pulse" aria-hidden="true"></span><div><strong>このPCで手順候補を作成中</strong><p>クリックの時刻・位置と画面変化を照合し、読込中や重複した画面を除いています。</p></div></div>'
       + '</section>'
       + '<section data-recorder-view="review" hidden>'
-      + '<div class="copilot-dialog__state"><strong data-recorder-message></strong><span data-recorder-detail></span></div>'
+      + '<div class="copilot-dialog__state" role="status" aria-live="polite"><strong data-recorder-message></strong><span data-recorder-detail></span></div>'
       + '<p class="recorder-capture-warning" data-recorder-capture-warning role="alert" hidden></p>'
-      + '<p class="copilot-note" data-recorder-review-note>確認が必要な手順だけを表示しています。大きな画像と理由を確認し、不要なら［この手順を使う］を押して除外してください。</p>'
-      + '<div class="recorder-review-tools"><strong data-recorder-selection-summary></strong><details class="recorder-review-adjustments"><summary>すべての候補を見る・調整</summary><div><label class="recorder-review-filter">表示<select data-recorder-filter><option value="review">要確認のみ</option><option value="all">すべて</option><option value="selected">使う手順のみ</option></select></label><button type="button" class="button button--ghost button--small" data-recorder-select-all>表示中を使う</button><button type="button" class="button button--ghost button--small" data-recorder-select-none>表示中を除外</button><button type="button" class="button button--ghost button--small" data-recorder-exclude-finishing>保存・終了を除外</button></div></details></div>'
+      + '<p class="copilot-note" data-recorder-review-note>要確認の手順だけを表示しています。大きな画像と理由を確認し、不要な手順は［この手順を除外］を押してください。</p>'
+      + '<div class="recorder-review-tools"><strong data-recorder-selection-summary aria-live="polite"></strong><details class="recorder-review-adjustments"><summary>すべての候補を見る・調整</summary><div><label class="recorder-review-filter">表示<select data-recorder-filter><option value="review">要確認のみ</option><option value="all">すべて</option><option value="selected">使う手順のみ</option></select></label><button type="button" class="button button--ghost button--small" data-recorder-select-all>表示中を使う</button><button type="button" class="button button--ghost button--small" data-recorder-select-none>表示中を除外</button><button type="button" class="button button--ghost button--small" data-recorder-exclude-finishing>保存・終了を除外</button></div></details></div>'
       + '<div class="recorder-list" data-recorder-list></div>'
       + '</section>'
       + '</div>'
@@ -4898,8 +4953,18 @@ ${shots}
     keepDialogFocusInside(dialog);
 
     const requestClose = () => {
-      if (recorder.active && !window.confirm('操作を記録中です。記録を終了して破棄しますか？')) return;
-      if (!recorder.active && (recorder.events.length > 0 || recorder.localProposals.length > 0) && !window.confirm('まだ取り込んでいない記録を破棄しますか？')) return;
+      // 記録レシートの×は「終了して確認」へ進むのに、ここの×は破棄だった。
+      // 同じ×印で結果が正反対になるため、まず「手順にする」を既定の出口にする。
+      if (recorder.active) {
+        const count = Number(recorder.count) || 0;
+        const amount = count > 0 ? `ここまでの ${count} 件` : 'ここまでの記録';
+        if (window.confirm(`記録中です。${amount}を手順にしますか？\n\n［OK］記録を終了して手順にします\n［キャンセル］記録を続けます\n\n記録を捨てたいときは、記録レシートの［記録を終了］から手順を作らずに閉じてください。`)) {
+          stopRecording();
+        }
+        return;
+      }
+      if ((recorder.events.length > 0 || recorder.localProposals.length > 0)
+        && !window.confirm('取り込んでいない記録があります。捨てて閉じますか？\n\nこの記録は元に戻せません。')) return;
       dialog.close();
     };
     dialog.querySelectorAll('[data-recorder-close]').forEach((button) => {

@@ -149,7 +149,7 @@ try {
     $officeScreenLayout = Get-MbExcelStepCardLayout -Description '短い説明' -ImageWidth 1920 -ImageHeight 1200
     Assert-Mb ($officeScreenLayout.ImageRows -eq 15 -and $officeScreenLayout.ContentRows -eq 15) '16対10画像を実表示寸法に必要な高さへ収める'
     Assert-Mb ($portraitLayout.ImageRows -eq 26 -and $portraitLayout.ContentRows -eq 26) '縦長画像のカード高さを上限まで広げる'
-    Assert-Mb ($extremePortraitLayout.ImageRows -eq 22 -and $extremePortraitLayout.ContentRows -eq 22) '極端な縦長画像のカード高さを22行へ抑える'
+    Assert-Mb ($extremePortraitLayout.ImageRows -eq 34 -and $extremePortraitLayout.ContentRows -eq 34) '極端な縦長画像でも読める幅が残る高さまで広げる'
     Assert-Mb ($longDescriptionLayout.ContentRows -gt 14) '長い説明に必要な本文行を確保する'
     Assert-Mb ($longDescriptionLayout.DescriptionBodyRows -lt ($longDescriptionLines + 1)) '長文を26pt行へ詰め直して過剰な下余白を抑える'
     Assert-Mb (($longDescriptionLayout.DescriptionBodyRows * 26) -ge (($longDescriptionLines * 16) + 4)) '長文の表示に必要な物理高さを確保する'
@@ -179,7 +179,7 @@ try {
         -Crop ([pscustomobject]@{ x = 0.0; y = 0.0; width = 1.0; height = 0.2 })
     Assert-Mb ($normalRenderTarget.Width -eq 760 -and $normalRenderTarget.Height -eq 880) '通常画像の注釈表示基準を維持する'
     Assert-Mb ($wideRenderTarget.Width -eq 646 -and $wideRenderTarget.Height -eq 880) '極端な横長画像の注釈表示基準をExcel配置へ合わせる'
-    Assert-Mb ($portraitRenderTarget.Width -eq 760 -and $portraitRenderTarget.Height -eq 620) '極端な縦長画像の注釈表示基準をExcel配置へ合わせる'
+    Assert-Mb ($portraitRenderTarget.Width -eq 760 -and $portraitRenderTarget.Height -eq 880) '極端な縦長画像の注釈表示基準をExcel配置へ合わせる'
     Assert-Mb ($croppedWideRenderTarget.Width -eq 646) '切り抜き後の比率で注釈表示基準を決める'
 
     $statusPath = Join-Path $testRoot 'status.json'
@@ -262,7 +262,7 @@ try {
         -DestinationPath $wideAnnotationPath -TargetDisplayWidth 646 -TargetDisplayHeight 880 -MaximumDisplayScale 1.5)
     $portraitCrop = [pscustomobject]@{ x = 0.45; y = 0.1; width = 0.1; height = 0.8 }
     [void](New-MbAnnotatedImage -SourcePath $scaleSourcePath -Annotations $numberAnnotation -Crop $portraitCrop `
-        -DestinationPath $portraitAnnotationPath -TargetDisplayWidth 760 -TargetDisplayHeight 620 -MaximumDisplayScale 1.5)
+        -DestinationPath $portraitAnnotationPath -TargetDisplayWidth 760 -TargetDisplayHeight 880 -MaximumDisplayScale 1.5)
     $rectAnnotation = @([pscustomobject]@{ type = 'rect'; x1 = 0.2; y1 = 0.2; x2 = 0.8; y2 = 0.7; label = 0 })
     [void](New-MbAnnotatedImage -SourcePath $scaleSourcePath -Annotations $rectAnnotation `
         -DestinationPath $rectAnnotationPath -TargetDisplayWidth 760 -TargetDisplayHeight 880)
@@ -274,7 +274,7 @@ try {
     $portraitBounds = Get-MbRedAnnotationBounds -Path $portraitAnnotationPath
     $fullDisplayScale = [Math]::Min(2.0, [Math]::Min(760.0 / 1200.0, 880.0 / 800.0))
     $wideDisplayScale = [Math]::Min(1.5, [Math]::Min(646.0 / 600.0, 880.0 / 80.0))
-    $portraitDisplayScale = [Math]::Min(1.5, [Math]::Min(760.0 / 120.0, 620.0 / 640.0))
+    $portraitDisplayScale = [Math]::Min(1.5, [Math]::Min(760.0 / 120.0, 880.0 / 640.0))
     $fullDisplayedDiameter = [double]([Math]::Max($fullBounds.Width, $fullBounds.Height) * $fullDisplayScale)
     $wideDisplayedDiameter = [double]([Math]::Max($wideBounds.Width, $wideBounds.Height) * $wideDisplayScale)
     $portraitDisplayedDiameter = [double]([Math]::Max($portraitBounds.Width, $portraitBounds.Height) * $portraitDisplayScale)
@@ -286,7 +286,7 @@ try {
     Assert-Mb ($wideDisplayScale -le 1.5) 'Excelの拡大上限1.5倍でも注釈寸法を同期する'
     Assert-Mb ($wideDisplayScale -lt (760.0 / 600.0)) '細長い画像を通常幅の85%へ抑えて注釈倍率を同期する'
     Assert-Mb ([Math]::Abs($portraitDisplayedDiameter - (48 * $portraitAnnotationUnit)) -le 3.0) '縦長画像の番号注釈を共通表示寸法へ合わせる'
-    Assert-Mb ($portraitDisplayScale -lt (880.0 / 640.0)) '極端な縦長画像を通常高の85%へ抑えて注釈倍率を同期する'
+    Assert-Mb ($portraitDisplayScale -eq (880.0 / 640.0)) '極端な縦長画像の注釈倍率を高さ基準で同期する'
     Assert-Mb ([Math]::Abs($wideDisplayedDiameter - $fullDisplayedDiameter) -le 3.0 -and [Math]::Abs($portraitDisplayedDiameter - $fullDisplayedDiameter) -le 3.0) '画像比率が異なっても注釈の視認サイズを揃える'
     $rectDisplayedThickness = [double]((Get-MbRedVerticalRunAtX -Path $rectAnnotationPath -X 600) * $fullDisplayScale)
     $arrowDisplayedThickness = [double]((Get-MbRedVerticalRunAtX -Path $arrowAnnotationPath -X 480) * $fullDisplayScale)

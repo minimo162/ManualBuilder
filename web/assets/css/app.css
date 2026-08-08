@@ -1332,6 +1332,8 @@ kbd {
 }
 
 .step-card__label {
+  /* h2 だが見た目は従来のラベルのまま（見出しは読み上げの移動用）。 */
+  margin: 0;
   color: var(--text-2);
   font-size: 12px;
   font-weight: 700;
@@ -1432,7 +1434,10 @@ kbd {
 
 .workspace.step-view--review .step-fields {
   display: grid;
-  grid-template-columns: minmax(220px, 0.8fr) minmax(360px, 2fr) minmax(260px, 1fr);
+  /* 3列の最小幅合計が広すぎると、1180pxの折返し前(1181-1225px前後)で
+     「ポイント・注意」がカードからはみ出し、横スクロールが出る。
+     1366pxのノートPCでズーム110%にしただけでこの帯に入る。 */
+  grid-template-columns: minmax(180px, 0.8fr) minmax(300px, 2fr) minmax(220px, 1fr);
   align-items: start;
   padding: 12px 16px 16px;
 }
@@ -2565,6 +2570,9 @@ kbd {
   max-width: none;
   padding: 0;
   overflow: hidden;
+  /* 低い画面でも見出しとフッターを必ず残す。内容だけをスクロールさせる。 */
+  max-height: min(88vh, calc(100dvh - 24px));
+  flex-direction: column;
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--border-strong);
@@ -3837,6 +3845,9 @@ kbd {
   max-width: none;
   padding: 0;
   overflow: hidden;
+  /* 低い画面でも見出しとフッターを必ず残す。内容だけをスクロールさせる。 */
+  max-height: min(88vh, calc(100dvh - 24px));
+  flex-direction: column;
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--border-strong);
@@ -5056,5 +5067,97 @@ kbd {
   .copilot-draft__accept {
     flex-direction: row;
     justify-content: flex-start;
+  }
+}
+
+
+/* 低い画面(1366x768のノートPCなど)でも、書き出しダイアログの操作ボタンへ必ず届くようにする。
+   本文だけをスクロールさせ、見出しとフッターは常に画面内へ残す。 */
+.excel-export-dialog[open],
+.output-review-dialog[open] {
+  display: flex;
+}
+
+.excel-export-dialog__content,
+.output-review-dialog__content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.excel-export-dialog__footer,
+.output-review-dialog__footer {
+  flex: 0 0 auto;
+}
+
+/* 横長キャプチャの高さ詰めは、既定の一覧確認でも効かせる。
+   `.workspace.step-view--review .step-image-frame` の特異度に負けて無効だった。 */
+.workspace .step-image-frame--extreme-wide,
+.workspace.step-view--review .step-image-frame--extreme-wide {
+  height: clamp(220px, 32vh, 340px);
+  min-height: 220px;
+}
+
+/* 画面が低いときは一覧確認の画像枠を縮める。500px固定のままだと、
+   1366x768では1手順の画像すら収まらず、初回表示で説明欄が一度も見えなかった。 */
+@media (max-height: 820px) {
+  .workspace.step-view--review .step-image-frame,
+  .workspace.step-view--review .step-result-image {
+    height: clamp(240px, 44vh, 520px);
+    min-height: 240px;
+  }
+
+  .workspace.step-view--review .step-visual-layout--side-by-side .step-image-frame,
+  .workspace.step-view--review .step-visual-layout--side-by-side .step-result-image {
+    height: clamp(200px, 34vh, 400px);
+    min-height: 200px;
+  }
+
+  /* 手順を複数選ぶと一括操作パネルが伸び、選ぶ対象の手順一覧が2件分まで潰れていた。 */
+  .step-nav__bulk { padding: 6px; }
+  .step-nav__bulk-heading { margin-bottom: 4px; }
+  .step-nav__bulk-order { gap: 2px; margin-bottom: 4px; }
+  .step-nav__bulk-order button { min-height: 26px; }
+  .sheet-nav { max-height: min(30%, 200px); }
+}
+
+.step-nav__list {
+  min-height: 120px;
+}
+
+/* 出力前確認の集計は4項目しかないのに5列を確保しており、右端が空いていた。 */
+.output-review-dialog__summary {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+/* 画面下部の固定要素どうしが重ならないようにする。 */
+.toast-region {
+  bottom: 88px;
+}
+
+/* 3列が収まらなくなる幅は実測で約1225px。1180pxの折返しでは遅く、
+   その手前で「ポイント・注意」がカードからはみ出していた。 */
+@media (max-width: 1300px) {
+  .workspace.step-view--review .step-fields {
+    grid-template-columns: minmax(200px, 0.8fr) minmax(300px, 1.6fr);
+  }
+
+  .workspace.step-view--review .field--note {
+    grid-column: 1 / -1;
+  }
+}
+
+/* ハイコントラスト(forced-colors)では box-shadow が描画されず色も強制されるため、
+   「今どの手順を編集対象にしているか」の目印が消える。outline で二重化する。 */
+@media (forced-colors: active) {
+  .workspace.step-view--review .step-card--active,
+  .workspace.step-view--focus .step-card--active {
+    outline: 3px solid Highlight;
+    outline-offset: -3px;
+  }
+
+  .step-nav__item--active {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
   }
 }

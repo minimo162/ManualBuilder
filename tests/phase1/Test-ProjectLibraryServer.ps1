@@ -44,10 +44,13 @@ try {
     }
     Assert-Mb $ready 'プロジェクト一覧モードでサーバーが起動する'
 
-    $shell = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/" -TimeoutSec 5
-    $tokenMatch = [regex]::Match($shell.Content, 'X-Manual-Token":"(?<token>[a-f0-9]{32})')
-    Assert-Mb $tokenMatch.Success '一覧モードでもセッショントークンを発行する'
-    $headers = @{ 'X-Manual-Token' = $tokenMatch.Groups['token'].Value; 'X-Tab-Id' = 'project-library-test-tab' }
+    # 画面本体もトークンで守るため、無認証の `/` からは取れない。
+    $runtimeInfo = [IO.File]::ReadAllText((Join-Path $dataRoot 'runtime.json'), [Text.Encoding]::UTF8) | ConvertFrom-Json
+    $entryUrl = [string]$runtimeInfo.entryUrl
+    Assert-Mb ($entryUrl -match '\?token=(?<token>[a-f0-9]{32})$') '一覧モードでもセッショントークンを発行する'
+    $sessionToken = $Matches['token']
+    $shell = Invoke-WebRequest -UseBasicParsing -Uri $entryUrl -TimeoutSec 5
+    $headers = @{ 'X-Manual-Token' = $sessionToken; 'X-Tab-Id' = 'project-library-test-tab' }
 
     $library = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/ui/workspace" -Headers $headers -TimeoutSec 5
     Assert-Mb ($library.Content -match 'class="workspace project-library"') '通常起動でマニュアル一覧を表示する'

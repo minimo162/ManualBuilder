@@ -99,7 +99,7 @@ function New-MbSheet {
 }
 
 function New-MbProject {
-    $sheet = New-MbSheet -Name '章1'
+    $sheet = New-MbSheet -Name 'シート1'
     return [pscustomobject]@{
         schemaVersion   = 1
         revision        = 0
@@ -147,7 +147,7 @@ function Repair-MbProject {
     $Project.videos = @($Project.videos)
     $Project.evidenceSessions = @($Project.evidenceSessions)
     if ($Project.sheets.Count -eq 0) {
-        $Project.sheets = @(New-MbSheet -Name '章1')
+        $Project.sheets = @(New-MbSheet -Name 'シート1')
     }
 
     foreach ($sheet in $Project.sheets) {
@@ -404,7 +404,10 @@ function Save-MbProject {
         if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
             [void](New-Item -ItemType Directory -Path $directory -Force -ErrorAction Stop)
         }
-        $json = $Project | ConvertTo-Json -Depth 12 -ErrorAction Stop
+        # ConvertTo-Jsonは深さを超えた部分を警告なく文字列へ潰すため、保存の深さは
+        # 複製経路(Copy-MbSheet / Copy-MbDetachedValue の -Depth 100)と必ず揃える。
+        # 揃っていないと、複製と画面表示は正常なのに保存だけが深い階層を捨てる。
+        $json = $Project | ConvertTo-Json -Depth 100 -ErrorAction Stop
         [IO.File]::WriteAllText($tempPath, $json, $utf8)
         if (Test-Path -LiteralPath $Path) {
             # 固定の.bakをFile.Replaceへ直接渡すと、ウイルス対策などが一瞬開いただけで
@@ -565,8 +568,8 @@ function Set-MbProjectTitle {
 function Add-MbSheet {
     param([Parameter(Mandatory = $true)][object]$Project)
 
-    if (@($Project.sheets).Count -ge 50) { throw '章は50件までです。' }
-    $base = '章' + (@($Project.sheets).Count + 1)
+    if (@($Project.sheets).Count -ge 50) { throw 'シートは50件までです。' }
+    $base = 'シート' + (@($Project.sheets).Count + 1)
     $name = $base
     $suffix = 2
     $names = @($Project.sheets | ForEach-Object { $_.name })

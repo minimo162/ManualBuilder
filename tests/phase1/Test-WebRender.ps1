@@ -155,16 +155,18 @@ Assert-Mb ($emptyWorkspaceHtml -match 'empty-state__main-button[^>]*data-record-
 Assert-Mb (([regex]::Matches($emptyWorkspaceHtml, 'button button--primary[^>]*data-record-operations')).Count -eq 1) '空の画面では操作記録の主ボタンを重複させない'
 Assert-Mb ($emptyWorkspaceHtml -match 'data-open-video-picker>録画ファイルを取り込む') '既存録画の取り込みを同じ画面から選べる'
 Assert-Mb (([regex]::Matches($emptyWorkspaceHtml, 'data-open-video-picker>録画ファイルを取り込む')).Count -eq 1) '空の画面では既存録画の入口を重複させない'
-Assert-Mb ($emptyWorkspaceHtml -match '操作を記録.+手順を確認・修正.+Excelに出力') 'ローカルで完了する主機能の3段階を最初に示す'
+Assert-Mb ($emptyWorkspaceHtml -match '操作を記録.+手順を確認・修正.+Excel・Wordで作成') 'ローカルで完了する主機能の3段階を最初に示す'
 Assert-Mb ($emptyWorkspaceHtml -match 'accept="video/mp4,video/webm"') '主ボタンから選べる動画形式を制限する'
 
 $filledWorkspaceHtml = ConvertTo-MbWorkspaceHtml -Project (New-MbTestProject -Steps @((New-MbTestStep -AnnotationCount 0))) -Token 'testtoken'
 Assert-Mb ($filledWorkspaceHtml -notmatch 'class="empty-state') '手順がある画面では開始案内を重複表示しない'
 Assert-Mb ($filledWorkspaceHtml -match 'topbar__main-action[^>]*data-record-operations[^>]*>操作を記録') '編集中も主機能へスクロールせず戻れる'
-Assert-Mb (([regex]::Matches($filledWorkspaceHtml, 'button button--primary[^>]*data-record-operations')).Count -eq 1) '編集中も操作記録の主ボタンを重複させない'
+# 手順があるときの主CTAは仕上げ欄の出力1つ。記録は「手順を足す」操作なので副ボタンにする。
+Assert-Mb (([regex]::Matches($filledWorkspaceHtml, 'data-record-operations')).Count -eq 1) '編集中も操作記録のボタンを重複させない'
+Assert-Mb ($filledWorkspaceHtml -notmatch 'button--primary[^>]*data-record-operations') '手順があるときは記録を主ボタンにしない'
 Assert-Mb ($filledWorkspaceHtml -match 'menu-command[^>]*data-open-video-picker[^>]*>録画ファイルを取り込む') '既存録画の取り込みをその他の作り方へ整理する'
 Assert-Mb ($filledWorkspaceHtml -match 'class="workspace step-view--review"') '手順の確認は一覧表示から始める'
-Assert-Mb ($filledWorkspaceHtml -match 'class="skip-link"[^>]*href="#editor-main"' -and $filledWorkspaceHtml -match '<main id="editor-main"') 'キーボードで章と手順一覧を飛ばして編集画面へ移動できる'
+Assert-Mb ($filledWorkspaceHtml -match 'class="skip-link"[^>]*href="#editor-main"' -and $filledWorkspaceHtml -match '<main id="editor-main"') 'キーボードでシートと手順一覧を飛ばして編集画面へ移動できる'
 Assert-Mb ($filledWorkspaceHtml -match '手順を確認・修正' -and $filledWorkspaceHtml -notmatch '分割結果を確認') '作成方法に依存しない見出しで手順確認を案内する'
 Assert-Mb ($filledWorkspaceHtml -match 'data-step-view="review"[^>]*aria-pressed="true"' -and $filledWorkspaceHtml -match 'data-step-view="focus"') '一覧確認と1件編集を切り替えられる'
 Assert-Mb ($filledWorkspaceHtml -match 'data-step-previous' -and $filledWorkspaceHtml -match 'data-step-next' -and $filledWorkspaceHtml -match 'data-step-position') '手順を前後へ連続移動できる'
@@ -177,7 +179,9 @@ Assert-Mb ($filledWorkspaceHtml -match 'data-finish-check="text"') '説明なし
 Assert-Mb ($filledWorkspaceHtml -notmatch 'data-finish-check="annotation"') '任意の赤枠・番号を未完了項目として数えない'
 Assert-Mb ($filledWorkspaceHtml -match 'data-finish-check="attention"') '自動作成後の要確認手順へ移動できる'
 Assert-Mb ($filledWorkspaceHtml -match 'data-add-step-end[^>]*>＋ 手順を追加') '通常の追加は一覧末尾へ追加する入口にする'
-Assert-Mb (([regex]::Matches($filledWorkspaceHtml, 'data-open-export-dialog')).Count -eq 2) '上部と仕上げ欄から最終出力へ進める'
+# 出力の入口は仕上げ欄の1つに絞る。同じ文言のボタンが上下に並ぶと押し分けの理由が読めない。
+Assert-Mb (([regex]::Matches($filledWorkspaceHtml, 'data-open-export-dialog')).Count -eq 1) '最終出力の入口を仕上げ欄の1つに絞る'
+Assert-Mb (([regex]::Matches($filledWorkspaceHtml, 'class="button button--primary')).Count -eq 1) '手順があるとき画面内の主ボタンを1つに絞る'
 $cardHtml = ConvertTo-MbStepCardHtml -Step (New-MbTestStep -AnnotationCount 0) -Number 2 -Total 3 -Token 'testtoken'
 Assert-Mb ($cardHtml -notmatch 'data-step-move=|data-step-card-delete') '手順カードへ一覧と重複する整理操作を置かない'
 Assert-Mb ($cardHtml -match 'data-open-annotation[^>]*[\s\S]*赤枠・番号を追加') '赤枠・番号の入口を具体的な名前で表示する'
@@ -204,7 +208,7 @@ $secondSheet.name = '未完成シート'
 $multiSheetProject.sheets = @($multiSheetProject.sheets[0], $secondSheet)
 $multiSheetHtml = ConvertTo-MbWorkspaceHtml -Project $multiSheetProject -Token 'testtoken'
 Assert-Mb (([regex]::Matches($multiSheetHtml, 'data-sheet-delete')).Count -eq 1) '選択シートの削除を取り消し対応の操作として表示する'
-Assert-Mb ($multiSheetHtml -match 'data-sheet-duplicate[^>]*>章を複製') '選択中の章を再利用できる複製操作を表示する'
+Assert-Mb ($multiSheetHtml -match 'data-sheet-duplicate[^>]*>シートを複製') '選択中のシートを再利用できる複製操作を表示する'
 $finishMatch = [regex]::Match($multiSheetHtml, '<textarea hidden data-project-finish-data>(.*?)</textarea>')
 Assert-Mb $finishMatch.Success '全シートの仕上げ情報を画面へ埋め込む'
 $finishItems = ([Net.WebUtility]::HtmlDecode($finishMatch.Groups[1].Value) | ConvertFrom-Json)

@@ -190,7 +190,7 @@ namespace ManualBuilder.RecorderCompanion
             catch (Exception ex)
             {
                 Log(ex);
-                FailStartup("記録モニターを開けませんでした。WebView2 Runtimeを確認してください。");
+                FailStartup("記録レシートを開けませんでした。ManualBuilderを再起動してください。改善しない場合は担当者へご連絡ください。");
             }
         }
 
@@ -337,7 +337,7 @@ namespace ManualBuilder.RecorderCompanion
                 pendingUndoAtUtc = DateTime.UtcNow;
                 undoNoticeUntilUtc = DateTime.UtcNow.AddSeconds(6);
                 TryWrite(options.UndoPath, pendingUndoId);
-                helpText = "削除結果を確認しています。対象アプリで行った操作には影響しません。";
+                helpText = "取り消し結果を確認しています。対象アプリで行った操作には影響しません。";
             }
 
             string resultRequestId = StringValue(status, "resultRequestId");
@@ -550,7 +550,7 @@ namespace ManualBuilder.RecorderCompanion
             string message = StringValue(status, "message");
             string stateLabel = StateLabel(state);
             if (!String.IsNullOrEmpty(pendingResultId) && resultRetryReady) stateLabel = "結果画面の追加結果を確認中";
-            else if (!String.IsNullOrEmpty(pendingUndoId) && undoNoticeUntilUtc > DateTime.UtcNow) stateLabel = "直前の記録の削除結果を確認中";
+            else if (!String.IsNullOrEmpty(pendingUndoId) && undoNoticeUntilUtc > DateTime.UtcNow) stateLabel = "直前の操作の取り消し結果を確認中";
 
             Dictionary<string, object> payload = new Dictionary<string, object>();
             payload["type"] = "state";
@@ -563,8 +563,8 @@ namespace ManualBuilder.RecorderCompanion
             payload["compact"] = compact;
             payload["closing"] = closingRequested;
             payload["pauseLabel"] = state == "paused" ? "記録を再開" : "一時停止";
-            payload["undoLabel"] = String.IsNullOrEmpty(pendingUndoId) ? "直前の記録を削除" : "削除中…";
-            payload["resultLabel"] = resultRetryReady ? "追加を再確認" : "結果画面を追加";
+            payload["undoLabel"] = String.IsNullOrEmpty(pendingUndoId) ? "直前の操作を取り消す" : "取り消しています…";
+            payload["resultLabel"] = resultRetryReady ? "追加を再確認" : "結果画像を追加";
             payload["canPause"] = !closingRequested && (state == "recording" || state == "paused") && String.IsNullOrEmpty(pendingResultId);
             payload["canUndo"] = !closingRequested && count > 0 && (state == "recording" || state == "paused") && String.IsNullOrEmpty(pendingUndoId) && String.IsNullOrEmpty(pendingResultId);
             payload["canResult"] = !closingRequested && count > 0 && state == "recording" && lastExternalWindow != IntPtr.Zero && String.IsNullOrEmpty(pendingUndoId) && (String.IsNullOrEmpty(pendingResultId) || resultRetryReady);

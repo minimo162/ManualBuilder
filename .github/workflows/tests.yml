@@ -1,0 +1,49 @@
+name: tests
+
+# ManualBuilder は Windows PowerShell 5.1 と Office COM に依存する。
+# ここで走らせるのは COM を起動しない層だけで、run-tests.cmd の中身と同じ。
+# Excel/Word の実機出力は run-excel-test.cmd / run-word-test.cmd を手元で実行する
+# （利用者の未保存ブックへ触れるため、自動実行しない）。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  phase1:
+    runs-on: windows-latest
+    env:
+      CI: '1'
+      # 検査の出力は日本語。ランナーのPythonは既定でcp1252へ書き出そうとして
+      # UnicodeEncodeErrorで落ちるため、標準出力をUTF-8に固定する。
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: 'utf-8'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: PowerShell 構文チェック
+        shell: powershell
+        run: |
+          $failed = $false
+          Get-ChildItem -Path src, tests -Recurse -Include *.ps1, *.psm1 | ForEach-Object {
+              $errors = $null
+              [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errors)
+              if ($errors.Count -gt 0) {
+                  $failed = $true
+                  Write-Host "PARSE ERROR: $($_.FullName)"
+                  $errors | ForEach-Object { Write-Host "  $($_.Message)" }
+              }
+          }
+          if ($failed) { exit 1 }
+
+      - name: Phase 1 テスト
+        shell: cmd
+        run: tests\phase1\run-tests.cmd

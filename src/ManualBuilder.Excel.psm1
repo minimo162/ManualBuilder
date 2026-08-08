@@ -365,6 +365,43 @@ function New-MbRoundedRectanglePath {
     return $path
 }
 
+# 出力用の派生画像を保存する。
+#
+# 記録画像はJPEG品質94で保持している。これをPNGで書き戻すと、JPEGの微細なノイズまで
+# 可逆保存するためファイルがかえって大きくなる。Excelは表示幅約550ptで貼るのに
+# 2560px相当を抱えたままだと、ブックが数十MB級になり「メールに添付できる」が崩れる。
+# 拡張子で形式を決め、写真的なスクリーンショットはJPEGで書き出す。
+function Save-MbExcelRenderedImage {
+    param(
+        [Parameter(Mandatory = $true)][Drawing.Bitmap]$Bitmap,
+        [Parameter(Mandatory = $true)][string]$DestinationPath,
+        [ValidateRange(1, 100)][int]$JpegQuality = 90
+    )
+    $directory = Split-Path -Parent $DestinationPath
+    if (-not [string]::IsNullOrWhiteSpace($directory) -and -not (Test-Path -LiteralPath $directory)) {
+        [void](New-Item -ItemType Directory -Path $directory -Force)
+    }
+    $extension = ([IO.Path]::GetExtension($DestinationPath)).ToLowerInvariant()
+    if ($extension -ne '.jpg' -and $extension -ne '.jpeg') {
+        $Bitmap.Save($DestinationPath, [Drawing.Imaging.ImageFormat]::Png)
+        return $DestinationPath
+    }
+    $encoder = @([Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' })[0]
+    if ($null -eq $encoder) {
+        $Bitmap.Save($DestinationPath, [Drawing.Imaging.ImageFormat]::Jpeg)
+        return $DestinationPath
+    }
+    $parameters = $null
+    try {
+        $parameters = New-Object Drawing.Imaging.EncoderParameters 1
+        $parameters.Param[0] = New-Object Drawing.Imaging.EncoderParameter ([Drawing.Imaging.Encoder]::Quality), ([int]$JpegQuality)
+        $Bitmap.Save($DestinationPath, $encoder, $parameters)
+    } finally {
+        if ($parameters) { try { $parameters.Dispose() } catch { } }
+    }
+    return $DestinationPath
+}
+
 function New-MbAnnotatedImage {
     param(
         [Parameter(Mandatory = $true)][string]$SourcePath,
@@ -374,6 +411,9 @@ function New-MbAnnotatedImage {
         [ValidateRange(100, 4000)][int]$TargetDisplayWidth = 760,
         [ValidateRange(100, 4000)][int]$TargetDisplayHeight = 880,
         [ValidateRange(1.0, 2.0)][double]$MaximumDisplayScale = 2.0,
+        # 出力画像の長辺の上限(px)。Excelでの表示幅は約550ptなので、これ以上の
+        # ピクセルはファイルを重くするだけで、画面でもPDFでも見え方は変わらない。
+        [ValidateRange(320, 8000)][int]$MaximumOutputEdge = 1600,
         # 番号注釈は編集画面のSVGと同じ基準フォントで描く。呼び出し元の解決済みフォントを受け取る。
         [AllowEmptyString()][string]$NumberFontName = ''
     )
@@ -414,11 +454,19 @@ function New-MbAnnotatedImage {
         $cropPixelWidth = [Math]::Min($cropPixelWidth, $source.Width - $cropLeft)
         $cropPixelHeight = [Math]::Min($cropPixelHeight, $source.Height - $cropTop)
 
-        $bitmap = New-Object Drawing.Bitmap -ArgumentList @($cropPixelWidth, $cropPixelHeight, [Drawing.Imaging.PixelFormat]::Format32bppArgb)
+        # 出力ピクセルだけを間引き、描画は切り抜きピクセル座標のまま行う。
+        # 注釈の線幅・番号径は下の $displayScale から切り抜きピクセル基準で決まるので、
+        # 同じ倍率をGraphicsへ掛けておけば、Excel上の見た目の太さは縮小前と変わらない。
+        $renderScale = [Math]::Min(1.0, $MaximumOutputEdge / [double][Math]::Max($cropPixelWidth, $cropPixelHeight))
+        $outputWidth = [int][Math]::Max(1, [Math]::Round($cropPixelWidth * $renderScale))
+        $outputHeight = [int][Math]::Max(1, [Math]::Round($cropPixelHeight * $renderScale))
+
+        $bitmap = New-Object Drawing.Bitmap -ArgumentList @($outputWidth, $outputHeight, [Drawing.Imaging.PixelFormat]::Format32bppArgb)
         try { $bitmap.SetResolution(96, 96) } catch { }
         $graphics = [Drawing.Graphics]::FromImage($bitmap)
         $graphics.SmoothingMode = [Drawing.Drawing2D.SmoothingMode]::AntiAlias
         $graphics.InterpolationMode = [Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+        if ($renderScale -lt 1.0) { $graphics.ScaleTransform([single]$renderScale, [single]$renderScale) }
         $destinationRectangle = New-Object Drawing.Rectangle -ArgumentList @(0, 0, $cropPixelWidth, $cropPixelHeight)
         $sourceRectangle = New-Object Drawing.Rectangle -ArgumentList @($cropLeft, $cropTop, $cropPixelWidth, $cropPixelHeight)
         $graphics.DrawImage($source, $destinationRectangle, $sourceRectangle, [Drawing.GraphicsUnit]::Pixel)
@@ -499,10 +547,7 @@ function New-MbAnnotatedImage {
             }
         }
 
-        $directory = Split-Path -Parent $DestinationPath
-        if (-not (Test-Path -LiteralPath $directory)) { [void](New-Item -ItemType Directory -Path $directory -Force) }
-        $bitmap.Save($DestinationPath, [Drawing.Imaging.ImageFormat]::Png)
-        return $DestinationPath
+        return (Save-MbExcelRenderedImage -Bitmap $bitmap -DestinationPath $DestinationPath -JpegQuality 90)
     } finally {
         foreach ($item in @($numberFormat, $numberFont, $whiteBrush, $blackBrush, $redBrush, $arrowPen, $rectPen, $graphics, $bitmap, $source)) {
             if ($item) { try { $item.Dispose() } catch { } }
@@ -574,10 +619,7 @@ function New-MbBeforeAfterImage {
             $bottom = & $drawSection $first $firstSize 0 0 $canvasWidth $firstLabel
             [void](& $drawSection $second $secondSize 0 ($bottom + $gap) $canvasWidth $secondLabel)
         }
-        $directory = Split-Path -Parent $DestinationPath
-        if (-not (Test-Path -LiteralPath $directory)) { [void](New-Item -ItemType Directory -Path $directory -Force) }
-        $bitmap.Save($DestinationPath, [Drawing.Imaging.ImageFormat]::Png)
-        return $DestinationPath
+        return (Save-MbExcelRenderedImage -Bitmap $bitmap -DestinationPath $DestinationPath -JpegQuality 90)
     } finally {
         foreach ($item in @($borderPen, $labelBrush, $textBrush, $font, $graphics, $bitmap, $after, $before)) {
             if ($item) { try { $item.Dispose() } catch { } }
@@ -689,6 +731,25 @@ function Get-MbExcelTextLineEstimate {
     return [Math]::Max(1, $count)
 }
 
+# 文章欄の実幅(pt)から、1行に入る全角換算の文字数を求める。
+# 結合セルは「行の高さの自動調整」が効かないため、確保する行数を計算で決めるしかない。
+# 幅を見ずに固定値を使うと、画像ありカード(H:L 約540pt)では1行あたりを多く見積もり、
+# 長い説明の末尾が画面にもPDFにも出ないまま隠れる。
+function Get-MbExcelCharactersPerLine {
+    param(
+        [double]$AreaWidthPoints = 0.0,
+        [ValidateRange(1, 100)][double]$FontSizePoints = 12.0,
+        [ValidateRange(10, 200)][int]$Fallback = 68
+    )
+    if ($AreaWidthPoints -le 0.0) { return $Fallback }
+    # インデント1段とセル内余白でおよそ18pt使う。全角1文字の送り幅はほぼフォントサイズ。
+    $usableWidth = $AreaWidthPoints - 18.0
+    if ($usableWidth -le 0.0) { return 10 }
+    # 折返し位置の揺れと約物のぶら下がりを見込み、5%の安全側へ寄せる。
+    $characters = [int][Math]::Floor(($usableWidth / $FontSizePoints) * 0.95)
+    return [Math]::Max(10, [Math]::Min(200, $characters))
+}
+
 function Get-MbExcelStepCardLayout {
     param(
         [AllowEmptyString()][string]$Description = '',
@@ -696,10 +757,13 @@ function Get-MbExcelStepCardLayout {
         [ValidateRange(0, 100000)][int]$ImageWidth = 0,
         [ValidateRange(0, 100000)][int]$ImageHeight = 0,
         # 画像のない手順はカード全幅を文章に使うため、画像領域の最低行数を確保しない。
-        [bool]$HasImage = $true
+        [bool]$HasImage = $true,
+        # 文章欄の実幅(pt)。0のときは従来の固定値で見積もる。
+        [double]$TextAreaWidthPoints = 0.0
     )
 
-    $descriptionLines = Get-MbExcelTextLineEstimate -Text $Description -CharactersPerLine 68
+    $descriptionCharacters = Get-MbExcelCharactersPerLine -AreaWidthPoints $TextAreaWidthPoints -FontSizePoints 12.0 -Fallback 68
+    $descriptionLines = Get-MbExcelTextLineEstimate -Text $Description -CharactersPerLine $descriptionCharacters
     # H:Lの実幅と12pt本文に合わせ、表示行高16pt＋上下余裕4ptを26pt行へ換算する。
     # Excel実画面で残っていた1〜2行相当の余白を詰めつつ、折返し分の安全余裕は残す。
     $descriptionBodyRows = [int][Math]::Ceiling((($descriptionLines * 16.0) + 4.0) / 26.0)
@@ -707,7 +771,8 @@ function Get-MbExcelStepCardLayout {
     $hasNote = -not [string]::IsNullOrWhiteSpace($Note)
     $noteBodyRows = 0
     if ($hasNote) {
-        $noteLines = Get-MbExcelTextLineEstimate -Text $Note -CharactersPerLine 72
+        $noteCharacters = Get-MbExcelCharactersPerLine -AreaWidthPoints $TextAreaWidthPoints -FontSizePoints 11.0 -Fallback 72
+        $noteLines = Get-MbExcelTextLineEstimate -Text $Note -CharactersPerLine $noteCharacters
         $noteBodyRows = [int][Math]::Ceiling((($noteLines * 15.0) + 4.0) / 26.0)
         $noteBodyRows = [Math]::Max(2, [Math]::Min(30, $noteBodyRows))
     }
@@ -720,9 +785,11 @@ function Get-MbExcelStepCardLayout {
         $imageAspectRatio = $ImageWidth / [double]$ImageHeight
         $requiredImageHeightPoints = (570.0 * ($ImageHeight / [double]$ImageWidth)) + 18.0
         $imageRows = 1 + [int][Math]::Ceiling(([Math]::Max(0.0, $requiredImageHeightPoints - 20.0) / 26.0) - 0.000001)
-        # 高さが幅の3倍以上の画像は、カード全体が縦に伸びすぎないよう22行で止める。
+        # 高さが幅の3倍以上の画像は、カード全体が縦に伸びすぎないよう上限を設ける。
+        # ただし22行では、1:5のような極端な縦長が幅100pt程度の帯に潰れて読めなくなる。
+        # 1ページに収まる範囲で34行まで許し、幅を確保する。
         # 一般的な縦長（16:9を回転した程度）は従来どおり26行まで使用する。
-        $maximumImageRows = if ($imageAspectRatio -le (1.0 / 3.0)) { 22 } else { 26 }
+        $maximumImageRows = if ($imageAspectRatio -le (1.0 / 3.0)) { 34 } else { 26 }
         $imageRows = [Math]::Max(6, [Math]::Min($maximumImageRows, $imageRows))
     }
 
@@ -794,9 +861,11 @@ function Get-MbExcelAnnotationRenderTarget {
     $cropHeightRatio = if ($null -ne $Crop -and $Crop.PSObject.Properties.Name -contains 'height') { [double]$Crop.height } else { 1.0 }
     $effectivePixelWidth = [double]$ImageWidth * $cropWidthRatio
     $effectivePixelHeight = [double]$ImageHeight * $cropHeightRatio
+    # 縦長の特例(620)は、カード高さ22行＋高さ85%圧縮を前提にした値だった。
+    # その圧縮をやめ上限を34行へ広げたことで、実表示高さは通常と同じ水準になる。
     return [pscustomobject]@{
         Width = if ($effectivePixelHeight -gt 0 -and ($effectivePixelWidth / $effectivePixelHeight) -ge 3.0) { 646 } else { 760 }
-        Height = if ($effectivePixelWidth -gt 0 -and ($effectivePixelHeight / $effectivePixelWidth) -ge 3.0) { 620 } else { 880 }
+        Height = 880
     }
 }
 
@@ -849,7 +918,17 @@ function Add-MbExcelStepCard {
     # 画像のない手順は左半分を空けず、説明と補足をカード全幅で読ませる。
     # 編集画面が「画像なし手順の空白を縮小する」のと同じ考え方に揃える。
     $textColumn = if ($hasImage) { 'H' } else { 'A' }
-    $layout = Get-MbExcelStepCardLayout -Description $Description -Note $Note -ImageWidth $imageWidth -ImageHeight $imageHeight -HasImage $hasImage
+    # 行数の見積りは推測せず、Excelが返す実際の列幅(pt)から求める。
+    # 画像ありはH:L(約540pt)、画像なしはA:L(約1090pt)と倍近く違うため、
+    # 固定値のままでは画像ありカードで長い説明の末尾が隠れる。
+    $textAreaWidthPoints = 0.0
+    $textWidthProbe = $null
+    try {
+        $textWidthProbe = $Worksheet.Range("${textColumn}1:L1")
+        $textAreaWidthPoints = [double]$textWidthProbe.Width
+    } catch { $textAreaWidthPoints = 0.0 } finally { Release-MbExcelComObject $textWidthProbe }
+    $layout = Get-MbExcelStepCardLayout -Description $Description -Note $Note -ImageWidth $imageWidth -ImageHeight $imageHeight `
+        -HasImage $hasImage -TextAreaWidthPoints $textAreaWidthPoints
     $headerRow = $StartRow
     $contentStart = $StartRow + 1
     $contentEnd = $contentStart + [int]$layout.ContentRows - 1
@@ -1032,14 +1111,23 @@ function Add-MbExcelStepCard {
             $maxWidth = [double]$imageArea.Width - 18
             $maxHeight = [double]$imageArea.Height - 18
             # 小さな元画像は原寸感と鮮明さを保つため、Excelでは最大1.5倍に抑える。
-            # 3:1以上の細長い画像は、長辺方向いっぱいに広がらないよう通常寸法の85%へ制限する。
+            # 3:1以上の横長は、長辺方向いっぱいに広がらないよう通常寸法の85%へ制限する。
+            #
+            # 縦長には掛けない。縦長はカードの行数上限で既に高さを削られており、
+            # そこへ85%を重ねると幅まで一緒に縮んで判読できない細い帯になる
+            # （1000x5000で元の約13%）。縮小は行数上限の1回だけにする。
             $maximumImageScale = 1.5
             $compactImageWidthRatio = if (($originalWidth / $originalHeight) -ge 3.0) { 0.85 } else { 1.0 }
-            $compactImageHeightRatio = if (($originalHeight / $originalWidth) -ge 3.0) { 0.85 } else { 1.0 }
+            $compactImageHeightRatio = 1.0
             $effectiveMaxWidth = $maxWidth * $compactImageWidthRatio
             $effectiveMaxHeight = $maxHeight * $compactImageHeightRatio
             $scale = [Math]::Min($maximumImageScale, [Math]::Min($effectiveMaxWidth / $originalWidth, $effectiveMaxHeight / $originalHeight))
             $shape.Width = [single]($originalWidth * $scale)
+            # 極端な縦横比の画像は、どう配置しても固定幅のカードでは読める大きさにならない。
+            # 黙って細い帯を出さず、切り抜きを勧められるよう手順番号を控えておく。
+            if ($null -ne $script:MbExcelNarrowImageSteps -and [double]$shape.Width -lt ($maxWidth * 0.45)) {
+                [void]$script:MbExcelNarrowImageSteps.Add([int]$StepNumber)
+            }
             $shape.Left = [single]($imageArea.Left + (($imageArea.Width - $shape.Width) / 2))
             $shape.Top = [single]($imageArea.Top + (($imageArea.Height - $shape.Height) / 2))
             $shape.Placement = $xlMoveAndSize
@@ -1076,6 +1164,8 @@ function Invoke-MbExcelExport {
     $startedAt = [DateTime]::UtcNow.ToString('o')
     $totalSteps = 0
     foreach ($sheet in @($Project.sheets)) { $totalSteps += @($sheet.steps).Count }
+    # カード幅に対して細くなりすぎた画像を集める。極端な縦横比は切り抜きが要る。
+    $script:MbExcelNarrowImageSteps = New-Object System.Collections.ArrayList
     $status = [pscustomobject]@{
         jobId = $JobId
         state = 'running'
@@ -1091,6 +1181,7 @@ function Invoke-MbExcelExport {
         videoCount = 0
         outputDirectory = $OutputDirectory
         sheetNameMappings = @()
+        narrowImageSteps = @()
         ownedExcelPid = 0
         ownedExcelStartTimeUtc = ''
         ownershipMode = ''
@@ -1144,6 +1235,11 @@ function Invoke-MbExcelExport {
 
         Set-MbExcelStatusProgress -Status $status -StatusPath $StatusPath -Phase 'starting-excel' `
             -Message '安全確認のためExcelを起動しています' -CurrentStep 0 -TotalSteps $totalSteps -Percent 3
+        # $pidsBefore を採ってからここへ来るまでに時間が空く。その隙に利用者がExcelを
+        # 開くと、COMはROT経由でそのExcelへ接続するのに、PID差分では「自分のもの」と
+        # 見えてしまう。COM生成の直前の時刻を残し、所有プロセスがそれ以降に開始した
+        # ことを実体で確かめる。
+        $comCreateAtUtc = [DateTime]::UtcNow
         $excel = New-Object -ComObject Excel.Application
         $canQuitCom = ($pidsBefore.Count -eq 0)
         $resolved = Resolve-MbOwnedExcelProcess -Application $excel -PidsBefore $pidsBefore
@@ -1154,6 +1250,17 @@ function Invoke-MbExcelExport {
             if ($pidsBefore.Count -gt 0) { throw 'MB_EXCEL_OWNERSHIP_UNRESOLVED_WITH_EXISTING' }
             throw 'MB_EXCEL_OWNERSHIP_UNRESOLVED'
         }
+        # 自分で起動したExcelはCOM生成より後に始まる。それより前に始まっていたなら、
+        # 隙に開かれた利用者のExcelなので、設定を変える前に中止する。
+        $ownedStartTimeUtc = $null
+        try { $ownedStartTimeUtc = (Get-Process -Id $ownPid -ErrorAction Stop).StartTime.ToUniversalTime() } catch { }
+        if ($null -eq $ownedStartTimeUtc -or $ownedStartTimeUtc -lt $comCreateAtUtc.AddSeconds(-1)) {
+            throw 'MB_CONNECTED_TO_EXISTING_EXCEL'
+        }
+        # 起動直後のExcelはブックを持たない。開いていれば利用者のインスタンス。
+        $openWorkbookCount = -1
+        try { $openWorkbookCount = [int]$excel.Workbooks.Count } catch { $openWorkbookCount = -1 }
+        if ($openWorkbookCount -gt 0) { throw 'MB_CONNECTED_TO_EXISTING_EXCEL' }
 
         $ownershipProven = $true
         $canQuitCom = $true
@@ -1390,7 +1497,7 @@ function Invoke-MbExcelExport {
                         $imagePath = $sourcePath
                         $annotations = @($step.annotations)
                         $crop = if ($step.PSObject.Properties.Name -contains 'crop') { $step.crop } else { $null }
-                        $renderedPath = Join-Path $renderDirectory ("$($step.id).png")
+                        $renderedPath = Join-Path $renderDirectory ("$($step.id).jpg")
                         $renderTarget = Get-MbExcelAnnotationRenderTarget -ImageWidth ([int]$image.width) -ImageHeight ([int]$image.height) -Crop $crop
                         $imagePath = New-MbAnnotatedImage -SourcePath $sourcePath -Annotations $annotations -Crop $crop `
                             -DestinationPath $renderedPath -TargetDisplayWidth ([int]$renderTarget.Width) -TargetDisplayHeight ([int]$renderTarget.Height) -MaximumDisplayScale 1.5 -NumberFontName $bodyFont
@@ -1409,7 +1516,7 @@ function Invoke-MbExcelExport {
                             $resultImage = @($Project.images | Where-Object { $_.id -eq $step.resultImageId }) | Select-Object -First 1
                             if (-not $resultImage) { throw "操作後の結果画像が見つかりません: $($step.resultImageId)" }
                             $resultRenderTarget = Get-MbExcelAnnotationRenderTarget -ImageWidth ([int]$resultImage.width) -ImageHeight ([int]$resultImage.height) -Crop $resultCrop
-                            $resultRenderedPath = Join-Path $renderDirectory ("$($step.id)-result.png")
+                            $resultRenderedPath = Join-Path $renderDirectory ("$($step.id)-result.jpg")
                             $resultImagePath = New-MbAnnotatedImage -SourcePath $resultSourcePath -Annotations $resultAnnotations -Crop $resultCrop `
                                 -DestinationPath $resultRenderedPath -TargetDisplayWidth ([int]$resultRenderTarget.Width) -TargetDisplayHeight ([int]$resultRenderTarget.Height) -MaximumDisplayScale 1.5 -NumberFontName $bodyFont
                             if ($resultImagePath -eq $resultRenderedPath) { [void]$generatedImages.Add($resultRenderedPath) }
@@ -1419,7 +1526,7 @@ function Invoke-MbExcelExport {
                             if ($imageLayout -eq 'after') {
                                 $imagePath = $resultImagePath
                             } elseif ($imageLayout -in @('side-by-side', 'stacked')) {
-                                $comparisonPath = Join-Path $renderDirectory ("$($step.id)-before-after.png")
+                                $comparisonPath = Join-Path $renderDirectory ("$($step.id)-before-after.jpg")
                                 $orientation = if ($imageLayout -eq 'side-by-side') { 'horizontal' } else { 'vertical' }
                                 $imagePath = New-MbBeforeAfterImage -BeforePath $imagePath -AfterPath $resultImagePath `
                                     -DestinationPath $comparisonPath -FontName $bodyFont -Orientation $orientation -Order $imageOrder
@@ -1642,7 +1749,10 @@ function Invoke-MbExcelExport {
                 'MB_EXCEL_OWNERSHIP_UNRESOLVED_WITH_EXISTING' { 'Excelが起動中で、作成用Excelを安全に識別できません。Excelを閉じて再実行してください。' }
                 'MB_EXCEL_OWNERSHIP_UNRESOLVED' { '作成用Excelの安全確認ができませんでした。' }
                 'MB_EXCEL_OWNERSHIP_API_UNAVAILABLE' { 'Excelの所有確認に必要なWindows機能を利用できません。' }
-                default { 'Excelファイルを作成できませんでした: ' + $message }
+                # COMの例外文（"Exception from HRESULT: 0x800A03EC" など）をそのまま画面へ出さない。
+                # 読み手は部内の非エンジニアで、英語のHRESULTからは次の一手が分からない。
+                # 原因追跡用の生メッセージは errorCode 側に残している。
+                default { 'Excelファイルを作成できませんでした。Excelをすべて閉じてから、もう一度お試しください。解決しない場合は、デスクトップ版Excelが使えるか確認してください。' }
             }
         }
     } finally {
@@ -1700,6 +1810,7 @@ function Invoke-MbExcelExport {
         $status.phase = 'completed'
         $status.message = 'Excelファイルを作成しました'
         $status.percent = 100
+        $status.narrowImageSteps = @($script:MbExcelNarrowImageSteps | Sort-Object -Unique)
     }
     $status.completedAt = [DateTime]::UtcNow.ToString('o')
     Write-MbExcelStatus -StatusPath $StatusPath -Status $status

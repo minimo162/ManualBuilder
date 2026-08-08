@@ -42,11 +42,7 @@ $required = @(
     'src\ManualBuilder.Word.psm1',
     'src\Export-ManualBuilderWord.ps1',
     'src\ManualBuilder.Ocr.psm1',
-    'src\ManualBuilder.Copilot.psm1',
-    'src\ManualBuilder.CopilotJob.psm1',
-    'src\ManualBuilder.CopilotServer.psm1',
-    'src\Initialize-ManualBuilderCopilot.ps1',
-    'src\Invoke-ManualBuilderCopilotJob.ps1',
+    'src\ManualBuilder.VideoScene.psm1',
     'src\ManualBuilder.Recorder.psm1',
     'src\ManualBuilder.RecorderServer.psm1',
     'src\ManualBuilder.RecorderCopilot.psm1',
@@ -60,10 +56,7 @@ $required = @(
     'src\RecorderCompanion\vendor\WebView2\Microsoft.Web.WebView2.Core.dll',
     'src\RecorderCompanion\vendor\WebView2\Microsoft.Web.WebView2.Wpf.dll',
     'src\RecorderCompanion\vendor\WebView2\WebView2Loader.dll',
-    'src\Invoke-ManualBuilderRecorderCopilot.ps1',
     'src\Invoke-ManualBuilderUiaRecorder.ps1',
-    'src\ManualBuilder.Dictation.psm1',
-    'src\Invoke-ManualBuilderDictation.ps1',
     'web\index.html',
     'web\assets\css\app.css',
     'web\assets\js\app.js',
@@ -233,7 +226,12 @@ Add-Result (($excelModuleText -match 'TargetDisplayWidth') -and ($excelModuleTex
 Add-Result (($excelModuleText -match '\$descriptionLines \* 16\.0') -and ($excelModuleText -match '\$noteLines \* 15\.0') -and ($excelModuleText -match '\$visualLength') -and ($excelModuleText -match '0\.55')) '長文を文字幅と物理行高から見積もって余白を抑える'
 Add-Result (($excelModuleText -match '\$descriptionEnd = \[Math\]::Min\(\$contentEnd, \$descriptionStart \+ \[int\]\$layout\.DescriptionBodyRows - 1\)') -and ($excelModuleText -match '\$noteLabelRow = if \(\$hasNote\) \{ \$descriptionEnd \+ 1 \}') -and ($excelModuleText -match 'NoteBodyRows')) 'Excelの説明と補足を必要な高さだけ表示する'
 Add-Result (($excelModuleText -match '\$maximumImageScale = 1\.5') -and ($excelModuleText -match 'MaximumDisplayScale 1\.5')) 'Excelで小さな元画像の拡大を最大1.5倍に抑える'
-Add-Result (($excelModuleText -match '\$compactImageWidthRatio = if .*?-ge 3\.0.*?0\.85') -and ($excelModuleText -match '\$compactImageHeightRatio = if .*?-ge 3\.0.*?0\.85') -and ($excelModuleText -match 'Width = if .*?646.*?760') -and ($excelModuleText -match 'Height = if .*?620.*?880') -and ([regex]::Matches($excelModuleText, 'Get-MbExcelAnnotationRenderTarget -ImageWidth').Count -ge 2)) 'Excelで操作前・操作後とも極端に細長い画像を長辺方向85%へ抑える'
+# 横長は85%へ抑えるが、縦長には掛けない。縦長はカードの行数上限で既に高さを削っており、
+# そこへ85%を重ねると幅まで縮んで判読できない細い帯になる。
+Add-Result (($excelModuleText -match '\$compactImageWidthRatio = if .*?-ge 3\.0.*?0\.85') -and ($excelModuleText -match '\$compactImageHeightRatio = 1\.0') -and ($excelModuleText -match 'Width = if .*?646.*?760') -and ($excelModuleText -match '(?m)^\s*Height = 880\s*$') -and ([regex]::Matches($excelModuleText, 'Get-MbExcelAnnotationRenderTarget -ImageWidth').Count -ge 2)) 'Excelで極端な横長だけを85%へ抑え、縦長は二重に縮めない'
+Add-Result (($excelModuleText -match '\$maximumImageRows = if \(\$imageAspectRatio -le \(1\.0 / 3\.0\)\) \{ 34 \}') -and ($excelModuleText -match 'narrowImageSteps') -and ($jsText -match 'narrowImageSteps')) '細く表示された手順を出力後に利用者へ知らせる'
+Add-Result (($excelModuleText -match 'function Get-MbExcelCharactersPerLine') -and ($excelModuleText -match '\$textAreaWidthPoints = \[double\]\$textWidthProbe\.Width') -and ($excelModuleText -match '-TextAreaWidthPoints \$textAreaWidthPoints')) '文章欄の実幅から行数を見積もり、結合セルで末尾を隠さない'
+Add-Result (($excelModuleText -match 'function Save-MbExcelRenderedImage') -and ($excelModuleText -match '\$MaximumOutputEdge = 1600') -and ($excelModuleText -match 'Encoder\]::Quality') -and ($excelModuleText -match 'Save-MbExcelRenderedImage -Bitmap \$bitmap -DestinationPath \$DestinationPath -JpegQuality 90')) 'Excelへ渡す派生画像を表示寸法まで縮めてJPEGで書き出す'
 Add-Result ($excelModuleText -match 'if \(\$hasNote\)') '補足がある場合だけExcelへ補足欄を出す'
 Add-Result ($excelModuleText -match '使い方　シート名をクリックして開き') 'Excel目次に最初の読み方を表示する'
 Add-Result (($excelModuleText -match '\$sheetTitle\.Value2 = .*?\{0:D2\}') -and ($excelModuleText -match '全 \$stepCount 手順') -and ($excelModuleText -match '\$startRow = 3')) '各Excelシートでセクション番号と総手順数を表示する'
@@ -298,7 +296,8 @@ Add-Result ($cssText -match 'step-nav__item:nth-last-child\(-n \+ 3\) \.step-nav
 Add-Result (($webModuleText -notmatch 'data-step-card-delete') -and ($webModuleText -notmatch 'data-step-move=')) '編集カードから重複する整理操作を外す'
 Add-Result (($webModuleText -match 'data-add-step-end[^>]*>＋ 手順を追加') -and ($jsText -match 'addStepAtEnd')) '通常の追加は一覧末尾へ統一する'
 Add-Result (($webModuleText -notmatch 'data-step-select-mode|data-step-select"') -and ($cssText -notmatch '\.step-nav__select|\.step-nav__drag')) '専用の選択ボタン・チェックボックス・取っ手を使わない'
-Add-Result (($jsText -notmatch '⠿で並べ替え') -and ($jsText -match 'カードをつかんで並べ替え')) 'ドラッグ後も専用取っ手の古い案内へ戻さない'
+Add-Result (($jsText -notmatch '⠿で並べ替え') -and ($jsText -match '手順をつかんで並べ替え') -and
+    ($webModuleText -match '手順をつかんで並べ替え')) 'ドラッグ前後で並べ替え案内の文言を変えない'
 Add-Result (($jsText -match 'selectStepFromPointer') -and ($jsText -match 'event\.ctrlKey \|\| event\.metaKey') -and ($jsText -match 'event\.shiftKey')) 'Ctrl・Command追加選択とShift範囲選択を実装する'
 Add-Result (($webModuleText -match 'editor-shortcut') -and ($jsText -match "event\.key === 'Enter'") -and
     ($jsText -match 'setActiveStep\(nextCard\.dataset\.stepId\)')) 'Ctrl+Enterで同じ入力欄のまま次の手順へ進める'
@@ -362,9 +361,6 @@ Add-Result ($cssText -match '--accent: #3a5ba0') 'ミニマルUIのアクセン�
 Add-Result ($cssText -notmatch 'linear-gradient') 'グラデーションを使用しない'
 
 $ocrModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.Ocr.psm1'), [Text.Encoding]::UTF8)
-$copilotModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.Copilot.psm1'), [Text.Encoding]::UTF8)
-$copilotServerText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.CopilotServer.psm1'), [Text.Encoding]::UTF8)
-$copilotJobText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.CopilotJob.psm1'), [Text.Encoding]::UTF8)
 $sceneText = [IO.File]::ReadAllText((Join-Path $repoRoot 'web\assets\js\video-scenes.js'), [Text.Encoding]::UTF8)
 Add-Result ($indexText -match 'video-scenes\.js') '場面分割のスクリプトを読み込む'
 Add-Result ($jsText -match 'data-video-auto') '録画を自動で手順へ分けるボタンがある'
@@ -393,11 +389,10 @@ Add-Result ($projectModuleText -match 'Add-MbPropertyIfMissing \$step ''capture'
 $recorderModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.Recorder.psm1'), [Text.Encoding]::UTF8)
 $recorderServerText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.RecorderServer.psm1'), [Text.Encoding]::UTF8)
 $recorderCopilotText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.RecorderCopilot.psm1'), [Text.Encoding]::UTF8)
-$recorderCopilotWorkerText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\Invoke-ManualBuilderRecorderCopilot.ps1'), [Text.Encoding]::UTF8)
+$controllerHtmlText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\RecorderCompanion\web\index.html'), [Text.Encoding]::UTF8)
+$wordModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.Word.psm1'), [Text.Encoding]::UTF8)
 $localDraftText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.LocalDraft.psm1'), [Text.Encoding]::UTF8)
-Add-Result (($copilotJobText -notmatch '(?m)^Import-Module .+ -Force$') -and
-    ($copilotServerText -notmatch '(?m)^Import-Module .+ -Force$') -and
-    ($recorderServerText -notmatch '(?m)^Import-Module .+ -Force$')) '入れ子のモジュールが共有コマンドを強制再読込しない'
+Add-Result ($recorderServerText -notmatch '(?m)^Import-Module .+ -Force$') '入れ子のモジュールが共有コマンドを強制再読込しない'
 Add-Result ($recorderModuleText -match 'AutomationElement\]::FromPoint') '押した位置のコントロールをUI Automationから取る'
 Add-Result ($recorderModuleText -match 'SetProcessDpiAwarenessContext') '高DPIで座標がずれないようDPI認識にする'
 Add-Result ($recorderModuleText -match 'SetWindowsHookEx' -and
@@ -446,10 +441,6 @@ Add-Result (($recorderCopilotText -match 'Add-MbRecorderFrameVisualMetrics') -an
     ($recorderCopilotText -match "actionKind = 'visual-change'") -and
     ($recorderServerText -match "title = '画面の変化を確認'")) `
     'イベントを取り逃した区間を画面差分の要確認候補として補う'
-Add-Result ($recorderCopilotWorkerText -match 'Select-MbRecorderCopilotSourceFrames -Frames \$allFrames -Events \$events -Maximum 20' -and
-    $recorderCopilotWorkerText -notmatch 'New-MbRecorderLocalFrameCandidates -Frames \$eventWindowFrames' -and
-    $recorderCopilotWorkerText -notmatch 'Select-MbRecorderCandidateFrames -Frames \$eventWindowFrames' -and
-    $recorderCopilotWorkerText -match '\$perPacket = 1') 'ローカル候補で先に決めず変化前後を含む最大20コマを読みやすい一覧画像1枚ずつへ収める'
 Add-Result (($recorderModuleText -match 'if \(-not \[string\]::IsNullOrWhiteSpace\(\$snapshotTitle\)\)') -and
     ($recorderModuleText -match '\$windowTitle\.IndexOf\(\$snapshotTitle')) '遷移後ページのタイトルだけで古いDOM対象を許可しない'
 Add-Result (($jsText -notmatch 'data-recorder-mode') -and
@@ -466,8 +457,8 @@ Add-Result (($serverText -match 'localProposals = \$localProposals') -and
     ($recorderServerText -match 'Get-MbRecordedLocalProposals') -and
     ($jsText -match 'renderRecordedProposals\(recorder\.localProposals\)')) `
     '安定フレームのローカル候補を確認する'
-Add-Result (($jsText -match 'まだ取り込んでいない記録を破棄しますか') -and
-    ($jsText -match "dialog\.addEventListener\('cancel'")) '記録中・確認中の誤操作で結果を即破棄しない'
+Add-Result (($jsText -match '取り込んでいない記録があります。捨てて閉じますか') -and
+    ($jsText -match "dialog\.addEventListener\('cancel'")) '記録中の誤操作で結果を即破棄しない'
 Add-Result (($jsText -match 'recorder-proposal__shot') -and
     ($recorderServerText -match 'Test-MbRecordedSelectionAnchorContext') -and
     ($recorderServerText -match 'Set-MbStepAnnotations')) 'ローカル候補の操作前後と赤枠候補を確認できる'
@@ -500,8 +491,9 @@ Add-Result (($jsText -match 'data-recorder-filter') -and
     ($jsText -match 'recorder-shot-preview') -and
     ($cssText -match '\.recorder-review-tools\s*\{[\s\S]*?position: sticky')) '長い記録を絞り込み、一括解除し、画像を拡大確認できる'
 Add-Result (($webModuleText -match 'data-step-edit') -and
-    ($jsText -match "control\.tabIndex = -1") -and
-    ($jsText -match "applyStepView\('focus'\)")) '一覧確認では操作数を絞り、選んだ1件を集中編集できる'
+# 既定表示のこのモードで入力欄も画像編集も見えたまま操作できるため、Tab順から外さない。
+    ($jsText -notmatch "control\.tabIndex = -1") -and
+    ($jsText -match "applyStepView\('focus'\)")) '一覧確認の入力欄をキーボードから操作でき、選んだ1件を集中編集もできる'
 Add-Result (($jsText -match '普段どおり操作すると') -and
     ($jsText -match '手順候補を作成') -and
     ($jsText -notmatch '録画全体から必要な場面')) '操作記録と既存録画を混同しない案内にする'
@@ -550,8 +542,61 @@ Add-Result ($serverText -notmatch '/api/narration/transcribe') '録画からの�
 Add-Result ($sceneText2 -notmatch 'extractNarration') '録画から音声を取り出さない'
 Add-Result (($webModuleText -notmatch '文章をまとめて整える') -and
     ($serverText -notmatch '/api/copilot/draft')) '文章整形を外部AIへ依頼する機能を持たない'
+# --- 失敗時に利用者が次の一手を選べること ---
+# 例外の原文・HTTPステータス・内部識別子を画面へ出さない。読み手は部内の非エンジニアで、
+# 英語のHRESULTや「HTTP 500」からは待てば直るのか担当者に言うべきかを判断できない。
+Add-Result ($jsText -notmatch 'HTTP \$\{') '通信失敗をHTTPステータスのまま表示しない'
+Add-Result ($jsText -match 'const describeHttpFailure') '通信失敗を日本語の次の一手へ言い換える'
+Add-Result (($wordModuleText -notmatch 'Wordファイルを作成できませんでした: ') -and
+    ($excelModuleText -notmatch 'Excelファイルを作成できませんでした: ')) 'Office出力の失敗にCOMの例外文をそのまま出さない'
+Add-Result (($serverText -match 'function Get-MbSaveFailureMessage') -and
+    ($serverText -notmatch 'ConvertTo-MbSaveStatusHtml -Message')) '保存失敗に例外の原文を渡さない'
+Add-Result (($serverText -notmatch "'not found'") -and ($serverText -notmatch "'method not allowed'")) '英語のままの応答を画面へ返さない'
+Add-Result (($jsText -match 'data-export-retry') -and ($jsText -match 'data-word-export-retry')) '出力に失敗したその場で作り直せる'
+
+# 記録レシートの×は「終了して確認」へ進むのに、本体の×は破棄だった。
+Add-Result (($jsText -match '記録中です。') -and ($jsText -match '記録レシートの')) '記録中の誤った出口で記録を捨てない'
+
+# --- 呼称の統一 ---
+Add-Result (($jsText -notmatch '操作後画像を追加') -and ($webModuleText -notmatch '比較画像を追加') -and
+    ($controllerHtmlText -notmatch '結果画面を追加')) '操作後の画像を「結果画像」で統一する'
+# このアプリの「削除」は必ず元に戻せる操作。戻せない直前取り消しには使わない。
+Add-Result (($controllerHtmlText -notmatch '直前の記録を削除') -and
+    ($controllerHtmlText -match '直前の操作を取り消す')) '戻せない直前取り消しに「削除」を使わない'
+Add-Result (($jsText -notmatch '確認待ち') -and ($webModuleText -notmatch '確認待ち')) '要確認の状態を1つの呼称で示す'
+Add-Result ($jsText -notmatch '差し替えできません') '可能形の誤りを画面へ出さない'
+
 Add-Result ($serverText -notmatch 'PowerPoint') 'PowerPoint出力を持たない'
 Add-Result ($jsText -notmatch '(?i)powerpoint') '画面にPowerPoint出力が残っていない'
+
+# 画面本体を無認証で返さない。ここが開いていると、127.0.0.1へ繋げるだけの
+# ローカルプロセスが GET / の1回でセッショントークンを入手し、記録開始まで呼べる。
+Add-Result (($serverText -match '\$isShell = \(\$Path -eq ''/''\)') -and
+    ($serverText -match '-or \$isImage -or \$isShell') -and
+    ($serverText -match '\$entryUrl = \$url \+ ''\?token='' \+ \$token')) `
+    '画面本体もセッショントークンで保護し、入口URLだけで渡す'
+
+# 廃止した機能のソースを消し残さない。残っていると、引き継いだ人が
+# 「Copilotは使える機能だ」と読み違え、到達不能なコードを保守し続けることになる。
+$removedSources = @(
+    'src\ManualBuilder.Copilot.psm1',
+    'src\ManualBuilder.CopilotJob.psm1',
+    'src\ManualBuilder.CopilotServer.psm1',
+    'src\Initialize-ManualBuilderCopilot.ps1',
+    'src\Invoke-ManualBuilderCopilotJob.ps1',
+    'src\Invoke-ManualBuilderRecorderCopilot.ps1',
+    'src\ManualBuilder.Dictation.psm1',
+    'src\Invoke-ManualBuilderDictation.ps1'
+)
+foreach ($removedSource in $removedSources) {
+    Add-Result (-not (Test-Path -LiteralPath (Join-Path $repoRoot $removedSource))) `
+        ('廃止した外部AI・音声認識のソースを残さない: ' + $removedSource)
+}
+# 場面取り込みの実装をひとつに保つ。以前は起動スクリプトと CopilotServer に
+# 同名の Import-MbVideoScene があり、回帰試験は出荷されない側を検証していた。
+Add-Result (($serverText -notmatch '(?m)^function Import-MbVideoScene') -and
+    (Test-Path -LiteralPath (Join-Path $repoRoot 'src\ManualBuilder.VideoScene.psm1'))) `
+    '録画場面の取り込みをモジュール1つに集約する'
 
 $excelWorkerText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\Export-ManualBuilderExcel.ps1'), [Text.Encoding]::UTF8)
 Add-Result ($excelWorkerText.Contains("Import-Module (Join-Path `$PSScriptRoot 'ManualBuilder.Capture.psm1') -Force")) `

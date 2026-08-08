@@ -262,7 +262,7 @@ if (appJs) {
   check('誤った赤枠だけをその場で外せる', appJs.includes('removeFocusRects') && appJs.includes("item?.type !== 'rect'"));
   check('出力前に完成状態を確認できる', appJs.includes('openOutputReviewDialog'));
   check('記録と出力のダイアログからTab移動を外へ逃がさない', appJs.includes('keepDialogFocusInside(dialog)'));
-  check('出力前の不足内容を文章・画像・確認待ちに分ける', appJs.includes("issueLabels.push(`説明なし") && appJs.includes("issueLabels.push(`画像なし") && appJs.includes("issueLabels.push(`確認待ち"));
+  check('出力前の不足内容を説明・画像・要確認に分ける', appJs.includes("issueLabels.push(`説明なし") && appJs.includes("issueLabels.push(`画像なし") && appJs.includes("issueLabels.push(`要確認"));
   check('不要候補へ移動すると既存の複数選択を解除する', /const selectDeleteCandidatesOnCurrentSheet[\s\S]{0,260}selectedStepIds\.clear\(\)/.test(appJs));
   check('全シートの仕上げ状況を読み込む', appJs.includes('projectFinishItems') && appJs.includes('data-project-finish-data'));
   check('構造変更と出力の前に保存待ちする', appJs.includes('flushPendingStructuralSaves'));
