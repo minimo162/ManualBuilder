@@ -368,7 +368,7 @@ function New-MbRoundedRectanglePath {
 function New-MbAnnotatedImage {
     param(
         [Parameter(Mandatory = $true)][string]$SourcePath,
-        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Annotations,
+        [Parameter(Mandatory = $true)][AllowNull()][AllowEmptyCollection()][object[]]$Annotations,
         [AllowNull()][object]$Crop,
         [Parameter(Mandatory = $true)][string]$DestinationPath,
         [ValidateRange(100, 4000)][int]$TargetDisplayWidth = 760,
@@ -378,13 +378,17 @@ function New-MbAnnotatedImage {
         [AllowEmptyString()][string]$NumberFontName = ''
     )
     if ([string]::IsNullOrWhiteSpace($NumberFontName)) { $NumberFontName = Resolve-MbExcelBodyFont }
+    [object[]]$safeAnnotations = @()
+    if ($null -ne $Annotations) {
+        $safeAnnotations = @($Annotations | Where-Object { $null -ne $_ })
+    }
 
     $cropX = if ($null -ne $Crop -and $Crop.PSObject.Properties.Name -contains 'x') { [double]$Crop.x } else { 0.0 }
     $cropY = if ($null -ne $Crop -and $Crop.PSObject.Properties.Name -contains 'y') { [double]$Crop.y } else { 0.0 }
     $cropWidth = if ($null -ne $Crop -and $Crop.PSObject.Properties.Name -contains 'width') { [double]$Crop.width } else { 1.0 }
     $cropHeight = if ($null -ne $Crop -and $Crop.PSObject.Properties.Name -contains 'height') { [double]$Crop.height } else { 1.0 }
     $requiresCrop = $cropX -gt 0.000001 -or $cropY -gt 0.000001 -or $cropWidth -lt 0.999999 -or $cropHeight -lt 0.999999
-    if (@($Annotations).Count -eq 0 -and -not $requiresCrop) { return $SourcePath }
+    if ($safeAnnotations.Length -eq 0 -and -not $requiresCrop) { return $SourcePath }
     $source = $null
     $bitmap = $null
     $graphics = $null
@@ -447,7 +451,7 @@ function New-MbAnnotatedImage {
         $numberFormat.Alignment = [Drawing.StringAlignment]::Center
         $numberFormat.LineAlignment = [Drawing.StringAlignment]::Center
 
-        foreach ($annotation in @($Annotations)) {
+        foreach ($annotation in $safeAnnotations) {
             $x1 = [single](([double]$annotation.x1 * $source.Width) - $cropLeft)
             $y1 = [single](([double]$annotation.y1 * $source.Height) - $cropTop)
             $x2 = [single](([double]$annotation.x2 * $source.Width) - $cropLeft)
@@ -1397,7 +1401,10 @@ function Invoke-MbExcelExport {
                             if (-not $resultSourcePath -or -not (Test-Path -LiteralPath $resultSourcePath -PathType Leaf)) {
                                 throw "操作後の結果画像が見つかりません: $($step.resultImageId)"
                             }
-                            $resultAnnotations = if ($step.PSObject.Properties.Name -contains 'resultAnnotations') { @($step.resultAnnotations) } else { @() }
+                            $resultAnnotations = @()
+                            if ($step.PSObject.Properties.Name -contains 'resultAnnotations' -and $null -ne $step.resultAnnotations) {
+                                $resultAnnotations = @($step.resultAnnotations | Where-Object { $null -ne $_ })
+                            }
                             $resultCrop = if ($step.PSObject.Properties.Name -contains 'resultCrop') { $step.resultCrop } else { $null }
                             $resultImage = @($Project.images | Where-Object { $_.id -eq $step.resultImageId }) | Select-Object -First 1
                             if (-not $resultImage) { throw "操作後の結果画像が見つかりません: $($step.resultImageId)" }

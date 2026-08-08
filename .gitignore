@@ -8,6 +8,7 @@
 **/out/
 **/.tmp/
 **/tmp/
+**/.webview-test-*/
 /.tmp-*/
 
 # Generated reports and Office/PDF outputs

@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>ManualBuilder Recorder</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell" id="app-shell">
+    <header class="titlebar" id="drag-region">
+      <div class="recording-summary">
+        <span class="status-dot" id="status-dot" aria-hidden="true"></span>
+        <div class="status-copy">
+          <strong id="state-label" role="status" aria-live="polite">記録の準備中</strong>
+          <span id="count-label">操作を待っています</span>
+        </div>
+      </div>
+      <div class="titlebar-actions">
+        <button class="quiet-button return-button" id="compact-button" type="button">画像確認を閉じる</button>
+        <button class="window-button" id="minimize-button" type="button" aria-label="最小化">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 10.5h10"/></svg>
+        </button>
+        <button class="window-button close-button" id="close-button" type="button" aria-label="閉じる">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m6 6 8 8m0-8-8 8"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="monitor" id="monitor">
+      <section class="context-row" aria-labelledby="target-heading">
+        <div>
+          <span class="eyebrow" id="target-heading">直前の操作</span>
+          <h1 id="target-label">直前の操作はまだありません</h1>
+        </div>
+        <div class="view-switcher">
+          <button class="view-button" id="compare-button" type="button" aria-pressed="false" hidden>結果画像も見る</button>
+        </div>
+      </section>
+
+      <section class="preview-stage" id="preview-stage" aria-label="直前の操作画像">
+        <div class="empty-preview" id="empty-preview">
+          <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="4" y="6" width="24" height="19" rx="3"/><path d="m8 21 6-6 4 4 3-3 7 7"/><circle cx="22" cy="11" r="2"/></svg>
+          <strong>操作すると、ここに画像が表示されます</strong>
+          <span>対象アプリへ戻って、いつもどおり作業してください。</span>
+        </div>
+        <figure class="preview-card before-card" id="before-card" hidden>
+          <figcaption>操作した場所</figcaption>
+          <img id="before-image" alt="直前に操作した場所の画面">
+        </figure>
+        <figure class="preview-card after-card" id="after-card" hidden>
+          <figcaption>操作後の結果</figcaption>
+          <img id="after-image" alt="直前の操作後の結果画面">
+        </figure>
+      </section>
+
+      <footer class="commandbar">
+        <p class="help-text" id="help-text" role="status" aria-live="polite">対象アプリでいつもどおり操作してください。クリックや入力は自動で記録されます。</p>
+        <div class="command-actions">
+          <button class="secondary-button" id="pause-button" type="button">一時停止</button>
+          <button class="secondary-button" id="undo-button" type="button" disabled>直前の記録を削除</button>
+          <button class="secondary-button" id="result-button" type="button" disabled>結果画面を追加</button>
+          <button class="primary-button" id="finish-button" type="button" disabled>終了して確認</button>
+        </div>
+      </footer>
+    </main>
+
+    <section class="compact-panel" id="compact-panel" aria-label="記録レシート" hidden>
+      <div class="receipt-panel">
+        <div class="compact-target">
+          <span>記録レシート</span>
+          <strong id="compact-target-label">操作を待っています</strong>
+        </div>
+        <ol class="receipt-list" id="receipt-list" aria-label="最近記録した操作">
+          <li class="receipt-empty">操作すると、ここに直近3件が表示されます</li>
+        </ol>
+      </div>
+      <div class="compact-actions" aria-label="記録の操作">
+        <button class="icon-text-button" id="compact-pause-button" type="button">一時停止</button>
+        <button class="icon-text-button" id="compact-undo-button" type="button" disabled>直前を削除</button>
+        <button class="primary-button" id="compact-finish-button" type="button" disabled>終了して確認</button>
+        <button class="quiet-button" id="expand-button" type="button">直前画像を確認</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" id="close-confirm" hidden>
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="close-title" aria-describedby="close-description">
+      <div class="modal-icon" aria-hidden="true">?</div>
+      <h2 id="close-title">記録を終了しますか？</h2>
+      <p id="close-description">終了すると、ManualBuilderで記録した操作を確認できます。</p>
+      <div class="modal-actions">
+        <button class="secondary-button" id="cancel-close-button" type="button">記録を続ける</button>
+        <button class="primary-button" id="confirm-close-button" type="button">終了して確認</button>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    window.addEventListener('error', function (event) {
+      window.chrome && window.chrome.webview && window.chrome.webview.postMessage(JSON.stringify({
+        type: 'client-error', message: event.message || 'JavaScript error', line: String(event.lineno || '')
+      }));
+    });
+  </script>
+  <script src="app.js"></script>
+</body>
+</html>

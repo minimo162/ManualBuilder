@@ -44,13 +44,15 @@ body {
 
 button,
 input,
-textarea {
+textarea,
+select {
   font: inherit;
 }
 
 button,
 input,
 textarea,
+select,
 summary {
   outline: none;
 }
@@ -60,6 +62,7 @@ summary {
 button:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
+select:focus-visible,
 summary:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 1px;
@@ -70,6 +73,7 @@ summary:focus-visible {
   button:focus-visible,
   input:focus-visible,
   textarea:focus-visible,
+  select:focus-visible,
   summary:focus-visible {
     outline: 2px solid Highlight;
     outline-offset: 1px;
@@ -304,9 +308,12 @@ button:disabled {
   color: var(--success);
 }
 
-.watch-status--standby,
-.watch-status--disabled {
+.watch-status--standby {
   color: var(--warning);
+}
+
+.watch-status--disabled {
+  color: var(--text-muted);
 }
 
 .button,
@@ -473,8 +480,8 @@ button:disabled {
   overflow: hidden;
   padding: 0 8px;
   color: var(--accent);
-  font-size: 11px;
-  line-height: 1.3;
+  font-size: 12px;
+  line-height: 1.4;
   opacity: 0;
   transition: height 120ms ease, opacity 120ms ease;
 }
@@ -643,8 +650,8 @@ button:disabled {
 .step-nav__guide {
   padding: 0 8px 5px;
   color: var(--text-3);
-  font-size: 10px;
-  line-height: 1.3;
+  font-size: 12px;
+  line-height: 1.4;
   opacity: 1;
   transition: color 120ms ease;
 }
@@ -1097,7 +1104,7 @@ button:disabled {
 .finish-guide__checks {
   min-width: 0;
   display: grid;
-  grid-template-columns: repeat(5, minmax(84px, 1fr));
+  grid-template-columns: repeat(3, minmax(84px, 1fr));
   gap: 5px;
 }
 
@@ -1178,7 +1185,8 @@ kbd {
 .step-review-toolbar__heading span {
   margin-top: 2px;
   color: var(--text-3);
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .step-view-options,
@@ -1334,6 +1342,22 @@ kbd {
   align-items: center;
   gap: 2px;
   margin-left: auto;
+}
+
+.step-card__edit {
+  min-height: 30px;
+  margin-left: auto;
+  padding: 0 10px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.workspace.step-view--focus .step-card__edit {
+  display: none;
 }
 
 .drag-handle,
@@ -1648,6 +1672,28 @@ kbd {
   border: 1px solid var(--border);
   border-radius: 8px;
 }
+
+.result-image-available {
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  background: var(--surface-inset);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.result-image-available > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.result-image-available strong { font-size: 13px; }
+.result-image-available span { color: var(--text-3); font-size: 11px; }
+.result-image-available button { flex: 0 0 auto; }
 
 .image-layout-editor__heading {
   display: flex;
@@ -2047,11 +2093,13 @@ kbd {
   border-top: 1px solid var(--border);
 }
 
-.empty-state__alternatives > span {
+.empty-state__alternatives > summary {
   display: block;
   color: var(--text-3);
   font-size: 11px;
   font-weight: 700;
+  cursor: pointer;
+  list-style-position: inside;
 }
 
 .empty-state__actions {
@@ -3042,6 +3090,23 @@ kbd {
   padding: 54px 0 28px;
 }
 
+.skip-link {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 10000;
+  padding: 9px 12px;
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--accent);
+  font-weight: 700;
+  transform: translateY(-160%);
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+}
+
 .project-library__intro {
   display: flex;
   align-items: flex-end;
@@ -3459,6 +3524,10 @@ kbd {
   .topbar__actions {
     grid-column: 2 / -1;
     justify-content: flex-end;
+  }
+
+  .editor__actions .button {
+    white-space: nowrap;
   }
 
   .app-layout {
@@ -4043,10 +4112,77 @@ kbd {
 }
 
 .copilot-capability {
-  margin: 10px 0 0;
+  margin: 0;
   font-size: 12px;
   line-height: 1.6;
   color: var(--text-muted);
+}
+
+.recorder-capability-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.recorder-capability-status .copilot-capability {
+  flex: 1 1 360px;
+}
+
+.recorder-controller-unavailable {
+  color: var(--warning-text, #8a4b00);
+  background: var(--warning-surface, #fff7e6);
+  border: 1px solid var(--warning-border, #e7b96a);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.recorder-complete-bar {
+  position: fixed;
+  z-index: 1250;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  max-width: min(760px, calc(100vw - 28px));
+  padding: 10px 12px 10px 16px;
+  color: var(--text-primary);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg);
+}
+
+.recorder-complete-bar__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.recorder-complete-bar__close {
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text-muted);
+  background: transparent;
+  font-size: 18px;
+  cursor: pointer;
+}
+
+@media (max-width: 700px) {
+  .recorder-complete-bar {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .recorder-complete-bar__actions {
+    flex-wrap: wrap;
+  }
 }
 
 .copilot-list {
@@ -4226,6 +4362,157 @@ kbd {
   line-height: 1.6;
 }
 
+.recorder-capture-quality {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(170px, 230px);
+  align-items: center;
+  gap: 16px;
+  margin: 14px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-inset);
+}
+
+.recorder-capture-quality > span {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.recorder-capture-quality small {
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.recorder-capture-quality select {
+  width: 100%;
+  min-height: 40px;
+  padding: 7px 10px;
+  border: 1px solid var(--border-strong, var(--border));
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+.recorder-privacy-alert {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border: 1px solid #ebc768;
+  border-radius: 8px;
+  color: var(--text-2);
+  background: var(--warning-soft);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.recorder-capture-warning {
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: 1px solid #e9b949;
+  border-radius: 10px;
+  background: #fff8df;
+  color: #633c00;
+  font-weight: 700;
+  line-height: 1.55;
+}
+
+.recorder-proposal__editor {
+  display: grid;
+  gap: 10px;
+  margin-top: 4px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.recorder-proposal__editor label {
+  display: grid;
+  gap: 5px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.recorder-proposal__editor input,
+.recorder-proposal__editor textarea {
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+.recorder-proposal__editor input { min-height: 40px; padding: 8px 10px; }
+.recorder-proposal__editor textarea { min-height: 78px; padding: 9px 10px; resize: vertical; }
+
+.recorder-advanced {
+  margin: 10px 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.recorder-advanced > summary {
+  width: fit-content;
+  color: var(--text-2);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.recorder-advanced .recorder-capture-quality {
+  margin-bottom: 0;
+}
+
+.recorder-live-preview {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-inset);
+}
+
+.recorder-live-preview__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 9px;
+}
+
+.recorder-live-preview__header span,
+.recorder-live-preview__shots small {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.recorder-live-preview__shots {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.recorder-live-preview__shots > span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.recorder-live-preview__shots img {
+  width: 100%;
+  height: clamp(160px, 28vh, 280px);
+  object-fit: contain;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #202124;
+}
+
 .recorder-controller {
   display: flex;
   flex-wrap: wrap;
@@ -4333,14 +4620,14 @@ kbd {
 
 .recorder-proposal {
   display: grid;
-  grid-template-columns: 82px minmax(0, 2fr) minmax(240px, 1fr);
+  grid-template-columns: minmax(460px, 1.7fr) minmax(300px, 1fr);
   align-items: start;
-  gap: 14px;
-  padding: 14px;
+  gap: 18px;
+  padding: 16px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--surface);
-  cursor: pointer;
+  cursor: default;
 }
 
 .recorder-proposal:hover {
@@ -4351,25 +4638,32 @@ kbd {
   border-left: 4px solid #d39a19;
 }
 
-.recorder-proposal__select {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding-top: 21px;
-  font-size: 12px;
-  font-weight: 700;
-  white-space: nowrap;
+.recorder-proposal.is-excluded,
+.recorder-event.is-excluded {
+  opacity: 0.58;
+  background: var(--surface-inset);
 }
 
 .recorder-proposal__shots {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   min-width: 0;
 }
 
-.recorder-proposal__shots > span:only-child {
-  grid-column: 1 / -1;
+.recorder-shot-preview {
+  min-width: 0;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  text-align: left;
+  cursor: zoom-in;
+}
+
+.recorder-shot-preview:focus-visible img {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
 }
 
 .recorder-proposal__shots small {
@@ -4387,7 +4681,31 @@ kbd {
   object-position: center;
   background: #20242b;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
+}
+
+.recorder-shot-preview--primary .recorder-proposal__shot {
+  max-height: 58vh;
+}
+
+.recorder-result-evidence,
+.recorder-source-evidence {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.recorder-result-evidence > summary,
+.recorder-source-evidence > summary {
+  width: fit-content;
+  padding: 5px 0;
+  color: var(--text-2);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.recorder-result-evidence .recorder-proposal__shot {
+  margin-top: 4px;
+  max-height: 42vh;
 }
 
 .recorder-proposal__body {
@@ -4395,7 +4713,7 @@ kbd {
   flex-direction: column;
   gap: 7px;
   min-width: 0;
-  padding-top: 20px;
+  padding-top: 2px;
 }
 
 .recorder-proposal__body strong {
@@ -4414,6 +4732,47 @@ kbd {
   line-height: 1.5;
 }
 
+.recorder-proposal__status {
+  width: fit-content;
+  padding: 3px 8px;
+  color: #704600;
+  background: rgba(214, 154, 0, 0.13);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.recorder-proposal:not(.recorder-proposal--review) .recorder-proposal__status {
+  color: #23613f;
+  background: rgba(37, 132, 83, 0.12);
+}
+
+.recorder-proposal__reason {
+  margin: 4px 0;
+  padding: 10px 12px;
+  color: var(--text-2);
+  background: rgba(214, 154, 0, 0.1);
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.recorder-proposal__actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 3px;
+}
+
+.recorder-source-evidence {
+  margin-top: 5px;
+  border-top: 1px solid var(--border);
+}
+
+.recorder-source-evidence p {
+  margin: 5px 0 0;
+  line-height: 1.55;
+}
+
 .recorder-event {
   position: relative;
   display: grid;
@@ -4423,7 +4782,7 @@ kbd {
   padding: 14px 38px 14px 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  cursor: pointer;
+  cursor: default;
 }
 
 .recorder-event__shots {
@@ -4433,11 +4792,11 @@ kbd {
   min-width: 0;
 }
 
-.recorder-event__shots > span {
+.recorder-event__shots > .recorder-shot-preview {
   min-width: 0;
 }
 
-.recorder-event__shots > span:only-child {
+.recorder-event__shots > .recorder-shot-preview:only-child {
   grid-column: 1 / -1;
 }
 
@@ -4445,7 +4804,7 @@ kbd {
   display: block;
   margin-bottom: 2px;
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .recorder-event:hover {
@@ -4488,17 +4847,101 @@ kbd {
 }
 
 .recorder-review-tools {
+  position: sticky;
+  top: -1px;
+  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   margin: 12px 0;
+  padding: 8px;
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 8px;
 }
 
-.recorder-review-tools > div {
+.recorder-review-adjustments {
+  position: relative;
+}
+
+.recorder-review-adjustments > summary {
+  padding: 7px 10px;
+  border-radius: 6px;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.recorder-review-adjustments > div {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 3;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  width: min(540px, calc(100vw - 48px));
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.recorder-review-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.recorder-review-filter select {
+  min-height: 32px;
+  padding: 0 28px 0 8px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+}
+
+.recorder-quick-start {
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  color: var(--text);
+  background: var(--accent-soft);
+  border-radius: 8px;
+  line-height: 1.6;
+}
+
+.recorder-recorded-info {
+  margin: 12px 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.recorder-recorded-info summary {
+  width: fit-content;
+  color: var(--text-2);
+  font-weight: 700;
+}
+
+.recorder-recorded-info div {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--surface-inset);
+  border-radius: 8px;
+}
+
+.recorder-recorded-info p {
+  margin: 0;
+}
+
+.recorder-recorded-info p + p {
+  margin-top: 7px;
 }
 
 .recorder-event__body .recorder-event__review {
@@ -4545,6 +4988,30 @@ kbd {
 }
 
 @media (max-width: 620px) {
+  .recorder-review-tools {
+    position: static;
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .recorder-review-adjustments > div {
+    position: static;
+    width: 100%;
+    margin-top: 6px;
+    box-shadow: none;
+  }
+
+  .recorder-capture-quality,
+  .recorder-live-preview__shots {
+    grid-template-columns: 1fr;
+  }
+
+  .recorder-live-preview__header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+  }
+
   .recorder-flow {
     grid-template-columns: 1fr;
     gap: 4px;
@@ -4574,7 +5041,6 @@ kbd {
     grid-template-columns: 1fr;
   }
 
-  .recorder-proposal__select,
   .recorder-proposal__body {
     padding-top: 0;
   }

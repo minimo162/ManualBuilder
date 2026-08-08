@@ -101,12 +101,23 @@ function Get-MbLocalStepDraft {
     if ($lowEvidence -and -not $reasonCodes.Contains('TARGET_LOW_CONFIDENCE')) {
         [void]$reasonCodes.Add('TARGET_LOW_CONFIDENCE')
     }
-    $reviewReason = ''
-    if ($reasonCodes.Contains('TARGET_UNKNOWN')) {
-        $reviewReason = '操作対象を特定できませんでした。赤枠と文章を確認してください。'
-    } elseif ($reasonCodes.Contains('TARGET_LOW_CONFIDENCE')) {
-        $reviewReason = 'クリック位置から作成した手順です。赤枠が操作箇所を示しているか確認してください。'
+    if (-not $lowEvidence -and [string]$TargetConfidence -eq 'medium') {
+        [void]$reasonCodes.Add('TARGET_MEDIUM_CONFIDENCE')
     }
+    $contentNotRecorded = $kind -in @('input', 'recorded-input')
+    if ($contentNotRecorded) { [void]$reasonCodes.Add('CONTENT_NOT_RECORDED') }
+    $reviewMessages = New-Object System.Collections.ArrayList
+    if ($reasonCodes.Contains('TARGET_UNKNOWN')) {
+        [void]$reviewMessages.Add('操作対象を特定できませんでした。赤枠と文章を確認してください。')
+    } elseif ($reasonCodes.Contains('TARGET_LOW_CONFIDENCE')) {
+        [void]$reviewMessages.Add('クリック位置から作成した手順です。赤枠が操作箇所を示しているか確認してください。')
+    } elseif ($reasonCodes.Contains('TARGET_MEDIUM_CONFIDENCE')) {
+        [void]$reviewMessages.Add('操作対象の候補から作成した手順です。赤枠と文章が操作内容に合っているか確認してください。')
+    }
+    if ($reasonCodes.Contains('CONTENT_NOT_RECORDED')) {
+        [void]$reviewMessages.Add('入力した文字や数式は記録していません。画像を見て手順の文章を補ってください。')
+    }
+    $reviewReason = [string]::Join(' ', @($reviewMessages))
 
     return [pscustomobject]@{
         title = $title

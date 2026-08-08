@@ -17,6 +17,8 @@ function Add-Result {
 Import-Module (Join-Path $srcRoot 'ManualBuilder.RecorderCopilot.psm1') -Force
 Import-Module (Join-Path $srcRoot 'ManualBuilder.RecorderServer.psm1') -Force
 Import-Module (Join-Path $srcRoot 'ManualBuilder.Project.psm1') -Force
+Add-Result ((Get-MbRecorderWindowAppKey -WindowTitle '申請 - Google Chrome') -eq 'chrome') `
+    'processNameがない旧録画でもGoogle Chromeのタイトルからアプリを判定する'
 
 $currentRecorderProcess = Get-Process -Id $PID
 try {
@@ -30,6 +32,11 @@ try {
 } finally { $currentRecorderProcess.Dispose() }
 
 $workerSource = Get-Content -LiteralPath (Join-Path $srcRoot 'Invoke-ManualBuilderRecorderCopilot.ps1') -Raw -Encoding UTF8
+$copilotSource = Get-Content -LiteralPath (Join-Path $srcRoot 'ManualBuilder.Copilot.psm1') -Raw -Encoding UTF8
+$copilotModuleSource = Get-Content -LiteralPath (Join-Path $srcRoot 'ManualBuilder.RecorderCopilot.psm1') -Raw -Encoding UTF8
+$recorderServerSource = Get-Content -LiteralPath (Join-Path $srcRoot 'ManualBuilder.RecorderServer.psm1') -Raw -Encoding UTF8
+$waitResponseSource = [regex]::Match($copilotSource, '(?s)function Wait-MbCopilotResponse.*?(?=function Invoke-MbCopilotRequest)').Value
+$showWindowSource = [regex]::Match($copilotSource, '(?s)function Show-MbCopilotWindow.*?(?=function Get-MbCopilotPromptTailAnchor)').Value
 Add-Result ($workerSource -match "copilot_model\s*=\s*'自動,Automatic,Auto'") '場面選定は高速で安定した自動モデルを使う'
 Add-Result ($workerSource -match '\$maximumAttempts\s*=\s*2' -and $workerSource -match '回答を読み取れませんでした（\{1\}/\{2\}）') `
     'Copilotの一時的な通信エラーだけ1回再試行できる'
@@ -37,10 +44,48 @@ Add-Result ($workerSource -match "completedBy\s*-eq\s*'service-error'" -and
     $workerSource -match "ErrorCode 'COPILOT_SERVICE_UNAVAILABLE'" -and
     $workerSource -match "Properties.Name -contains 'errorCode'") `
     'M365の確定的なサービスエラーでは同じ画像を再送せずローカル候補へ移る'
-Add-Result ($workerSource -match 'New-MbRecorderLocalFrameCandidates\s+-Frames \$eventWindowFrames\s+-Events \$events\s+-MaximumFrames 30' -and
-    $workerSource -match 'Select-MbRecorderCandidateFrames\s+-Frames \$eventWindowFrames\s+-Candidates \$localCandidates' -and
-    $workerSource -match '\$perPacket\s*=\s*1' -and $workerSource -match 'request_timeout\s*=\s*\[Math\]::Min\(90') `
-    'ローカル候補の操作前後だけを残し、一覧画像は1枚ずつ90秒以内で処理する'
+Add-Result ($workerSource -match 'Select-MbRecorderCopilotSourceFrames\s+-Frames \$allFrames\s+-Events \$events\s+-Maximum 20' -and
+    $workerSource -notmatch 'New-MbRecorderLocalFrameCandidates\s+-Frames \$eventWindowFrames' -and
+    $workerSource -notmatch 'Select-MbRecorderCandidateFrames\s+-Frames \$eventWindowFrames' -and
+    $workerSource -match '\$perPacket\s*=\s*1' -and $workerSource -match 'request_timeout\s*=\s*150' -and
+    $workerSource -match '応答を生成しています\|お待ちください\|generating') `
+    'ローカル候補で先に決めず、変化前後を含む最大20コマを読みやすい一覧画像で処理し、生成中の回答へ重ねて再送しない'
+Add-Result ($workerSource -match 'paste証拠がある数式だけ一覧＋原本の2枚' -and
+    $workerSource -match "evidenceKind\s*-eq\s*'paste'" -and
+    $workerSource -match '-AttachPaths @\(\$attachPaths\)') `
+    '通常は一覧1枚、確定後に消える貼り付け数式だけ原寸を加えてM365の過負荷を避ける'
+Add-Result ($workerSource -match 'Test-MbRecorderFrameSetHasMeaningfulChange' -and
+    $workerSource -match '\$incompletePackets\.Count\s*-gt\s*0' -and
+    $workerSource -match '前半だけを採用せず') `
+    '後半の一覧処理に失敗したとき前半だけを完了扱いにしない'
+Add-Result ($workerSource -match 'Repair-MbRecorderExcelInputEventAnchors\s+-Events\s+\$events' -and
+    $recorderServerSource -match 'Repair-MbRecorderExcelInputEventAnchors\s+-Events\s+@\(\$events\)') `
+    '一意に復元したExcelアンカーをAI選定時だけでなく実際の赤枠取り込み時にも使う'
+Add-Result ($workerSource -match 'Add-MbRecorderTitleTransitionProposals\s+-Frames\s+\$frames' -and
+    $workerSource -match 'Merge-MbRecorderDuplicateTransitionProposals\s+-Frames\s+\$frames' -and
+    $copilotModuleSource -match 'function Add-MbRecorderTitleTransitionProposals' -and
+    $copilotModuleSource -match '\$afterChange\s*-lt\s*0\.02') `
+    'Copilotが落とした同一ブラウザー内の明確なページ遷移を補完する'
+Add-Result ($copilotSource -match 'Test-MbCopilotGenerating\s+-WsUrl \$wsUrl' -and
+    $copilotSource -match 'Invoke-MbClickStop\s+-WsUrl \$wsUrl' -and
+    $copilotSource -match '前回の回答生成が残っているため停止') `
+    'タイムアウト後に残った回答生成を停止してから新しい画像を送る'
+Add-Result ($copilotSource -match 'function Invoke-MbClickRetry' -and
+    $copilotSource -match "M365のサービスエラーに対して画面の［再試行］を1回実行") `
+    'M365自身の再試行ボタンで添付を上げ直さず一度だけ回復を試す'
+Add-Result ($waitResponseSource -match "completedBy = 'service-error'" -and
+    $showWindowSource -notmatch 'Test-MbCopilotServiceErrorText\s+-Text\s+\$region') `
+    'サービスエラーを回答待機中に即時検出し画面表示関数で未定義変数を参照しない'
+Add-Result ($copilotSource -match '\$sendWaitSeconds\s*=\s*if\s*\(@\(\$AttachPaths\)\.Count\s*-gt\s*1\)\s*\{\s*60\s*\}' -and
+    $copilotSource -match 'Get-Date\)\.AddSeconds\(\$sendWaitSeconds\)') `
+    '複数画像の添付処理が終わるまで送信を最大60秒待つ'
+Add-Result ($copilotSource -match '\$attachmentSettleSeconds\s*=\s*if\s*\(@\(\$AttachPaths\)\.Count\s*-gt\s*1\)\s*\{\s*8\s*\}\s*else\s*\{\s*3\s*\}' -and
+    $copilotSource -match '添付画像の内部処理を待ちます') `
+    '添付カード表示後もM365の画像処理を待ってから送信する'
+$recorderSource = Get-Content -LiteralPath (Join-Path $srcRoot 'ManualBuilder.Recorder.psm1') -Raw -Encoding UTF8
+Add-Result ($recorderSource -match 'GetWindowThreadProcessId' -and
+    $recorderSource -match 'processName\s*=\s*\$\(if' -and $recorderSource -match 'windowClass\s*=\s*\$\(if') `
+    '記録フレームとイベントへ前面アプリのプロセス識別子を保存する'
 
 $testRoot = Join-Path $env:TEMP ('ManualBuilder-RecorderCopilot-' + [guid]::NewGuid().ToString('N'))
 $framesDirectory = Join-Path $testRoot 'frames'
@@ -71,9 +116,13 @@ try {
         } | ConvertTo-Json -Compress))
     }
     [IO.File]::WriteAllLines($framesPath, @($frameLines), [Text.UTF8Encoding]::new($false))
+    $testEvidenceIds = @(
+        ('evidence-' + [guid]::NewGuid().ToString('N')),
+        ('evidence-' + [guid]::NewGuid().ToString('N'))
+    )
     $eventLines = @(
-        ([pscustomobject]@{ index = 1; timeMs = 2100; kind = 'click'; targetName = '詳細を表示'; targetType = 'ControlType.Button'; windowTitle = '申請画面 - Microsoft Edge'; rect = [pscustomobject]@{ x1 = 0.1; y1 = 0.2; x2 = 0.3; y2 = 0.3 } } | ConvertTo-Json -Compress -Depth 5),
-        ([pscustomobject]@{ index = 2; timeMs = 7100; kind = 'input'; targetName = 'F7'; targetType = 'ControlType.DataItem'; windowTitle = 'Book1 - Excel'; rect = $null } | ConvertTo-Json -Compress -Depth 5)
+        ([pscustomobject]@{ index = 1; evidenceId = $testEvidenceIds[0]; timeMs = 2100; kind = 'click'; targetName = '詳細を表示'; targetType = 'ControlType.Button'; windowTitle = '申請画面 - Microsoft Edge'; rect = [pscustomobject]@{ x1 = 0.1; y1 = 0.2; x2 = 0.3; y2 = 0.3 } } | ConvertTo-Json -Compress -Depth 5),
+        ([pscustomobject]@{ index = 2; evidenceId = $testEvidenceIds[1]; timeMs = 7100; kind = 'input'; targetName = 'F7'; targetType = 'ControlType.DataItem'; windowTitle = 'Book1 - Excel'; rect = $null } | ConvertTo-Json -Compress -Depth 5)
     )
     [IO.File]::WriteAllLines($eventsPath, $eventLines, [Text.UTF8Encoding]::new($false))
 
@@ -93,6 +142,28 @@ try {
     Add-Result (@($selected | Where-Object { [Math]::Abs([int]$_.timeMs - 2100) -le 600 }).Count -gt 0) 'クリック時刻付近の原本フレームを残す'
     Add-Result (@($selected | Where-Object { [Math]::Abs([int]$_.timeMs - 7100) -le 600 }).Count -gt 0) '入力時刻付近の原本フレームを残す'
 
+    $copilotSourceFrames = @(Select-MbRecorderCopilotSourceFrames -Frames $frames -Events $events -Maximum 30)
+    $localOnlyFrames = @(Select-MbRecorderCandidateFrames -Frames $frames -Candidates @(
+        [pscustomobject]@{ beforeFrame = 'F00003'; afterFrame = 'F00019' }
+    ))
+    Add-Result ($copilotSourceFrames.Count -gt $localOnlyFrames.Count -and
+        @($copilotSourceFrames | Where-Object { $_.id -eq 'F00010' }).Count -eq 1 -and
+        @($localOnlyFrames | Where-Object { $_.id -eq 'F00010' }).Count -eq 0) `
+        'ローカル候補から漏れた中間コマもCopilot用の時系列原本へ残す'
+    $excelOnlyEvents = @($events | Where-Object { [string]$_.windowTitle -match 'Excel$' })
+    $missingAppSource = @(Select-MbRecorderCopilotSourceFrames -Frames $frames -Events $excelOnlyEvents -Maximum 30)
+    Add-Result (@($missingAppSource | Where-Object { [string]$_.windowTitle -match 'Edge$' }).Count -gt 0) `
+        'イベントを全て取り逃したアプリの周期コマもCopilot用原本から除外しない'
+    $manualBuilderNamedPageFrames = @(
+        [pscustomobject]@{ id='N00001'; index=1; timeMs=1000; image='frame-00001.jpg'; windowTitle='受注検索 - ManualBuilder Recorder Smoke - Microsoft Edge'; processName='msedge'; visualChange=0.0 },
+        [pscustomobject]@{ id='N00002'; index=2; timeMs=1500; image='frame-00002.jpg'; windowTitle='ManualBuilder Recorder Smoke および他 1 ページ - Microsoft Edge'; processName='msedge'; visualChange=0.1 },
+        [pscustomobject]@{ id='N00003'; index=3; timeMs=2000; image='frame-00003.jpg'; windowTitle='ManualBuilder - Google Chrome'; processName='chrome'; visualChange=0.1 }
+    )
+    $manualBuilderNamedPageSelection = @(Select-MbRecorderCopilotSourceFrames -Frames $manualBuilderNamedPageFrames -Events @() -Maximum 8)
+    Add-Result ($manualBuilderNamedPageSelection.Count -eq 2 -and
+        @($manualBuilderNamedPageSelection | Where-Object { [string]$_.id -in @('N00001','N00002') }).Count -eq 2) `
+        'ManualBuilderを名称に含む業務画面を本体タブと誤認せず、タイトル先頭が本体の画面だけ除外する'
+
     $longFrames = @($frames) + @($frames | ForEach-Object {
         $copy = $_ | Select-Object *
         $copy.index = [int]$copy.index + 25
@@ -102,6 +173,17 @@ try {
     })
     $fastSelection = @(Select-MbRecorderTimelineFrames -Frames $longFrames -Events $events -Maximum 30)
     Add-Result ($fastSelection.Count -gt 1 -and $fastSelection.Count -le 30) '長い記録も最大30コマへ絞る'
+    $longSourceEvents = @($events) + @(
+        [pscustomobject]@{ index = 3; timeMs = 22000; kind = 'click'; windowTitle = 'Book1 - Excel' }
+    )
+    $longCopilotSource = @(Select-MbRecorderCopilotSourceFrames -Frames $longFrames -Events $longSourceEvents -Maximum 30)
+    $longSourceTimes = @($longCopilotSource | ForEach-Object { [int]$_.timeMs })
+    $maximumGap = 0
+    for ($sourceIndex = 1; $sourceIndex -lt $longSourceTimes.Count; $sourceIndex++) {
+        $maximumGap = [Math]::Max($maximumGap, $longSourceTimes[$sourceIndex] - $longSourceTimes[$sourceIndex - 1])
+    }
+    Add-Result ($longCopilotSource.Count -eq 30 -and $maximumGap -le 1500) `
+        '長い記録は原本30コマを時間軸全体へ分散してCopilotへ渡す'
 
     $priorityFrames = for ($index = 1; $index -le 40; $index++) {
         $frame = [pscustomobject]@{ id=('P{0:d5}' -f $index); index=$index; timeMs=$index * 500;
@@ -170,7 +252,7 @@ try {
     $candidateFrames = @(Select-MbRecorderCandidateFrames -Frames $meaningFrames -Candidates $localCandidates)
     Add-Result ($candidateFrames.Count -eq 4 -and @($candidateFrames | Where-Object { $_.id -eq 'F00002' }).Count -eq 1 -and
         @($candidateFrames | Where-Object { $_.id -eq 'F00003' }).Count -eq 1) `
-        'Copilot一覧を候補の操作前後と貼り付け証拠へ絞り、数式を確定後の値だけにしない'
+        'ローカル候補の比較用フレームでは貼り付け証拠も保持する'
 
     $missingEventFrames = @(
         [pscustomobject]@{ id='F00001'; index=1; timeMs=800; image='frame-00001.jpg'; windowTitle='Book1 - Excel'; visualChange=0.0 },
@@ -206,6 +288,18 @@ try {
     Add-Result ($inputOnlyCandidates.Count -eq 1 -and [int]$inputOnlyCandidates[0].targetEventId -eq 0) `
         'クリックを取り逃した入力へ古いセルの赤枠アンカーを付けない'
 
+    $excelSequenceEvents = @(
+        [pscustomobject]@{ index=1; timeMs=1000; kind='click'; targetName='B2'; targetType='ControlType.DataItem'; processName='EXCEL'; windowTitle='Book1 - Excel'; rect=[pscustomobject]@{x1=.10;y1=.20;x2=.20;y2=.24} },
+        [pscustomobject]@{ index=2; timeMs=2000; kind='input'; targetName=''; targetType=''; processName='EXCEL'; windowTitle='Book1 - Excel'; rect=$null },
+        [pscustomobject]@{ index=3; timeMs=3000; kind='click'; targetName='B4'; targetType='ControlType.DataItem'; processName='EXCEL'; windowTitle='Book1 - Excel'; rect=[pscustomobject]@{x1=.10;y1=.28;x2=.20;y2=.32} }
+    )
+    $repairedExcelSequenceEvents = @(Repair-MbRecorderExcelInputEventAnchors -Events $excelSequenceEvents)
+    $repairedExcelCandidates = @(New-MbRecorderLocalFrameCandidates -Frames $coveredInputFrames -Events $repairedExcelSequenceEvents -MaximumFrames 8)
+    Add-Result ([string]$repairedExcelSequenceEvents[1].targetName -eq 'B3' -and
+        [Math]::Abs([double]$repairedExcelSequenceEvents[1].rect.y1 - .24) -lt .000001 -and
+        @($repairedExcelCandidates | Where-Object { [int]$_.targetEventId -eq 2 }).Count -eq 1) `
+        '同じ列の前後セルで一意に決まる取り逃しだけ、実測矩形の中間セルへ復元する'
+
     $duplicateImageFrames = @(
         [pscustomobject]@{ id='F00001'; index=1; timeMs=1000; image='frame-00001.jpg'; windowTitle='Book1 - Excel'; imageSha256='AAA' },
         [pscustomobject]@{ id='F00002'; index=2; timeMs=1200; image='frame-00002.jpg'; windowTitle='Book1 - Excel'; imageSha256='AAA' }
@@ -237,24 +331,54 @@ try {
     $clickEvidenceCandidates = @(New-MbRecorderLocalFrameCandidates -Frames $clickEvidenceFrames -Events $clickEvidenceEvents -MaximumFrames 8)
     Add-Result ($clickEvidenceCandidates.Count -eq 2 -and
         [string]$clickEvidenceCandidates[0].beforeFrame -eq 'F00001' -and
-        [string]$clickEvidenceCandidates[0].afterFrame -eq 'F00003' -and
-        [string]$clickEvidenceCandidates[1].beforeFrame -eq 'F00003') `
-        '遅延遷移は読み込み中の周期コマでなく次操作直前の安定画面を結果にする'
+        [string]$clickEvidenceCandidates[0].afterFrame -eq 'F00002' -and
+        [string]$clickEvidenceCandidates[1].beforeFrame -eq 'F00002') `
+        '操作後は次操作のclick-evidenceを越えず直前の安定画面にする'
+
+    $inputBoundaryFrames = @(
+        [pscustomobject]@{ id='I00001'; index=1; timeMs=800; image='frame-00001.jpg'; windowTitle='Book1 - Excel' },
+        [pscustomobject]@{ id='I00002'; index=2; timeMs=1500; image='frame-00002.jpg'; windowTitle='Book1 - Excel'; role='input-evidence' },
+        [pscustomobject]@{ id='I00003'; index=3; timeMs=2100; image='frame-00003.jpg'; windowTitle='Book1 - Excel' },
+        [pscustomobject]@{ id='I00004'; index=4; timeMs=2600; image='frame-00004.jpg'; windowTitle='Book1 - Excel'; role='click-evidence'; evidenceEventId=3 },
+        [pscustomobject]@{ id='I00005'; index=5; timeMs=2800; image='frame-00005.jpg'; windowTitle='Book1 - Excel' }
+    )
+    $inputBoundaryEvents = @(
+        [pscustomobject]@{ index=1; timeMs=900; kind='click'; targetName='B2'; targetType='ControlType.DataItem'; windowTitle='Book1 - Excel'; rect=[pscustomobject]@{x1=.1;y1=.2;x2=.2;y2=.3} },
+        [pscustomobject]@{ index=2; timeMs=2200; kind='input'; targetName='B2'; targetType='ControlType.DataItem'; windowTitle='Book1 - Excel'; rect=[pscustomobject]@{x1=.1;y1=.2;x2=.2;y2=.3} },
+        [pscustomobject]@{ index=3; timeMs=2600; kind='click'; targetName='B3'; targetType='ControlType.DataItem'; windowTitle='Book1 - Excel'; rect=[pscustomobject]@{x1=.1;y1=.3;x2=.2;y2=.4} }
+    )
+    $inputBoundaryCandidates = @(New-MbRecorderLocalFrameCandidates -Frames $inputBoundaryFrames -Events $inputBoundaryEvents -MaximumFrames 8)
+    Add-Result ([string]$inputBoundaryCandidates[0].afterFrame -eq 'I00003' -and
+        [int](@($inputBoundaryFrames | Where-Object { $_.id -eq $inputBoundaryCandidates[0].afterFrame })[0].timeMs) -lt 2600) `
+        '入力手順の操作後画像も次の操作時刻を越えない'
 
     $sheets = @(New-MbRecorderContactSheets -Frames $frames -FramesDirectory $framesDirectory -OutputDirectory $contactDirectory)
-    Add-Result ($sheets.Count -eq 2) '25フレームを複数の番号付き一覧画像へ分ける'
+    Add-Result ($sheets.Count -eq 3) '25フレームを複数の番号付き一覧画像へ分ける'
     $sheetImage = [Drawing.Image]::FromFile([string]$sheets[0].path)
-    try { Add-Result ($sheetImage.Width -eq 1920 -and $sheetImage.Height -eq 1970) '一覧画像を文字も読める3列の固定寸法で作る' }
+    try { Add-Result ($sheetImage.Width -eq 1920 -and $sheetImage.Height -eq 2870) '一覧画像を小さな値も読める2列の固定寸法で作る' }
     finally { $sheetImage.Dispose() }
-    $lastSheetImage = [Drawing.Image]::FromFile([string]$sheets[1].path)
-    try { Add-Result ($lastSheetImage.Width -eq 1920 -and $lastSheetImage.Height -eq 1576) '最終ページを空の15コマ分まで水増ししない' }
+    $lastSheetImage = [Drawing.Image]::FromFile([string]$sheets[$sheets.Count - 1].path)
+    try { Add-Result ($lastSheetImage.Width -eq 1920 -and $lastSheetImage.Height -eq 1722) '最終ページを空の10コマ分まで水増ししない' }
     finally { $lastSheetImage.Dispose() }
 
-    $prompt = New-MbRecorderCopilotPrompt -Frames $frames -Events $events -Marker 'MB_TEST_END'
+    $prompt = New-MbRecorderCopilotPrompt -Frames $frames -Events $events -PacketNumber 2 -TotalPackets 2 -PreviousFrameId 'F00015' -Marker 'MB_TEST_END'
     Add-Result ($prompt -match '中間的なアニメーション' -and $prompt -match 'ManualBuilderへ戻る操作') '遷移中画像と記録終了操作を除く判断基準を伝える'
     Add-Result ($prompt -match '対象が異なる入力イベントは省略せず' -and $prompt -match '前面アプリが切り替わっただけ') '別セル入力を残しアプリ切替を手順にしない基準を伝える'
     Add-Result ($prompt -match '大文字小文字は変えず') '画面に見える値の表記を変えない基準を伝える'
+    Add-Result ($prompt -match '数式バー' -and $prompt -match '=SUM\(B2:B3\)') 'Excelの計算結果だけでなく入力した数式を原寸画像から残すよう伝える'
+    Add-Result ($prompt -match '全2枚中2枚目' -and $prompt -match 'F00015 まで' -and
+        $prompt -match '同じChrome/Edge内' -and $prompt -match '曖昧な表現を避け') `
+        '後続一覧でも同一ブラウザーの遷移と具体的な操作名を最後まで確認させる'
+    Add-Result ($prompt.Length -lt 3000 -and $prompt -match '画面タイトルの遷移') `
+        'Copilot入力上限へ達しない長さで画面タイトルの遷移を要約する'
     Add-Result ($prompt -match 'beforeFrame' -and $prompt -match 'afterFrame' -and $prompt.EndsWith('MB_TEST_END')) '操作前・操作後をフレームIDで返すJSON形式を指定する'
+
+    $groupPrompt = New-MbRecorderCopilotPrompt -Frames $frames -Events $events -InteractionGroups @(
+        [pscustomobject]@{ eventIds=@(1,2); actionKind='input'; targetName='B2'; beforeFrame='F00004'; afterFrame='F00007' }
+    ) -Marker 'MB_GROUP_END'
+    Add-Result ($groupPrompt -match '各Gをちょうど1手順' -and $groupPrompt -match 'G01 events=E001,E002 action=input target=B2' -and
+        $groupPrompt -match 'targetは操作開始位置' -and $groupPrompt -match '初期描画や既存値を操作として追加しない') `
+        'クリックと入力の操作境界をAIへ明示し一覧境界の重複と初期描画の誤認を防ぐ'
 
     $answer = [pscustomobject]@{ steps = @(
         [pscustomobject]@{ beforeFrame = 'F00004'; afterFrame = 'F00007'; eventIds = @(1); targetEventId = 1; title = '詳細を表示'; description = '［詳細を表示］をクリックします。'; confidence = 'high'; reason = '操作後の内容が必要' },
@@ -304,10 +428,105 @@ try {
     $crossApp = @(ConvertFrom-MbRecorderCopilotAnswer -Answer ([pscustomobject]@{steps=@(& $newSafetyStep @(1) 1 'S00003')}) -Frames $safetyFrames -Events $safetyEvents)
     Add-Result ($crossApp.Count -eq 0) '有効アンカーがあっても別アプリの操作前後画像を手順にしない'
 
+    $browserFrames = @(
+        [pscustomobject]@{ id='B00001'; index=1; timeMs=1000; image='frame-00001.jpg'; windowTitle='Calculator.net'; processName='chrome'; windowClass='Chrome_WidgetWin_1'; visualChange=0.0 },
+        [pscustomobject]@{ id='B00002'; index=2; timeMs=2000; image='frame-00002.jpg'; windowTitle='Scientific Calculator'; processName='chrome'; windowClass='Chrome_WidgetWin_1'; visualChange=0.02 }
+    )
+    $browserAnswer = [pscustomobject]@{steps=@([pscustomobject]@{
+        beforeFrame='B00001'; afterFrame='B00002'; eventIds=@(); targetEventId=$null
+        title='科学電卓を開く'; description='［Scientific Calculator］を選択します。'; confidence='high'; reason='画面遷移'
+    })}
+    $browserProposal = @(ConvertFrom-MbRecorderCopilotAnswer -Answer $browserAnswer -Frames $browserFrames -Events @())
+    Add-Result ($browserProposal.Count -eq 1 -and
+        (Get-MbRecorderItemAppKey -Item $browserFrames[0]) -eq 'chrome' -and
+        (Test-MbRecorderFrameSetHasMeaningfulChange -Frames $browserFrames)) `
+        'ページタイトルが変わっても同じChromeプロセスの操作前後を保持する'
+
+    $transitionFrames = @(
+        [pscustomobject]@{ id='T00001'; index=1; timeMs=1000; image='frame-00001.jpg'; windowTitle='Calculator.net'; processName='chrome'; windowClass='Chrome_WidgetWin_1'; visualChange=0.0 },
+        [pscustomobject]@{ id='T00002'; index=2; timeMs=10000; image='frame-00002.jpg'; windowTitle='Calculator.net'; processName='chrome'; windowClass='Chrome_WidgetWin_1'; visualChange=0.01 },
+        [pscustomobject]@{ id='T00003'; index=3; timeMs=11000; image='frame-00003.jpg'; windowTitle='Scientific Calculator'; processName='chrome'; windowClass='Chrome_WidgetWin_1'; visualChange=0.35 },
+        [pscustomobject]@{ id='T00004'; index=4; timeMs=13000; image='frame-00004.jpg'; windowTitle='Scientific Calculator'; processName='chrome'; windowClass='Chrome_WidgetWin_1'; visualChange=0.0 },
+        [pscustomobject]@{ id='T00005'; index=5; timeMs=19000; image='frame-00005.jpg'; windowTitle='Scientific Calculator'; processName='chrome'; windowClass='Chrome_WidgetWin_1'; visualChange=0.08 }
+    )
+    $missingTransitionProposals = @(
+        [pscustomobject]@{ id='P1'; beforeFrame='T00001'; afterFrame='T00002'; eventIds=@(); targetEventId=0; title='78 + 9を計算する'; description='87を表示します。'; confidence='high'; reason=''; timeMs=1000; beforeImage='frame-00001.jpg'; afterImage='frame-00002.jpg' },
+        [pscustomobject]@{ id='P2'; beforeFrame='T00004'; afterFrame='T00005'; eventIds=@(); targetEventId=0; title='関数を入力する'; description='関数を入力します。'; confidence='medium'; reason=''; timeMs=13000; beforeImage='frame-00004.jpg'; afterImage='frame-00005.jpg' }
+    )
+    $completedTransitionProposals = @(Add-MbRecorderTitleTransitionProposals -Frames $transitionFrames -Proposals $missingTransitionProposals)
+    Add-Result ($completedTransitionProposals.Count -eq 3 -and
+        [string]$completedTransitionProposals[1].beforeFrame -eq 'T00002' -and
+        [string]$completedTransitionProposals[1].afterFrame -eq 'T00003' -and
+        [string]$completedTransitionProposals[1].title -eq 'Scientific Calculatorを開く') `
+        'Copilot実回答から欠けたページ遷移を独立した手順として補完する'
+
+    $mergedTransitionProposal = @([pscustomobject]@{
+        id='P3'; beforeFrame='T00002'; afterFrame='T00005'; eventIds=@(); targetEventId=0
+        title='関数電卓で計算する'; description='関数電卓を開いて計算します。'; confidence='medium'; reason=''
+        timeMs=10000; beforeImage='frame-00002.jpg'; afterImage='frame-00005.jpg'
+    })
+    $splitTransitionProposals = @(Add-MbRecorderTitleTransitionProposals -Frames $transitionFrames -Proposals $mergedTransitionProposal)
+    Add-Result ($splitTransitionProposals.Count -eq 2 -and
+        @($splitTransitionProposals | Where-Object { $_.title -eq 'Scientific Calculatorを開く' }).Count -eq 1 -and
+        @($splitTransitionProposals | Where-Object { $_.id -eq 'P3' -and $_.beforeFrame -eq 'T00004' }).Count -eq 1) `
+        'Copilotが結合したページ遷移と後続操作を別々の手順へ分ける'
+
+    $crossPacketDuplicates = @(
+        [pscustomobject]@{ id='P4'; beforeFrame='T00002'; afterFrame=''; eventIds=@(); targetEventId=0; title='Scientific Calculator リンクを選択する'; description='「Scientific Calculator」をクリックします。'; confidence='medium'; reason=''; timeMs=10000; beforeImage='frame-00002.jpg'; afterImage='' },
+        [pscustomobject]@{ id='P5'; beforeFrame='T00003'; afterFrame='T00004'; eventIds=@(); targetEventId=0; title='Scientific Calculatorを開く'; description='Scientific Calculatorページを表示します。'; confidence='high'; reason=''; timeMs=11000; beforeImage='frame-00003.jpg'; afterImage='frame-00004.jpg' }
+    )
+    # 実回答と同じ構造にするため、後続候補のbefore/afterが異なるタイトルを持つ
+    # フレームへ差し替える。
+    $crossPacketDuplicates[1].beforeFrame = 'T00002'
+    $crossPacketDuplicates[1].beforeImage = 'frame-00002.jpg'
+    $crossPacketDuplicates[1].afterFrame = 'T00003'
+    $crossPacketDuplicates[1].afterImage = 'frame-00003.jpg'
+    $deduplicatedTransitions = @(Merge-MbRecorderDuplicateTransitionProposals -Frames $transitionFrames -Proposals $crossPacketDuplicates)
+    Add-Result ($deduplicatedTransitions.Count -eq 1 -and [string]$deduplicatedTransitions[0].id -eq 'P5' -and
+        [string]$deduplicatedTransitions[0].afterFrame -eq 'T00003') `
+        '一覧画像の境界で重なったリンク選択とページ遷移を1手順へまとめる'
+
+    $rangeEvents = @([pscustomobject]@{ index=7; timeMs=12000; kind='click'; targetName='B2'; processName='EXCEL'; windowTitle='Book1 - Excel'; rect=$validRect })
+    $rangeProposals = @(
+        [pscustomobject]@{ id='R1'; beforeFrame='S00001'; afterFrame=''; eventIds=@(7); targetEventId=7; title='セルB2を選択する'; description='セルB2を選択する。'; confidence='high'; reason=''; timeMs=12000 },
+        [pscustomobject]@{ id='R2'; beforeFrame='S00002'; afterFrame=''; eventIds=@(); targetEventId=0; title='通貨表示形式を適用する'; description='B2:B4を選択した状態で通貨表示形式を適用する。'; confidence='high'; reason=''; timeMs=14000 }
+    )
+    $expandedRange = @(Expand-MbRecorderExcelRangeSelectionProposals -Events $rangeEvents -Proposals $rangeProposals)
+    Add-Result ($expandedRange.Count -eq 2 -and [string]$expandedRange[0].title -eq 'セル範囲B2:B4を選択する' -and
+        [string]$expandedRange[0].description -match 'ドラッグ') `
+        'Excelのドラッグ開始セルだけを返した場合も後続画像で確認した選択範囲へ補正する'
+
+    $loadingFrames = @(
+        [pscustomobject]@{ id='L00001'; index=1; timeMs=1000; image='frame-00001.jpg'; windowTitle='受注検索 - Microsoft Edge'; processName='msedge' },
+        [pscustomobject]@{ id='L00002'; index=2; timeMs=2000; image='frame-00002.jpg'; windowTitle='読み込み中 - Microsoft Edge'; processName='msedge' },
+        [pscustomobject]@{ id='L00003'; index=3; timeMs=3000; image='frame-00003.jpg'; windowTitle='受注検索 - Microsoft Edge'; processName='msedge' }
+    )
+    $loadingEvents = @(
+        [pscustomobject]@{ index=1; timeMs=1500; kind='click'; targetName='検索'; processName='msedge' },
+        [pscustomobject]@{ index=2; timeMs=4000; kind='click'; targetName='詳細'; processName='msedge' }
+    )
+    $loadingProposal = @([pscustomobject]@{ id='L1'; beforeFrame='L00001'; afterFrame='L00002'; eventIds=@(1); targetEventId=1; title='検索する'; description='検索する。'; confidence='high'; reason=''; timeMs=1000; beforeImage='frame-00001.jpg'; afterImage='frame-00002.jpg' })
+    $repairedLoading = @(Repair-MbRecorderTransientAfterFrames -Frames $loadingFrames -Events $loadingEvents -Proposals $loadingProposal)
+    Add-Result ($repairedLoading.Count -eq 1 -and [string]$repairedLoading[0].afterFrame -eq 'L00003') `
+        'Copilotが読込中を操作後画像に選んでも次操作前の最初の安定画面へ置き換える'
+
+    $testJobId = 'record-' + [guid]::NewGuid().ToString('N')
+    $evidenceDirectory = Join-Path $testRoot 'evidence'
+    [void](New-Item -ItemType Directory -Path $evidenceDirectory -Force)
+    Copy-Item -LiteralPath (Join-Path $framesDirectory 'frame-00004.jpg') -Destination (Join-Path $evidenceDirectory ($testEvidenceIds[0] + '.jpg'))
+    Copy-Item -LiteralPath (Join-Path $framesDirectory 'frame-00013.jpg') -Destination (Join-Path $evidenceDirectory ($testEvidenceIds[1] + '.jpg'))
+    $ledgerPath = Join-Path $testRoot 'evidence-ledger.jsonl'
+    [IO.File]::WriteAllLines($ledgerPath, @(
+        ([ordered]@{ recordType='capture-start'; formatVersion=2; sessionId=$testJobId; mouseHook=$true; keyboardHook=$true; completeness='no-known-gaps' } | ConvertTo-Json -Compress),
+        ([ordered]@{ recordType='operation'; id=$testEvidenceIds[0]; sessionId=$testJobId; kind='click'; timeMs=2100; image=($testEvidenceIds[0] + '.jpg') } | ConvertTo-Json -Compress),
+        ([ordered]@{ recordType='operation'; id=$testEvidenceIds[1]; sessionId=$testJobId; kind='input'; timeMs=7100; image=($testEvidenceIds[1] + '.jpg') } | ConvertTo-Json -Compress),
+        ([ordered]@{ recordType='capture-end'; formatVersion=2; sessionId=$testJobId; operationCount=2; reason='stopped'; completeness='no-known-gaps'; warning='' } | ConvertTo-Json -Compress)
+    ), [Text.UTF8Encoding]::new($false))
     $job = [pscustomobject]@{
-        JobId = 'test'; JobDirectory = $testRoot; ProcessId = 0
+        JobId = $testJobId; JobDirectory = $testRoot; ProcessId = 0
         FramesDirectory = $framesDirectory; FramesPath = $framesPath
         EventsDirectory = $framesDirectory; EventsPath = $eventsPath
+        EvidenceDirectory = $evidenceDirectory; LedgerPath = $ledgerPath
         NarrationPath = (Join-Path $testRoot 'narration.jsonl')
     }
     & (Get-Module ManualBuilder.RecorderServer) { param($Value) $script:MbRecordingJob = $Value } $job
@@ -316,14 +535,14 @@ try {
         beforeFrame='F00004'; afterFrame='F00013'; eventIds=@(1); targetEventId=1
         title='不正な切替'; description='切り替えます。'; confidence='high'; reason=''
     })} | ConvertTo-Json -Depth 8 -Compress
-    $directCross = Import-MbRecordedCopilotSelections -Project $directSafetyProject -ProjectPath $projectPath `
+    $directCross = Import-MbRecordedLocalSelections -Project $directSafetyProject -ProjectPath $projectPath `
         -SheetId $directSafetyProject.sheets[0].id -SelectionJson $directCrossJson
     Add-Result ([int]$directCross.added -eq 0 -and [int]$directCross.skipped -eq 1) '取り込み側でも別アプリの操作前後画像を拒否する'
     $directForeignJson = [pscustomobject]@{accept=@([pscustomobject]@{
         beforeFrame='F00004'; afterFrame=''; eventIds=@(2); targetEventId=2
         title='要確認'; description='対象を操作します。'; confidence='high'; reason=''
     })} | ConvertTo-Json -Depth 8 -Compress
-    $directForeign = Import-MbRecordedCopilotSelections -Project $directSafetyProject -ProjectPath $projectPath `
+    $directForeign = Import-MbRecordedLocalSelections -Project $directSafetyProject -ProjectPath $projectPath `
         -SheetId $directSafetyProject.sheets[0].id -SelectionJson $directForeignJson
     $directStep = @($directSafetyProject.sheets[0].steps)[0]
     Add-Result ([int]$directForeign.added -eq 1 -and [int]$directForeign.needsReview -eq 1 -and
@@ -332,14 +551,52 @@ try {
     $localServerProposals = @(Get-MbRecordedLocalProposals)
     Add-Result ($localServerProposals.Count -ge 1 -and [string]$localServerProposals[0].source -eq 'local') `
         'Copilotを使わず安定フレームから編集可能な候補を返す'
+    $sameLocalProposals = @(Get-MbRecordedLocalProposals)
+    Add-Result ((@($localServerProposals | ForEach-Object { [string]$_.id }) -join ',') -eq
+        (@($sameLocalProposals | ForEach-Object { [string]$_.id }) -join ',')) `
+        '確認画面と取り込み時で同じ候補IDを使う'
+    $reviewedItem = $localServerProposals[0].PSObject.Copy()
+    $reviewedItem.title = '利用者が確認した手順'
+    $reviewedItem.description = '候補画面で文章を直して確定します。'
+    $reviewedItem | Add-Member -NotePropertyName reviewed -NotePropertyValue $true -Force
+    $reviewedProject = New-MbProject
+    $reviewDecisionItem = [pscustomobject]@{
+        id = [string]$reviewedItem.id; accepted = $true; reviewed = $true
+        title = [string]$reviewedItem.title; description = [string]$reviewedItem.description
+    }
+    $reviewedJson = [pscustomobject]@{ accept = @($reviewedItem); decisions = @($reviewDecisionItem) } | ConvertTo-Json -Depth 10 -Compress
+    $reviewedImport = Import-MbRecordedLocalSelections -Project $reviewedProject -ProjectPath $projectPath `
+        -SheetId $reviewedProject.sheets[0].id -SelectionJson $reviewedJson
+    $reviewedStep = @($reviewedProject.sheets[0].steps)[0]
+    Add-Result ([int]$reviewedImport.added -eq 1 -and [int]$reviewedImport.needsReview -eq 0 -and
+        [string]$reviewedStep.title -eq '利用者が確認した手順' -and [string]$reviewedStep.review.action -eq '') `
+        '候補画面で直して確定した手順を取り込み後の再確認対象にしない'
+    $decisionPath = Join-Path (Join-Path (Join-Path $testRoot 'evidence') $testJobId) 'transformations.jsonl'
+    $reviewDecision = @([IO.File]::ReadAllLines($decisionPath, [Text.Encoding]::UTF8) | ForEach-Object { $_ | ConvertFrom-Json } |
+        Where-Object { [string]$_.proposalId -eq [string]$reviewedItem.id -and [bool]$_.accepted -and [bool]$_.reviewed } | Select-Object -Last 1)
+    Add-Result ($reviewDecision.Count -eq 1 -and [string]$reviewDecision[0].decisionSource -eq 'user-review' -and
+        [string]$reviewDecision[0].finalTitle -eq '利用者が確認した手順') `
+        '候補画面での文章修正と利用者確認を変換履歴へ残す'
+    $excludedDecisionItem = [pscustomobject]@{
+        id = [string]$reviewedItem.id; accepted = $false; reviewed = $true
+        title = [string]$reviewedItem.title; description = [string]$reviewedItem.description
+    }
+    $excludedProject = New-MbProject
+    $excludedJson = [pscustomobject]@{ accept = @(); decisions = @($excludedDecisionItem) } | ConvertTo-Json -Depth 10 -Compress
+    [void](Import-MbRecordedLocalSelections -Project $excludedProject -ProjectPath $projectPath `
+        -SheetId $excludedProject.sheets[0].id -SelectionJson $excludedJson)
+    $excludedDecision = @([IO.File]::ReadAllLines($decisionPath, [Text.Encoding]::UTF8) | ForEach-Object { $_ | ConvertFrom-Json } |
+        Where-Object { [string]$_.proposalId -eq [string]$reviewedItem.id -and -not [bool]$_.accepted -and [bool]$_.reviewed } | Select-Object -Last 1)
+    Add-Result ($excludedDecision.Count -eq 1 -and [string]$excludedDecision[0].decisionSource -eq 'user-review') `
+        '候補画面で利用者が除外した判断も変換履歴へ残す'
     $project = New-MbProject
     $project = Save-MbProject -Project $project -Path $projectPath
     $selectionJson = [pscustomobject]@{ accept = @($proposals) } | ConvertTo-Json -Depth 10 -Compress
-    $imported = Import-MbRecordedCopilotSelections -Project $project -ProjectPath $projectPath -SheetId $project.sheets[0].id -SelectionJson $selectionJson
+    $imported = Import-MbRecordedLocalSelections -Project $project -ProjectPath $projectPath -SheetId $project.sheets[0].id -SelectionJson $selectionJson
     $step = @($project.sheets[0].steps)[0]
     Add-Result ([int]$imported.added -eq 1 -and @($project.sheets[0].steps).Count -eq 1) 'Copilotが選んだ単位で手順を作る'
-    Add-Result (-not [string]::IsNullOrWhiteSpace([string]$step.resultImageId) -and [string]$step.imageLayout -eq 'side-by-side') '選ばれた操作前・操作後を左右比較として取り込む'
-    Add-Result (@($step.annotations).Count -eq 1 -and [string]$step.capture.kind -eq 'recorded-ai') 'クリックイベントは赤枠候補のアンカーとしてだけ使う'
+    Add-Result (-not [string]::IsNullOrWhiteSpace([string]$step.resultImageId) -and [string]$step.imageLayout -eq 'before') '結果画像を保持しつつ初稿は案内画像1枚で取り込む'
+    Add-Result (@($step.annotations).Count -eq 1 -and [string]$step.capture.kind -eq 'recorded-local') 'クリックイベントは赤枠候補のアンカーとしてだけ使う'
     Add-Result ([string]$step.title -eq '詳細を表示' -and [string]$step.description -match 'クリック') 'Copilotの手順文を編集可能な初稿へ反映する'
 } finally {
     & (Get-Module ManualBuilder.RecorderServer) { $script:MbRecordingJob = $null }

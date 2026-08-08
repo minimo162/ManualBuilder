@@ -78,7 +78,8 @@ with tempfile.TemporaryDirectory(prefix="mb-recorder-run-eval-") as value:
         path.write_bytes(JPEG)
         frames.append({
             "id": f"F{index:05d}", "index": index, "timeMs": (index - 1) * 500,
-            "image": name, "windowTitle": "受注検索 - Microsoft Edge",
+            # 実際のWindows Edgeタイトルに混ざるゼロ幅文字も同じアプリとして扱う。
+            "image": name, "windowTitle": "受注検索 - Microsoft\u200b Edge",
         })
     events = [
         {"index": 1, "timeMs": 700, "kind": "input", "targetName": "顧客コード",

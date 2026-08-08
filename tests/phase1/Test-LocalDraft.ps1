@@ -26,6 +26,8 @@ $input = Get-MbLocalStepDraft -ActionKind 'input' -TargetName '検索（入力�
     -TargetType 'ControlType.Edit' -WindowTitle 'エクスプローラー' -TargetSource 'UIA' -TargetConfidence 'medium'
 Add-Result ($input.title -eq '検索に入力') '入力欄の補足を重ねず手順名を作る'
 Add-Result ($input.description -eq '［検索］に必要な内容を入力します。') '入力値を保存せず入力操作を説明する'
+Add-Result ($input.reviewRequired -and $input.reasonCodes -contains 'TARGET_MEDIUM_CONFIDENCE') `
+    '中信頼の対象候補は確認済みにせず要確認へ送る'
 
 $cell = Get-MbLocalStepDraft -ActionKind 'click' -TargetName 'F8' `
     -TargetType 'ControlType.DataItem' -WindowTitle 'Book1 - Excel' -TargetSource 'UIA' -TargetConfidence 'high'
@@ -34,6 +36,8 @@ $cellInput = Get-MbLocalStepDraft -ActionKind 'input' -TargetName 'B2（入力�
     -TargetType 'ControlType.DataItem' -WindowTitle 'Book1 - Excel' -TargetSource 'UIA' -TargetConfidence 'high'
 Add-Result ($cellInput.title -eq 'セルB2に入力' -and $cellInput.description -eq 'セルB2に必要な内容を入力します。') `
     'Excelセルへの入力をセル番地つきで説明する'
+Add-Result ($cellInput.reviewRequired -and $cellInput.reasonCodes -contains 'CONTENT_NOT_RECORDED') `
+    '入力内容を保存しない手順は文章を補えるよう要確認へ送る'
 
 $fallback = Get-MbLocalStepDraft -ActionKind 'click' -TargetName '' `
     -TargetType 'ControlType.ClickPoint' -WindowTitle '申請画面 - Edge' -TargetSource 'click-point' -TargetConfidence 'low'

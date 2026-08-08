@@ -7,16 +7,20 @@
 param(
     [Parameter(Mandatory = $true)][string]$EventsDirectory,
     [Parameter(Mandatory = $true)][string]$EventsPath,
+    [Parameter(Mandatory = $true)][string]$EvidenceDirectory,
+    [Parameter(Mandatory = $true)][string]$LedgerPath,
     [Parameter(Mandatory = $true)][string]$FramesDirectory,
     [Parameter(Mandatory = $true)][string]$FramesPath,
     [Parameter(Mandatory = $true)][string]$StatusPath,
     [Parameter(Mandatory = $true)][string]$StopPath,
     [Parameter(Mandatory = $true)][string]$PausePath,
     [Parameter(Mandatory = $true)][string]$UndoPath,
+    [AllowEmptyString()][string]$ManualResultPath = '',
     [Parameter(Mandatory = $true)][string]$JobId,
     [AllowEmptyString()][string]$IgnoreTitlePatterns = '',
     [AllowEmptyString()][string]$DomTargetPath = '',
-    [AllowEmptyString()][string]$UiaTargetPath = ''
+    [AllowEmptyString()][string]$UiaTargetPath = '',
+    [ValidateRange(200, 3000)][int]$ResultCaptureDelayMs = 700
 )
 
 $ErrorActionPreference = 'Stop'
@@ -35,12 +39,18 @@ try {
     if (-not (Test-Path -LiteralPath $FramesDirectory)) {
         [void](New-Item -ItemType Directory -Path $FramesDirectory -Force)
     }
+    if (-not (Test-Path -LiteralPath $EvidenceDirectory)) {
+        [void](New-Item -ItemType Directory -Path $EvidenceDirectory -Force)
+    }
 
     [void](Invoke-MbRecordingLoop -EventsDirectory $EventsDirectory -EventsPath $EventsPath `
+        -EvidenceDirectory $EvidenceDirectory -LedgerPath $LedgerPath `
         -FramesDirectory $FramesDirectory -FramesPath $FramesPath `
         -StatusPath $StatusPath -StopPath $StopPath -PausePath $PausePath -UndoPath $UndoPath `
+        -ManualResultPath $ManualResultPath `
         -JobId $JobId -IgnoreTitlePatterns $patterns `
-        -DomTargetPath $DomTargetPath -UiaTargetPath $UiaTargetPath)
+        -DomTargetPath $DomTargetPath -UiaTargetPath $UiaTargetPath `
+        -ResultCaptureDelayMs $ResultCaptureDelayMs)
     exit 0
 } catch {
     try {

@@ -29,7 +29,7 @@ try {
         '-Port', $Port,
         '-ProjectPath', ('"' + $projectPath + '"'),
         '-DisableScreenshotWatcher',
-        '-NoBrowser', '-SkipCopilotWarmup', '-AllowParallelTestInstance'
+        '-NoBrowser', '-AllowParallelTestInstance'
     )
     $child = Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
 
@@ -83,17 +83,13 @@ try {
     $reloaded = [IO.File]::ReadAllText($projectPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
     Assert-Mb ([string]$reloaded.sheets[0].steps[0].title -eq 'ログイン画面を開く') '保存した文章がproject.jsonへ反映される'
 
-    $attentionBody = '{"accept":[],"attention":[{"id":"' + $stepId + '","action":"review","reason":"赤枠を確認してください。"}]}'
-    $attentionResponse = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/copilot/draft/apply" -Method Post -Headers $headers -ContentType 'application/json; charset=UTF-8' -Body $attentionBody -TimeoutSec 5
-    Assert-Mb (($attentionResponse.Content | ConvertFrom-Json).applied -eq 0) '採用0件でもCopilot要確認を受け付ける'
-    $afterAttention = [IO.File]::ReadAllText($projectPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
-    Assert-Mb ([bool]$afterAttention.sheets[0].steps[0].review.required -and [string]$afterAttention.sheets[0].steps[0].review.action -eq 'review') 'Copilot要確認をproject.jsonへ保存する'
-    $attentionWorkspace = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/ui/workspace" -Headers $headers -TimeoutSec 5
-    Assert-Mb ($attentionWorkspace.Content -match 'data-step-review-notice') '再読込後も要確認を手順カードへ表示する'
-    $resolvedReview = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/steps/review/resolve" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body @{ stepId = $stepId } -TimeoutSec 5
-    Assert-Mb ($resolvedReview.Content -notmatch 'data-step-review-notice') '確認済み操作で要確認表示を外す'
-    $afterResolve = [IO.File]::ReadAllText($projectPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
-    Assert-Mb (-not [bool]$afterResolve.sheets[0].steps[0].review.required) '確認済み状態をproject.jsonへ保存する'
+    $copilotRouteRemoved = $false
+    try {
+        [void](Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/copilot/draft/apply" -Method Post -Headers $headers -ContentType 'application/x-www-form-urlencoded' -Body '' -TimeoutSec 5)
+    } catch {
+        $copilotRouteRemoved = $_.Exception.Response.StatusCode.value__ -eq 404
+    }
+    Assert-Mb $copilotRouteRemoved '外部AIの文章処理APIを公開しない'
 
     $heartbeat = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/api/capture/heartbeat" -Method Post -Headers $headers -Body '' -TimeoutSec 5
     Assert-Mb ($heartbeat.Content -match 'watch-status') '撮影対象タブのハートビートを受け付ける'

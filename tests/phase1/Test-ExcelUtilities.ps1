@@ -216,6 +216,8 @@ try {
     $resultPath = New-MbAnnotatedImage -SourcePath $sourcePath -Annotations $annotations -DestinationPath $renderedPath
     Assert-Mb ($resultPath -eq $renderedPath -and (Test-Path -LiteralPath $renderedPath -PathType Leaf)) '4種類の注釈を出力画像へ合成する'
     Assert-Mb ((Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash -eq $sourceHash) '注釈合成後も元画像を変更しない'
+    $nullAnnotationResult = New-MbAnnotatedImage -SourcePath $sourcePath -Annotations $null -DestinationPath (Join-Path $testRoot 'unused-null-annotations.png')
+    Assert-Mb ($nullAnnotationResult -eq $sourcePath) '操作後注釈がnullでも元画像をそのまま利用する'
 
     $rendered = [Drawing.Bitmap]::FromFile($renderedPath)
     try {
