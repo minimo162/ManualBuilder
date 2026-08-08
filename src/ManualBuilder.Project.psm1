@@ -46,6 +46,10 @@ function New-MbStepCapture {
         targetCandidateId = ''  # 現在採用している候補
         targetCandidates = @()  # Copilotが選び直せる、正規化矩形つきの候補
         clickPoint       = $null # 画像内のクリック位置（x, y は0〜1）。場面と赤枠のアンカー
+        sourceSessionId  = ''    # 取り込み元の追記専用証拠セッション
+        evidenceIds      = @()   # この完成手順の根拠になった操作証拠ID
+        sourceOperationCount = 0 # 何件の操作証拠をこの手順へまとめたか
+        transformationReason = '' # 操作証拠をこの手順へ変換した理由
     }
 }
 
@@ -95,7 +99,7 @@ function New-MbSheet {
 }
 
 function New-MbProject {
-    $sheet = New-MbSheet -Name '手順1'
+    $sheet = New-MbSheet -Name '章1'
     return [pscustomobject]@{
         schemaVersion   = 1
         revision        = 0
@@ -105,6 +109,7 @@ function New-MbProject {
         sheets          = @($sheet)
         images          = @()
         videos          = @()
+        evidenceSessions = @()
         createdAt       = Get-MbUtcTimestamp
         updatedAt       = Get-MbUtcTimestamp
     }
@@ -133,14 +138,16 @@ function Repair-MbProject {
     Add-MbPropertyIfMissing $Project 'sheets' @()
     Add-MbPropertyIfMissing $Project 'images' @()
     Add-MbPropertyIfMissing $Project 'videos' @()
+    Add-MbPropertyIfMissing $Project 'evidenceSessions' @()
     Add-MbPropertyIfMissing $Project 'createdAt' (Get-MbUtcTimestamp)
     Add-MbPropertyIfMissing $Project 'updatedAt' (Get-MbUtcTimestamp)
 
     $Project.sheets = @($Project.sheets)
     $Project.images = @($Project.images)
     $Project.videos = @($Project.videos)
+    $Project.evidenceSessions = @($Project.evidenceSessions)
     if ($Project.sheets.Count -eq 0) {
-        $Project.sheets = @(New-MbSheet -Name '手順1')
+        $Project.sheets = @(New-MbSheet -Name '章1')
     }
 
     foreach ($sheet in $Project.sheets) {
@@ -159,8 +166,9 @@ function Repair-MbProject {
             Add-MbPropertyIfMissing $step 'note' ''
             Add-MbPropertyIfMissing $step 'imageId' $null
             Add-MbPropertyIfMissing $step 'resultImageId' $null
-            $defaultImageLayout = if (-not [string]::IsNullOrWhiteSpace([string]$step.resultImageId)) { 'side-by-side' } else { 'before' }
-            Add-MbPropertyIfMissing $step 'imageLayout' $defaultImageLayout
+            # 結果画像を保存していても、初見では案内画像1枚を見せる。
+            # 2枚表示は利用者がその手順で必要だと判断したときだけ選ぶ。
+            Add-MbPropertyIfMissing $step 'imageLayout' 'before'
             Add-MbPropertyIfMissing $step 'imageOrder' 'before-after'
             Add-MbPropertyIfMissing $step 'videoId' $null
             Add-MbPropertyIfMissing $step 'annotations' @()
@@ -195,7 +203,12 @@ function Repair-MbProject {
                 Add-MbPropertyIfMissing $step.capture 'targetCandidateId' ''
                 Add-MbPropertyIfMissing $step.capture 'targetCandidates' @()
                 Add-MbPropertyIfMissing $step.capture 'clickPoint' $null
+                Add-MbPropertyIfMissing $step.capture 'sourceSessionId' ''
+                Add-MbPropertyIfMissing $step.capture 'evidenceIds' @()
+                Add-MbPropertyIfMissing $step.capture 'sourceOperationCount' 0
+                Add-MbPropertyIfMissing $step.capture 'transformationReason' ''
                 $step.capture.targetCandidates = @($step.capture.targetCandidates)
+                $step.capture.evidenceIds = @($step.capture.evidenceIds)
             }
             if ($null -eq $step.review) {
                 $step.review = New-MbStepReview
@@ -234,6 +247,21 @@ function Test-MbProject {
     $ids = New-Object 'System.Collections.Generic.HashSet[string]'
     $referencedImageIds = New-Object 'System.Collections.Generic.List[string]'
     $referencedVideoIds = New-Object 'System.Collections.Generic.List[string]'
+    if (@($Project.evidenceSessions).Count -gt 500) { throw '操作証拠セッションは500件までです。' }
+    foreach ($session in @($Project.evidenceSessions)) {
+        if ([string]$session.id -notmatch '^record-[a-f0-9]{32}$') { throw '操作証拠セッションIDが不正です。' }
+        if (-not $ids.Add([string]$session.id)) { throw '操作証拠セッションIDが重複しています。' }
+        if ([int]$session.formatVersion -ne 2) { throw '操作証拠の形式が古いため、現在の記録で作り直してください。' }
+        if ([int]$session.operationCount -lt 0 -or [int]$session.operationCount -gt 100000) { throw '操作証拠件数が不正です。' }
+        if ([int]$session.undoneCount -lt 0 -or [int]$session.undoneCount -gt [int]$session.operationCount) { throw '取消済み証拠件数が不正です。' }
+        if ([string]$session.captureCompleteness -notin @('no-known-gaps', 'known-gaps')) { throw '操作証拠の完全性状態が不正です。' }
+        [void](Get-MbText -Value $session.captureWarning -MaxLength 500 -FieldName '操作証拠の警告')
+        if ([string]$session.ledgerFile -notmatch '^evidence/record-[a-f0-9]{32}/evidence-ledger\.jsonl$' -or
+            [string]$session.imageDirectory -notmatch '^evidence/record-[a-f0-9]{32}/images$' -or
+            [string]$session.decisionsFile -notmatch '^evidence/record-[a-f0-9]{32}/transformations\.jsonl$') {
+            throw '操作証拠の保存先が不正です。'
+        }
+    }
     foreach ($sheet in @($Project.sheets)) {
         if ([string]$sheet.id -notmatch '^sheet-[a-f0-9]{32}$') { throw 'シートIDの形式が不正です。' }
         if (-not $ids.Add([string]$sheet.id)) { throw 'シートIDが重複しています。' }
@@ -245,6 +273,12 @@ function Test-MbProject {
             [void](Get-MbText -Value $step.title -MaxLength 100 -FieldName '手順タイトル')
             [void](Get-MbText -Value $step.description -MaxLength 4000 -FieldName '説明')
             [void](Get-MbText -Value $step.note -MaxLength 2000 -FieldName '補足')
+            [void](Get-MbText -Value $step.capture.sourceSessionId -MaxLength 100 -FieldName '証拠セッション')
+            [void](Get-MbText -Value $step.capture.transformationReason -MaxLength 500 -FieldName '変換理由')
+            if (@($step.capture.evidenceIds).Count -gt 1000) { throw '1手順の操作証拠は1000件までです。' }
+            foreach ($evidenceId in @($step.capture.evidenceIds)) {
+                if ([string]$evidenceId -notmatch '^evidence-[a-f0-9]{32}$') { throw '操作証拠IDが不正です。' }
+            }
             if ([string]$step.imageLayout -notin @('before', 'after', 'side-by-side', 'stacked')) {
                 throw '画像の見せ方が不正です。'
             }
@@ -531,8 +565,8 @@ function Set-MbProjectTitle {
 function Add-MbSheet {
     param([Parameter(Mandatory = $true)][object]$Project)
 
-    if (@($Project.sheets).Count -ge 50) { throw 'シートは50件までです。' }
-    $base = 'シート ' + (@($Project.sheets).Count + 1)
+    if (@($Project.sheets).Count -ge 50) { throw '章は50件までです。' }
+    $base = '章' + (@($Project.sheets).Count + 1)
     $name = $base
     $suffix = 2
     $names = @($Project.sheets | ForEach-Object { $_.name })
@@ -770,7 +804,11 @@ function Set-MbStepCapture {
         [ValidateSet('', 'high', 'medium', 'low')][string]$TargetConfidence = '',
         [AllowEmptyString()][string]$TargetCandidateId = '',
         [AllowEmptyString()][string]$TargetCandidatesJson = '',
-        [AllowEmptyString()][string]$ClickPointJson = ''
+        [AllowEmptyString()][string]$ClickPointJson = '',
+        [AllowEmptyString()][string]$SourceSessionId = '',
+        [AllowEmptyString()][string]$EvidenceIdsJson = '',
+        [ValidateRange(0, 1000)][int]$SourceOperationCount = 0,
+        [AllowEmptyString()][string]$TransformationReason = ''
     )
 
     $target = Get-MbStepById -Project $Project -StepId $StepId
@@ -788,6 +826,25 @@ function Set-MbStepCapture {
     $target.capture.targetSource = Get-MbText -Value $TargetSource -MaxLength 40 -FieldName '操作対象の取得元'
     $target.capture.targetConfidence = $TargetConfidence
     $target.capture.targetCandidateId = Get-MbText -Value $TargetCandidateId -MaxLength 80 -FieldName '操作対象候補'
+    $target.capture.sourceSessionId = Get-MbText -Value $SourceSessionId -MaxLength 100 -FieldName '証拠セッション'
+    $target.capture.sourceOperationCount = $SourceOperationCount
+    $target.capture.transformationReason = Get-MbText -Value $TransformationReason -MaxLength 500 -FieldName '変換理由'
+    if (-not [string]::IsNullOrWhiteSpace($EvidenceIdsJson)) {
+        $parsedEvidenceIds = $null
+        try { $parsedEvidenceIds = $EvidenceIdsJson | ConvertFrom-Json } catch { throw '操作証拠IDを読み取れません。' }
+        $safeEvidenceIds = New-Object System.Collections.ArrayList
+        $seenEvidenceIds = New-Object 'System.Collections.Generic.HashSet[string]'
+        foreach ($value in @($parsedEvidenceIds)) {
+            $evidenceId = Get-MbText -Value $value -MaxLength 100 -FieldName '操作証拠ID'
+            if ($evidenceId -match '^evidence-[a-f0-9]{32}$' -and $seenEvidenceIds.Add($evidenceId)) {
+                [void]$safeEvidenceIds.Add($evidenceId)
+            }
+        }
+        $target.capture.evidenceIds = @($safeEvidenceIds)
+        if ($target.capture.sourceOperationCount -lt $target.capture.evidenceIds.Count) {
+            $target.capture.sourceOperationCount = $target.capture.evidenceIds.Count
+        }
+    }
     if (-not [string]::IsNullOrWhiteSpace($ClickPointJson)) {
         $parsedPoint = $null
         try { $parsedPoint = $ClickPointJson | ConvertFrom-Json } catch { throw 'クリック位置を読み取れません。' }

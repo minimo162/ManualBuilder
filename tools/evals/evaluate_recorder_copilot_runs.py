@@ -35,7 +35,11 @@ def json_lines(path: Path) -> list[dict[str, Any]]:
 
 
 def normalized(value: Any) -> str:
-    return " ".join(unicodedata.normalize("NFKC", str(value or "")).lower().split())
+    text = unicodedata.normalize("NFKC", str(value or "")).lower()
+    # WindowsのEdgeタイトルには表示されないU+200B等のformat文字が混ざる。
+    # 画面表示と同じ文字列として評価し、"Microsoft Edge"の判定を落とさない。
+    text = "".join(character for character in text if unicodedata.category(character) != "Cf")
+    return " ".join(text.split())
 
 
 def app_key(title: Any) -> str:

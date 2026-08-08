@@ -70,19 +70,18 @@ try {
     Write-MbRecorderAiStatus -State 'running' -Phase 'preparing' -Message '記録したコマを並べています' -Percent 2
     $allFrames = @(Read-MbRecorderJsonLines -Path $FramesPath)
     $events = @(Read-MbRecorderJsonLines -Path $EventsPath)
+    $events = @(Repair-MbRecorderExcelInputEventAnchors -Events $events)
     if ($allFrames.Count -lt 2) { throw 'AIが比較できる画面が足りません。もう一度操作を記録してください。' }
     $allFrames = @(Add-MbRecorderFrameVisualMetrics -Frames $allFrames -FramesDirectory $FramesDirectory)
-    # 開始準備と記録終了後に前面へ戻った画面は、操作イベントの範囲外なので除く。
-    # ManualBuilderやターミナルが一覧へ混ざるとAIが架空手順として扱いやすい。
-    $eventWindowFrames = @(Select-MbRecorderEventWindowFrames -Frames $allFrames -Events $events)
-    # まずこのPCで操作前／操作後を組み立て、Copilotにはその代表コマだけを渡す。
-    # 生の最大30コマを渡すより、入力途中・同一結果・ツールチップの重複が減り、
-    # AIは曖昧な候補の取捨選択と文章化へ集中できる。
-    $localCandidates = @(New-MbRecorderLocalFrameCandidates -Frames $eventWindowFrames -Events $events -MaximumFrames 30)
-    $frames = @(Select-MbRecorderCandidateFrames -Frames $eventWindowFrames -Candidates $localCandidates)
-    if ($frames.Count -lt 2) {
-        $frames = @(Select-MbRecorderTimelineFrames -Frames $eventWindowFrames -Events $events -Maximum 30)
-    }
+    # Copilotへ渡す原本はローカル候補で先に決めない。画面変化前後を保護した最大
+    # 20コマを時系列に残し、2列×10コマの2枚へ収める。3列表示で読めなかった
+    # 小さなセル値や電卓表示を960px幅まで拡大し、待ち時間も2回に抑える。
+    $frames = @(Select-MbRecorderCopilotSourceFrames -Frames $allFrames -Events $events -Maximum 20)
+    # 画像差分で場面を決めるのではなく、実際のクリック／入力を操作境界の
+    # アンカーとしてだけ使う。AIは各グループの代表画像と文章を精査する。
+    $interactionGroups = @(New-MbRecorderLocalFrameCandidates -Frames $allFrames -Events $events -MaximumFrames 30)
+    $eventMap = @{}
+    foreach ($event in $events) { $eventMap[[int]$event.index] = $event }
     $contactDirectory = Join-Path $WorkDirectory 'contact-sheets'
     $sheets = @(New-MbRecorderContactSheets -Frames $frames -FramesDirectory $FramesDirectory -OutputDirectory $contactDirectory)
     if ($sheets.Count -lt 1) { throw 'コンタクトシートを作れませんでした。' }
@@ -92,11 +91,15 @@ try {
     # model is faster and proved more stable than forcing Think Deeper for two
     # large contact sheets.
     $settings.copilot_model = '自動,Automatic,Auto'
-    $settings.request_timeout = [Math]::Min(90, [int]$settings.request_timeout)
+    # 大きな一覧画像ではM365側の画像理解だけで90秒を超えることがある。
+    # ローカル候補は先に確認できるため、背景処理だけ150秒まで待って途中回答を
+    # 同じチャットへ重ねて再送しない。
+    $settings.request_timeout = 150
     # 実機で大きな一覧画像2枚の同時添付がM365汎用エラーになったため1枚ずつ送る。
     $perPacket = 1
     $totalPackets = [int][Math]::Ceiling($sheets.Count / [double]$perPacket)
     $proposals = New-Object System.Collections.ArrayList
+    $incompletePackets = New-Object System.Collections.ArrayList
     $serviceUnavailable = $false
     $marker = Get-MbCopilotPromptTailAnchor
 
@@ -110,8 +113,75 @@ try {
         $packetFrames = @($packetSheets | ForEach-Object { @($_.frames) })
         $firstTime = [int]($packetFrames | Measure-Object -Property timeMs -Minimum).Minimum
         $lastTime = [int]($packetFrames | Measure-Object -Property timeMs -Maximum).Maximum
-        $packetEvents = @($events | Where-Object { [int]$_.timeMs -ge ($firstTime - 1000) -and [int]$_.timeMs -le ($lastTime + 1000) })
-        $prompt = New-MbRecorderCopilotPrompt -Frames $packetFrames -Events $packetEvents -Marker $marker
+        $lowerBoundary = -1
+        if ($packetIndex -gt 0) {
+            $previousPacketSheets = @($sheets | Select-Object -Skip (($packetIndex - 1) * $perPacket) -First $perPacket)
+            $previousPacketFrames = @($previousPacketSheets | ForEach-Object { @($_.frames) })
+            $previousLastTime = [int]($previousPacketFrames | Measure-Object -Property timeMs -Maximum).Maximum
+            $lowerBoundary = [int][Math]::Floor(($previousLastTime + $firstTime) / 2.0)
+        }
+        $upperBoundary = $lastTime + 1500
+        if ($packetIndex + 1 -lt $totalPackets) {
+            $nextPacketSheets = @($sheets | Select-Object -Skip (($packetIndex + 1) * $perPacket) -First $perPacket)
+            $nextPacketFrames = @($nextPacketSheets | ForEach-Object { @($_.frames) })
+            $nextFirstTime = [int]($nextPacketFrames | Measure-Object -Property timeMs -Minimum).Minimum
+            $upperBoundary = [int][Math]::Floor(($lastTime + $nextFirstTime) / 2.0)
+        }
+        $packetGroups = New-Object System.Collections.ArrayList
+        foreach ($group in $interactionGroups) {
+            $groupIds = @($group.eventIds | ForEach-Object { [int]$_ })
+            $groupEvents = @($groupIds | Where-Object { $eventMap.ContainsKey($_) } | ForEach-Object { $eventMap[$_] })
+            if ($groupEvents.Count -lt 1) { continue }
+            $completionTime = [int]($groupEvents | Measure-Object -Property timeMs -Maximum).Maximum
+            if ($completionTime -le $lowerBoundary -or $completionTime -gt $upperBoundary) { continue }
+            $firstGroupEvent = @($groupEvents | Sort-Object { [int]$_.timeMs } | Select-Object -First 1)[0]
+            [void]$packetGroups.Add([pscustomobject]@{
+                eventIds = $groupIds
+                targetEventId = [int]$group.targetEventId
+                actionKind = [string]$group.actionKind
+                targetName = [string]$firstGroupEvent.targetName
+                beforeFrame = [string]$group.beforeFrame
+                afterFrame = [string]$group.afterFrame
+            })
+        }
+        $packetEventIds = @($packetGroups | ForEach-Object { @($_.eventIds) } | Select-Object -Unique)
+        $packetEvents = @($packetEventIds | Where-Object { $eventMap.ContainsKey([int]$_) } | ForEach-Object { $eventMap[[int]$_] } |
+            Sort-Object { [int]$_.timeMs }, { [int]$_.index })
+        $previousFrameId = ''
+        if ($packetIndex -gt 0) {
+            $previousSheets = @($sheets | Select-Object -Skip (($packetIndex * $perPacket) - 1) -First 1)
+            if ($previousSheets.Count -gt 0 -and @($previousSheets[0].frames).Count -gt 0) {
+                $previousFrameId = [string]@($previousSheets[0].frames)[-1].id
+            }
+        }
+        $prompt = New-MbRecorderCopilotPrompt -Frames $packetFrames -Events $packetEvents -InteractionGroups @($packetGroups) `
+            -PacketNumber $packetNumber -TotalPackets $totalPackets -PreviousFrameId $previousFrameId -Marker $marker
+        # 一覧だけでは読めない「確定後に表示が変わる数式」を原寸で1枚だけ追加する。
+        # 実機では一覧1＋原本2の3枚を同時に送ると、M365が汎用サービスエラーを
+        # 返すことがある。通常の値は2列一覧で十分読めるため1枚送信にし、
+        # paste証拠がある数式だけ一覧＋原本の2枚に抑える。
+        $detailFrames = New-Object System.Collections.ArrayList
+        $lastInputEvidence = @($packetFrames | Where-Object {
+            $_.PSObject.Properties.Name -contains 'role' -and [string]$_.role -eq 'input-evidence' -and
+            $_.PSObject.Properties.Name -contains 'evidenceKind' -and [string]$_.evidenceKind -eq 'paste'
+        } | Sort-Object { [int]$_.timeMs } -Descending | Select-Object -First 1)
+        if ($lastInputEvidence.Count -gt 0) {
+            # 数式は確定後のセルに結果値しか残らない。入力中の最終証拠を原寸で
+            # 渡し、Copilotが数式バーの文字列を読めるようにする。
+            [void]$detailFrames.Add($lastInputEvidence[0])
+        }
+        $attachPaths = New-Object System.Collections.ArrayList
+        foreach ($sheet in $packetSheets) { [void]$attachPaths.Add([string]$sheet.path) }
+        foreach ($detailFrame in $detailFrames) {
+            $detailPath = Join-Path $FramesDirectory ([string]$detailFrame.image)
+            if (Test-Path -LiteralPath $detailPath -PathType Leaf) { [void]$attachPaths.Add($detailPath) }
+        }
+        if ($detailFrames.Count -gt 0) {
+            $detailNote = '追加添付の原寸画像はフレーム ' + (@($detailFrames | ForEach-Object { [string]$_.id }) -join '、') +
+                ' です。一覧画像と同じIDの高解像度原本として、表示値・選択状態・ボタン名を確認してください。'
+            $prompt = $prompt.Replace($marker, ($detailNote + "`r`n" + $marker))
+        }
+        $packetNeedsSteps = Test-MbRecorderFrameSetHasMeaningfulChange -Frames $packetFrames
         $basePercent = 8 + [int](($packetIndex / [double]$totalPackets) * 84)
         Write-MbRecorderAiStatus -State 'running' -Phase 'attaching' `
             -Message ("時系列画像をCopilotへ渡しています（{0}/{1}）" -f $packetNumber, $totalPackets) `
@@ -128,9 +198,17 @@ try {
                 -CurrentPacket $packetNumber -ProposalCount $proposals.Count
         }
         $maximumAttempts = 2
+        $packetAccepted = $false
         for ($attempt = 1; $attempt -le $maximumAttempts; $attempt++) {
-            $response = Invoke-MbCopilotRequest -Settings $settings -ProfileDirectory $ProfileDirectory -Prompt $prompt `
-                -AttachPaths @($packetSheets | ForEach-Object { [string]$_.path }) -Marker $marker `
+            $attemptPrompt = $prompt
+            if ($attempt -gt 1) {
+                $retryInstruction = @'
+前回はこの一覧から有効な手順を確定できませんでした。先頭と末尾だけでなく全コマを見直し、安定した画面変化、同じブラウザー内のページ遷移、最後の操作結果を漏らさずJSONへ含めてください。曖昧な総称ではなく、画面で読める名称と値を使ってください。
+'@
+                $attemptPrompt = $prompt.Replace($marker, ($retryInstruction.Trim() + "`r`n" + $marker))
+            }
+            $response = Invoke-MbCopilotRequest -Settings $settings -ProfileDirectory $ProfileDirectory -Prompt $attemptPrompt `
+                -AttachPaths @($attachPaths) -Marker $marker `
                 -OnPhase $phaseCallback -ShouldCancel { Test-MbRecorderAiCancelled } -AllowEmptySteps
             if ($response.cancelled) {
                 Write-MbRecorderAiStatus -State 'cancelled' -Phase 'cancelled' -Message '中止しました' -Percent 100 -ProposalCount $proposals.Count
@@ -153,25 +231,55 @@ try {
                     $serviceUnavailable = $true
                     break
                 }
+                if ($tail -match '応答を生成しています|お待ちください|generating') {
+                    throw 'Copilotがまだ回答を生成しています。送信中の回答へ重ねて再送せず、しばらく待ってから「Copilotを再確認」を押してください。'
+                }
                 if ([string]$response.completedBy -eq 'no-json') { break }
                 continue
             }
             $converted = @(ConvertFrom-MbRecorderCopilotAnswer -Answer $response.answer -Frames $packetFrames -Events $packetEvents)
+            if ($packetGroups.Count -gt 0 -and $converted.Count -ne $packetGroups.Count) {
+                Write-MbRecorderAiLog ("パケット {0} は操作グループ {1} 件に対して {2} 件でした（{3}/{4}）。" -f `
+                    $packetNumber, $packetGroups.Count, $converted.Count, $attempt, $maximumAttempts) 'WARN'
+                if ($attempt -lt $maximumAttempts) { continue }
+                $converted = @()
+            }
+            if ($packetGroups.Count -gt 0 -and $converted.Count -eq $packetGroups.Count) {
+                # AIは画像から文章と代表コマを選ぶ。赤枠だけは、同数・同順で返った
+                # 場合に限り、実際に記録したクリック座標へ確実に結び直す。
+                $orderedConverted = @($converted | Sort-Object { [int]$_.timeMs })
+                for ($convertedIndex = 0; $convertedIndex -lt $orderedConverted.Count; $convertedIndex++) {
+                    $group = $packetGroups[$convertedIndex]
+                    $orderedConverted[$convertedIndex].eventIds = @($group.eventIds)
+                    $orderedConverted[$convertedIndex].targetEventId = [int]$group.targetEventId
+                }
+                $converted = $orderedConverted
+            }
             foreach ($proposal in $converted) { [void]$proposals.Add($proposal) }
-            if ($converted.Count -gt 0) { break }
+            if ($converted.Count -gt 0) { $packetAccepted = $true; break }
+            $rawStepCount = if ($response.answer.PSObject.Properties.Name -contains 'steps') { @($response.answer.steps).Count } else { 0 }
+            if ($rawStepCount -eq 0 -and -not $packetNeedsSteps) { $packetAccepted = $true; break }
             Write-MbRecorderAiLog ("パケット {0} の回答に採用できる手順がありませんでした（{1}/{2}）。" -f `
                 $packetNumber, $attempt, $maximumAttempts) 'WARN'
         }
         if ($serviceUnavailable) { break }
+        if (-not $packetAccepted -and $packetNeedsSteps) { [void]$incompletePackets.Add($packetNumber) }
     }
 
-    $ordered = @($proposals | Sort-Object { [int]$_.timeMs })
-    if ($ordered.Count -lt 1 -and $serviceUnavailable) {
+    if ($serviceUnavailable) {
         Write-MbRecorderAiStatus -State 'failed' -Phase 'fallback' `
-            -Message 'Copilotは現在応答しないため、AIによる絞り込みだけ省略しました。記録内容は失われていません。' `
+            -Message 'Copilotは途中で応答しなくなったため、不完全な結果は採用しませんでした。記録内容は失われていません。' `
             -Percent 100 -ProposalCount 0 -ErrorCode 'COPILOT_SERVICE_UNAVAILABLE'
         exit 1
     }
+    if ($incompletePackets.Count -gt 0) {
+        throw ("Copilotが時系列画像 {0} 枚目の操作を確定できませんでした。前半だけを採用せず、もう一度やり直してください。" -f `
+            (@($incompletePackets) -join '、'))
+    }
+    $ordered = @(Add-MbRecorderTitleTransitionProposals -Frames $frames -Proposals @($proposals))
+    $ordered = @(Merge-MbRecorderDuplicateTransitionProposals -Frames $frames -Proposals $ordered)
+    $ordered = @(Repair-MbRecorderTransientAfterFrames -Frames $frames -Events $events -Proposals $ordered)
+    $ordered = @(Expand-MbRecorderExcelRangeSelectionProposals -Events $events -Proposals $ordered)
     if ($ordered.Count -lt 1) { throw 'Copilotが必要な手順を選べませんでした。' }
     [IO.File]::WriteAllText($ResultPath, (([pscustomobject]@{ jobId = $JobId; proposals = $ordered }) | ConvertTo-Json -Depth 10), $script:Utf8NoBom)
     Write-MbRecorderAiStatus -State 'completed' -Phase 'completed' `

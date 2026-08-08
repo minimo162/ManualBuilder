@@ -77,6 +77,11 @@ Assert-Mb (([regex]::Matches($resultHtml, 'data-image-layout-option=')).Count -e
 Assert-Mb ($resultHtml -match 'data-swap-image-order' -and $resultHtml -match 'data-remove-result-image') '比較画像の順序変更と取り外しができる'
 Assert-Mb ($resultHtml -match 'data-open-annotation data-image-edit-target="result"' -and $resultHtml -match 'step-result-annotations-data') '操作後画像も独立して注釈・切り抜きを編集できる'
 Assert-Mb ($resultHtml -match 'aria-label="注釈 1件"' -and $resultHtml -match 'crop-badge">切り抜き済み') '操作後画像の注釈数と切り抜き状態を区別して表示する'
+$resultStep.imageLayout = 'before'
+$singleImageHtml = ConvertTo-MbStepCardHtml -Step $resultStep -Number 1 -Total 1 -Token 'testtoken'
+Assert-Mb ($singleImageHtml -match '操作後の結果も保存されています' -and $singleImageHtml -match '>結果画像も表示</button>') '自動保存した2枚目を初見では短い案内に畳む'
+Assert-Mb ($singleImageHtml -notmatch '2枚の画像の見せ方' -and ([regex]::Matches($singleImageHtml, 'data-image-layout-option=')).Count -eq 1) '必要になるまで4種類の配置選択を見せない'
+Assert-Mb ($singleImageHtml -match '>操作する場所</span>' -and $singleImageHtml -match '>操作後の結果</span>') '内部用語の操作前・操作後ではなく画像の役割を示す'
 Assert-Mb ($emptyHtml -match 'data-add-result-image') '1枚の手順から比較画像を追加できる'
 
 Write-Host ''
@@ -90,7 +95,7 @@ Assert-Mb ($watchHtml -match 'title="監視中・このタブに追加 /') '状�
 Assert-Mb ($watchHtml -match 'C:\\shots') 'ツールチップに保存先も残す'
 
 $disabledHtml = ConvertTo-MbWatchStatusHtml -State 'disabled' -Role 'available'
-Assert-Mb ($disabledHtml -match 'title="自動監視なし・貼り付け利用可 /') '保存先が無い場合も状態名をツールチップへ入れる'
+Assert-Mb ($disabledHtml -match 'title="画像追加は手動 /') '自動監視を使わない状態を中立的な文言で示す'
 
 Write-Host ''
 Write-Host '--- 手順アウトラインの状態 ---' -ForegroundColor Cyan
@@ -120,7 +125,7 @@ Assert-Mb ($navHtml -match 'aria-label="画像なし"') '画像なしの手順�
 Assert-Mb (([regex]::Matches($navHtml, 'step-nav__status')).Count -eq 2) '入力済みの手順には目印を出さない'
 # カードを直接つかみ、キーボードではAlt+矢印を代替操作として使う。
 Assert-Mb (([regex]::Matches($navHtml, 'data-step-direct-drag data-step-nav-item')).Count -eq 3) '各手順カード全体をドラッグできる'
-Assert-Mb (($navHtml -notmatch 'data-step-nav-drag-handle|data-step-select-mode|data-step-select"') -and ($navHtml -match 'Alt＋↑↓')) '専用取っ手とチェックボックスを使わずキーボード操作も案内する'
+Assert-Mb (($navHtml -notmatch 'data-step-nav-drag-handle|data-step-select-mode|data-step-select"') -and ($navHtml -match '手順 \d+ の操作')) '専用取っ手とチェックボックスを使わず行メニューから整理できる'
 Assert-Mb ($navHtml -match 'data-step-selection-all[^>]*>すべて選択') '手順をすべて選択できる'
 Assert-Mb (([regex]::Matches($navHtml, 'data-step-bulk-order=')).Count -eq 4) '選択した手順を一括で上下・先頭・末尾へ移動できる'
 Assert-Mb (([regex]::Matches($navHtml, 'data-step-nav-add-after')).Count -eq 3) '各手順の直後へ挿入できる'
@@ -145,27 +150,31 @@ function New-MbTestProject {
 
 $emptyWorkspaceHtml = ConvertTo-MbWorkspaceHtml -Project (New-MbTestProject -Steps @()) -Token 'testtoken'
 Assert-Mb ($emptyWorkspaceHtml -match '操作を記録して、手順書を作る') '空の画面で主機能を成果が分かる見出しにする'
-Assert-Mb ($emptyWorkspaceHtml -match 'empty-state__main-button[^>]*data-record-operations[^>]*>操作の記録を開始') '空の画面で操作記録を主ボタンにする'
+Assert-Mb ($emptyWorkspaceHtml -notmatch 'id="watch-status"') '操作記録と矛盾する手動画像追加の状態を初回画面に出さない'
+Assert-Mb ($emptyWorkspaceHtml -match 'empty-state__main-button[^>]*data-record-operations[^>]*>操作を記録して始める') '空の画面で操作記録を主ボタンにする'
 Assert-Mb (([regex]::Matches($emptyWorkspaceHtml, 'button button--primary[^>]*data-record-operations')).Count -eq 1) '空の画面では操作記録の主ボタンを重複させない'
 Assert-Mb ($emptyWorkspaceHtml -match 'data-open-video-picker>録画ファイルを取り込む') '既存録画の取り込みを同じ画面から選べる'
 Assert-Mb (([regex]::Matches($emptyWorkspaceHtml, 'data-open-video-picker>録画ファイルを取り込む')).Count -eq 1) '空の画面では既存録画の入口を重複させない'
-Assert-Mb ($emptyWorkspaceHtml -match '操作を記録.+自動で手順を作成.+編集してExcelへ') 'ローカルで完了する主機能の3段階を最初に示す'
+Assert-Mb ($emptyWorkspaceHtml -match '操作を記録.+手順を確認・修正.+Excelに出力') 'ローカルで完了する主機能の3段階を最初に示す'
 Assert-Mb ($emptyWorkspaceHtml -match 'accept="video/mp4,video/webm"') '主ボタンから選べる動画形式を制限する'
 
 $filledWorkspaceHtml = ConvertTo-MbWorkspaceHtml -Project (New-MbTestProject -Steps @((New-MbTestStep -AnnotationCount 0))) -Token 'testtoken'
 Assert-Mb ($filledWorkspaceHtml -notmatch 'class="empty-state') '手順がある画面では開始案内を重複表示しない'
 Assert-Mb ($filledWorkspaceHtml -match 'topbar__main-action[^>]*data-record-operations[^>]*>操作を記録') '編集中も主機能へスクロールせず戻れる'
 Assert-Mb (([regex]::Matches($filledWorkspaceHtml, 'button button--primary[^>]*data-record-operations')).Count -eq 1) '編集中も操作記録の主ボタンを重複させない'
-Assert-Mb ($filledWorkspaceHtml -match 'topbar__video-action[^>]*data-open-video-picker[^>]*>録画を取り込む') '編集中も既存録画をメニューを開かず取り込める'
-Assert-Mb ($filledWorkspaceHtml -match 'class="workspace step-view--review"') '手順の分割確認は一覧表示から始める'
+Assert-Mb ($filledWorkspaceHtml -match 'menu-command[^>]*data-open-video-picker[^>]*>録画ファイルを取り込む') '既存録画の取り込みをその他の作り方へ整理する'
+Assert-Mb ($filledWorkspaceHtml -match 'class="workspace step-view--review"') '手順の確認は一覧表示から始める'
+Assert-Mb ($filledWorkspaceHtml -match 'class="skip-link"[^>]*href="#editor-main"' -and $filledWorkspaceHtml -match '<main id="editor-main"') 'キーボードで章と手順一覧を飛ばして編集画面へ移動できる'
+Assert-Mb ($filledWorkspaceHtml -match '手順を確認・修正' -and $filledWorkspaceHtml -notmatch '分割結果を確認') '作成方法に依存しない見出しで手順確認を案内する'
 Assert-Mb ($filledWorkspaceHtml -match 'data-step-view="review"[^>]*aria-pressed="true"' -and $filledWorkspaceHtml -match 'data-step-view="focus"') '一覧確認と1件編集を切り替えられる'
 Assert-Mb ($filledWorkspaceHtml -match 'data-step-previous' -and $filledWorkspaceHtml -match 'data-step-next' -and $filledWorkspaceHtml -match 'data-step-position') '手順を前後へ連続移動できる'
+Assert-Mb ($filledWorkspaceHtml -match 'data-step-edit[^>]*>この手順を編集') '一覧から選んだ手順の集中編集へ進める'
 
 Write-Host ''
 Write-Host '--- 自動作成後の仕上げ導線 ---' -ForegroundColor Cyan
 Assert-Mb ($filledWorkspaceHtml -match 'data-finish-guide') '編集画面に仕上げ状況を常時表示する'
 Assert-Mb ($filledWorkspaceHtml -match 'data-finish-check="text"') '説明なしの手順へ移動できる'
-Assert-Mb ($filledWorkspaceHtml -match 'data-finish-check="annotation"') '赤枠・番号なしの手順を確認できる'
+Assert-Mb ($filledWorkspaceHtml -notmatch 'data-finish-check="annotation"') '任意の赤枠・番号を未完了項目として数えない'
 Assert-Mb ($filledWorkspaceHtml -match 'data-finish-check="attention"') '自動作成後の要確認手順へ移動できる'
 Assert-Mb ($filledWorkspaceHtml -match 'data-add-step-end[^>]*>＋ 手順を追加') '通常の追加は一覧末尾へ追加する入口にする'
 Assert-Mb (([regex]::Matches($filledWorkspaceHtml, 'data-open-export-dialog')).Count -eq 2) '上部と仕上げ欄から最終出力へ進める'
@@ -195,7 +204,7 @@ $secondSheet.name = '未完成シート'
 $multiSheetProject.sheets = @($multiSheetProject.sheets[0], $secondSheet)
 $multiSheetHtml = ConvertTo-MbWorkspaceHtml -Project $multiSheetProject -Token 'testtoken'
 Assert-Mb (([regex]::Matches($multiSheetHtml, 'data-sheet-delete')).Count -eq 1) '選択シートの削除を取り消し対応の操作として表示する'
-Assert-Mb ($multiSheetHtml -match 'data-sheet-duplicate[^>]*>シートを複製') '選択シートを再利用できる複製操作を表示する'
+Assert-Mb ($multiSheetHtml -match 'data-sheet-duplicate[^>]*>章を複製') '選択中の章を再利用できる複製操作を表示する'
 $finishMatch = [regex]::Match($multiSheetHtml, '<textarea hidden data-project-finish-data>(.*?)</textarea>')
 Assert-Mb $finishMatch.Success '全シートの仕上げ情報を画面へ埋め込む'
 $finishItems = ([Net.WebUtility]::HtmlDecode($finishMatch.Groups[1].Value) | ConvertFrom-Json)

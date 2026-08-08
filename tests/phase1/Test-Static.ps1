@@ -52,6 +52,14 @@ $required = @(
     'src\ManualBuilder.RecorderCopilot.psm1',
     'src\ManualBuilder.LocalDraft.psm1',
     'src\Invoke-ManualBuilderRecorder.ps1',
+    'src\RecorderCompanion\ManualBuilder.RecorderCompanion.cs',
+    'src\RecorderCompanion\Invoke-RecorderCompanion.ps1',
+    'src\RecorderCompanion\web\index.html',
+    'src\RecorderCompanion\web\styles.css',
+    'src\RecorderCompanion\web\app.js',
+    'src\RecorderCompanion\vendor\WebView2\Microsoft.Web.WebView2.Core.dll',
+    'src\RecorderCompanion\vendor\WebView2\Microsoft.Web.WebView2.Wpf.dll',
+    'src\RecorderCompanion\vendor\WebView2\WebView2Loader.dll',
     'src\Invoke-ManualBuilderRecorderCopilot.ps1',
     'src\Invoke-ManualBuilderUiaRecorder.ps1',
     'src\ManualBuilder.Dictation.psm1',
@@ -107,7 +115,7 @@ Add-Result ($serverText -match '\$storageLayout\.RuntimePath') '二重起動情�
 Add-Result (($serverText -match 'AllowParallelTestInstance') -and ($serverText -match '\$ProjectPath\|\$Port') -and ($serverText -match 'ManualBuilder-\$sid') -and ($serverText -match '-Test-\$scopeHash')) '通常起動の単一起動制御を保ったまま隔離E2Eを並行起動できる'
 Add-Result ($serverText -match '\$storageLayout\.ExportJobsRoot') 'Office一時ジョブをユーザーデータ配下へ置く'
 Add-Result (($runCommandText -match '%~dp0src\\Start-ManualBuilderLauncher\.ps1') -and ($runCommandText -notmatch '(?im)^cd /d')) 'UNC共有フォルダーから更新ランチャーを起動できる'
-Add-Result ([string]$appVersionManifest.appVersion -eq '0.46.0') '配布用アプリバージョンを0.46.0へ更新する'
+Add-Result ([string]$appVersionManifest.appVersion -eq '0.51.0') '配布用アプリバージョンを0.51.0へ更新する'
 Add-Result ($workspaceModuleText -notmatch "ManualBuilder\.Project\.psm1'\) -Force") 'WorkspaceがProjectコマンドを強制再読込しない'
 Add-Result ($launcherModuleText -match "'ManualBuilder\\app'") 'アプリ実行コードをLocalApplicationDataへキャッシュする'
 Add-Result ($launcherModuleText -match "@\('src', 'web', 'run\.cmd', 'app-version\.json'\)") 'キャッシュ対象からプロジェクトデータを除外する'
@@ -255,7 +263,7 @@ Add-Result ($webModuleText -match 'class="action-menu') '破壊的操作をメ�
 Add-Result (($webModuleText -match 'empty-state__main-button[^>]*data-record-operations') -and ($webModuleText -match 'topbar__main-action[^>]*data-record-operations') -and ($webModuleText -match 'data-open-video-picker>録画ファイルを取り込む')) '操作記録からローカル手順作成へ進む主導線を画面の表へ出す'
 Add-Result (($webModuleText -notmatch 'editable-name__action|field__edit-action') -and ($cssText -match '\.name-field:hover::after') -and ($cssText -match '\.name-field:focus-within::after')) '名称入力欄自体で編集可能性を示す'
 Add-Result (($webModuleText -match '>手順名<') -and ($webModuleText -notmatch '>タイトル</span>')) '手順名として編集対象を明示する'
-Add-Result (($webModuleText -match 'data-open-image-picker>画像(?:を追加|から作る)</button>') -and ($webModuleText -match '>文字だけ追加</button>')) '補助的な手順追加として画像と文字の選択肢を残す'
+Add-Result (($webModuleText -match 'data-open-image-picker>画像(?:から作る|から手順を追加)</button>') -and ($webModuleText -match '>空の手順を追加</button>')) '補助的な手順追加として画像と空手順の選択肢を残す'
 Add-Result (($webModuleText -match 'hx-post="/api/steps/add"') -and ($webModuleText -match '>空の手順を追加</button>')) '0件の画面から空の手順を直接追加できる'
 Add-Result (($webModuleText -match 'step-nav__title--fallback') -and ($jsText -match 'fallbackTitle')) '手順名が空なら説明の先頭をナビへ表示する'
 Add-Result (($cssText -match '\.step-nav--sorting \.step-nav__guide') -and ($cssText -match '\.sheet-nav--sorting \.sheet-nav__guide') -and ($webModuleText -notmatch 'sidebar__hint')) '並べ替えガイドをドラッグ中だけ表示する'
@@ -348,7 +356,8 @@ Add-Result (($webModuleText -match 'data-step-view="review"') -and ($webModuleTe
 Add-Result (($webModuleText -match 'data-step-previous') -and ($webModuleText -match 'data-step-next') -and ($jsText -match 'moveActiveStep') -and ($jsText -match "event\.key === 'ArrowUp'.*event\.key === 'ArrowDown'")) '前後ボタンとCtrl+Shift+矢印で手順を連続確認する'
 Add-Result (($cssText -match '\.workspace\.step-view--review \.step-image-frame') -and ($cssText -match '68vh') -and ($cssText -match '\.workspace\.step-view--review \.step-fields')) '一覧確認では画像を大きくし文章欄を下へ置く'
 Add-Result ($excelModuleText -match '\$requiresCrop') 'Excel出力へ切り抜きを反映する'
-Add-Result ($excelModuleText -match '\[AllowEmptyCollection\(\)\]\[object\[\]\]\$Annotations') '注釈なしの切り抜き画像を許可する'
+Add-Result (($excelModuleText -match '\[AllowNull\(\)\]\[AllowEmptyCollection\(\)\]\[object\[\]\]\$Annotations') -and
+    ($excelModuleText -match '\$resultAnnotations = @\(\)')) '注釈なし・nullの操作後画像を許可する'
 Add-Result ($cssText -match '--accent: #3a5ba0') 'ミニマルUIのアクセントトークンを使用する'
 Add-Result ($cssText -notmatch 'linear-gradient') 'グラデーションを使用しない'
 
@@ -369,25 +378,15 @@ Add-Result (($jsText -match "setAttribute\('aria-current', 'step'\)") -and ($css
 Add-Result (($jsText -match "addEventListener\('cancel'") -and ($jsText -match 'event\.preventDefault\(\)') -and ($cssText -match 'grid-template-columns:\s*auto minmax\(60px, 1fr\) auto')) 'Escで自動分割を中止し、狭い画面では動画操作を2段にする'
 Add-Result ($sceneText -match 'locateChangeRect') '遷移の入口から操作位置を求める'
 Add-Result ($serverText -match '/api/videos/scenes/import') '場面の取り込み口がある'
-Add-Result ($serverText -match '/api/copilot/draft/start') 'Copilot下書きの開始口がある'
-Add-Result ($serverText -match '/api/copilot/draft/apply') '採用した下書きの反映口がある'
-Add-Result (($webModuleText -notmatch 'data-copilot-draft') -and ($webModuleText -match 'data-copilot-review>文章をまとめて整える（任意）')) 'Copilotを任意の文章調整へ下げる'
-Add-Result ($jsText -match 'copilot-draft-dialog') 'Copilot下書きの確認画面を実装する'
-Add-Result ($copilotModuleText -match 'm365\.cloud\.microsoft') '普段使うM365 Copilotの画面を操作する'
-Add-Result (($serverText -match 'if \(-not \$SkipCopilotWarmup\)') -and ($serverText -match 'Start-MbCopilotWarmup') -and ($copilotServerText -match 'Initialize-ManualBuilderCopilot\.ps1')) 'サーバー起動後にCopilotを非同期で事前準備する'
-$copilotWarmupText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\Initialize-ManualBuilderCopilot.ps1'), [Text.Encoding]::UTF8)
-Add-Result (($copilotWarmupText -match 'Show-MbCopilotWindow') -and
-    ($copilotModuleText -match 'Page\.bringToFront') -and
-    ($copilotModuleText -match 'Browser\.getWindowBounds') -and
-    ($copilotModuleText -match 'Test-MbCopilotWindowBoundsVisible')) `
-    'アプリ起動時にCopilotタブとEdgeウィンドウを実際に画面上へ出して確認する'
-Add-Result (($copilotModuleText -match '\$signInObservedAt') -and
-    ($copilotModuleText -match 'TotalSeconds -ge 12')) `
-    'Edge起動直後の一時的なサインイン遷移を準備失敗と誤認しない'
-Add-Result (($copilotModuleText -match 'ManualBuilder-CopilotEdge-') -and ($copilotModuleText -match 'Get-MbChatInputSnapshot')) 'Copilot起動の競合を防ぎ依頼文末尾まで確認する'
-Add-Result ($copilotModuleText -notmatch '(?i)api[_-]?key') 'APIキーを持たない'
-Add-Result ($copilotJobText -match '\$rendered = New-MbAnnotatedImage') '焼き込み結果の戻り値を捨てない'
-Add-Result ($copilotServerText -match 'Resolve-MbOperationRect') '赤枠を読み取った文字へ寄せる'
+Add-Result ($serverText -notmatch '/api/copilot/') '外部AIのAPIを公開しない'
+Add-Result (($serverText -notmatch 'ManualBuilder\.CopilotServer') -and
+    ($serverText -notmatch 'Start-MbCopilotWarmup') -and
+    ($serverText -notmatch 'SkipCopilotWarmup')) 'アプリ起動時にEdgeや外部AIを準備しない'
+Add-Result (($webModuleText -notmatch 'data-copilot-review') -and
+    ($webModuleText -match '画像と操作情報はこのPC内だけに保存されます')) '外部AIなしのローカル完結を主導線で案内する'
+Add-Result (($jsText -notmatch 'data-recorder-ai') -and
+    ($jsText -notmatch 'data-recorder-narration') -and
+    ($jsText -match '画像と操作情報はこのPCの外へ送信しません')) '記録画面から外部AIとオンライン音声を外す'
 Add-Result ($ocrModuleText -match 'return \$false') '文字認識が使えない環境では機能だけを止める'
 Add-Result ($projectModuleText -match 'Add-MbPropertyIfMissing \$step ''capture''') '古い手順にも録画情報の入れ物を補う'
 
@@ -401,7 +400,10 @@ Add-Result (($copilotJobText -notmatch '(?m)^Import-Module .+ -Force$') -and
     ($recorderServerText -notmatch '(?m)^Import-Module .+ -Force$')) '入れ子のモジュールが共有コマンドを強制再読込しない'
 Add-Result ($recorderModuleText -match 'AutomationElement\]::FromPoint') '押した位置のコントロールをUI Automationから取る'
 Add-Result ($recorderModuleText -match 'SetProcessDpiAwarenessContext') '高DPIで座標がずれないようDPI認識にする'
-Add-Result ($recorderModuleText -notmatch 'SetWindowsHookEx') '低レベルフックを使わない'
+Add-Result ($recorderModuleText -match 'SetWindowsHookEx' -and
+    $recorderModuleText -match 'ConcurrentQueue<MouseClick>' -and
+    $recorderModuleText -match 'MouseClicks\.Enqueue') `
+    '低レベルフックはクリック情報を独立キューへ積むだけにする'
 Add-Result ($recorderModuleText -match 'rightClicked') '右クリックも操作として記録する'
 Add-Result ($recorderModuleText -match '\$capture = Copy-MbScreenBitmap') '押す直前の画面を先に確保する'
 Add-Result ($recorderModuleText -match 'DWMWA_EXTENDED_FRAME_BOUNDS') '見た目どおりのウィンドウ範囲を使う'
@@ -444,28 +446,31 @@ Add-Result (($recorderCopilotText -match 'Add-MbRecorderFrameVisualMetrics') -an
     ($recorderCopilotText -match "actionKind = 'visual-change'") -and
     ($recorderServerText -match "title = '画面の変化を確認'")) `
     'イベントを取り逃した区間を画面差分の要確認候補として補う'
-Add-Result ($recorderCopilotWorkerText -match 'Select-MbRecorderCandidateFrames -Frames \$eventWindowFrames -Candidates \$localCandidates' -and
-    $recorderCopilotWorkerText -match '\$perPacket = 1') '通常の記録を重要場面30コマ以内・一覧画像1枚ずつへ収める'
+Add-Result ($recorderCopilotWorkerText -match 'Select-MbRecorderCopilotSourceFrames -Frames \$allFrames -Events \$events -Maximum 20' -and
+    $recorderCopilotWorkerText -notmatch 'New-MbRecorderLocalFrameCandidates -Frames \$eventWindowFrames' -and
+    $recorderCopilotWorkerText -notmatch 'Select-MbRecorderCandidateFrames -Frames \$eventWindowFrames' -and
+    $recorderCopilotWorkerText -match '\$perPacket = 1') 'ローカル候補で先に決めず変化前後を含む最大20コマを読みやすい一覧画像1枚ずつへ収める'
 Add-Result (($recorderModuleText -match 'if \(-not \[string\]::IsNullOrWhiteSpace\(\$snapshotTitle\)\)') -and
     ($recorderModuleText -match '\$windowTitle\.IndexOf\(\$snapshotTitle')) '遷移後ページのタイトルだけで古いDOM対象を許可しない'
 Add-Result (($jsText -notmatch 'data-recorder-mode') -and
     ($jsText -notmatch '専用プロファイル') -and
     ($jsText -match '普段の画面をそのまま記録')) '普段のEdgeとアプリを記録する単一モードにする'
-Add-Result (($serverText -match 'Start-MbRecordingJob -WithNarration:\$withNarration') -and
-    ($serverText -notmatch 'Start-MbRecordingJob[^\r\n]+-Mode')) '旧modeを送られても専用プロファイルを起動しない'
-Add-Result (($jsText -match '/api/recorder/analyze/start') -and
+Add-Result (($serverText -match 'Start-MbRecordingJob') -and
+    ($serverText -notmatch 'WithNarration') -and
+    ($serverText -notmatch 'Start-MbRecordingJob[^\r\n]+-Mode')) '普段のデスクトップを外部送信なしで記録する'
+Add-Result (($jsText -notmatch '/api/recorder/analyze/') -and
     ($jsText -match 'renderRecordedProposals') -and
-    ($serverText -match '/api/recorder/analyze/result') -and
-    ($recorderModuleText -match 'Save-MbRecordingTimelineFrame')) '操作停止後は時系列原本からCopilotが必要場面を選ぶ'
+    ($serverText -match 'Get-MbRecordedLocalProposals') -and
+    ($recorderModuleText -match 'Save-MbRecordingTimelineFrame')) '操作停止後はこのPCで時系列原本から必要場面を選ぶ'
 Add-Result (($serverText -match 'localProposals = \$localProposals') -and
     ($recorderServerText -match 'Get-MbRecordedLocalProposals') -and
-    ($jsText -match "renderRecordedProposals\(recorder\.localProposals, 'local'\)")) `
-    'Copilot障害時もイベント画像へ戻らず安定フレームのローカル候補を確認する'
+    ($jsText -match 'renderRecordedProposals\(recorder\.localProposals\)')) `
+    '安定フレームのローカル候補を確認する'
 Add-Result (($jsText -match 'まだ取り込んでいない記録を破棄しますか') -and
     ($jsText -match "dialog\.addEventListener\('cancel'")) '記録中・確認中の誤操作で結果を即破棄しない'
-Add-Result (($jsText -match 'copilot-draft__visual') -and
-    ($jsText -match 'data-preview-rect') -and
-    ($copilotJobText -match 'targetRect')) 'Copilotが選んだ赤枠候補を画像上で確認できる'
+Add-Result (($jsText -match 'recorder-proposal__shot') -and
+    ($recorderServerText -match 'Test-MbRecordedSelectionAnchorContext') -and
+    ($recorderServerText -match 'Set-MbStepAnnotations')) 'ローカル候補の操作前後と赤枠候補を確認できる'
 Add-Result (($recorderServerText -match 'ManualBuilder\.LocalDraft\.psm1') -and
     ($recorderServerText -match 'Get-MbLocalStepDraft') -and
     ($localDraftText -match 'TARGET_UNKNOWN')) '記録の事実からローカル初稿と要確認状態を作る'
@@ -474,6 +479,32 @@ Add-Result (($recorderServerText -notmatch 'Get-MbRecorderTargetCrop -Rect') -an
 Add-Result (($serverText -match '/api/recorder/pause') -and ($serverText -match '/api/recorder/undo') -and
     ($recorderModuleText -match 'Remove-MbLastRecordingEvent') -and ($jsText -match 'data-recorder-pause') -and
     ($jsText -match 'data-recorder-undo')) '記録を一時停止し直前の操作を取り消せる'
+Add-Result (($serverText -match "resultDelayMs") -and
+    ($recorderServerText -match 'ResultCaptureDelayMs = 700') -and
+    ($recorderModuleText -match '\$pendingResultDueAtMs = \[int\]\$watch\.ElapsedMilliseconds \+ \$ResultCaptureDelayMs') -and
+    ($jsText -match 'data-recorder-result-delay')) 'アプリの応答速度に合わせて操作後画像の撮影を待てる'
+Add-Result (($recorderServerText -match 'Get-MbRecordingLatestPreview') -and
+    ($recorderServerText -match "NotePropertyName 'lastImage'") -and
+    ($recorderServerText -match "NotePropertyName 'lastResultImage'") -and
+    ($jsText -match 'updateRecorderLivePreview')) '記録中に直前の操作前後を確認できる'
+Add-Result (($recorderServerText -match "state = 'starting'") -and
+    ($recorderServerText -match '\[string\]\$status\.state -eq.+starting') -and
+    ($jsText -match "status\.state === 'starting'")) '記録ワーカーの準備完了を待ってから操作開始を案内する'
+Add-Result (($recorderServerText -match 'previousCount') -and
+    ($recorderServerText -match '\[string\]\$status\.undoRequestId -eq \$requestId') -and
+    ($recorderModuleText -match '-UndoRequestId \$undoRequestId') -and
+    ($jsText -match 'recorder\.undoBusy') -and
+    ($jsText -match 'const status = await response\.json\(\)')) '直前取消はワーカーの確定件数を待ち、連打でずれない'
+Add-Result (($jsText -match 'data-recorder-filter') -and
+    ($jsText -match 'data-recorder-select-none') -and
+    ($jsText -match 'recorder-shot-preview') -and
+    ($cssText -match '\.recorder-review-tools\s*\{[\s\S]*?position: sticky')) '長い記録を絞り込み、一括解除し、画像を拡大確認できる'
+Add-Result (($webModuleText -match 'data-step-edit') -and
+    ($jsText -match "control\.tabIndex = -1") -and
+    ($jsText -match "applyStepView\('focus'\)")) '一覧確認では操作数を絞り、選んだ1件を集中編集できる'
+Add-Result (($jsText -match '普段どおり操作すると') -and
+    ($jsText -match '手順候補を作成') -and
+    ($jsText -notmatch '録画全体から必要な場面')) '操作記録と既存録画を混同しない案内にする'
 Add-Result ($serverText -match '/api/recorder/start') '操作記録の開始口がある'
 Add-Result ($serverText -match '/api/recorder/import') '記録した操作の取り込み口がある'
 Add-Result ($serverText -match '\^/images/recording/') '記録した画面をクエリのトークンで表示できる'
@@ -510,37 +541,23 @@ Add-Result ($recorderModuleText -match '\$rectWidth -gt 0\.82') 'ページ全体
 Add-Result (($recorderModuleText -match '\[IO\.File\]::Replace\(\$temporary, \$StatusPath') -and
     ($recorderModuleText -match '\$delaysMs')) '操作記録の進捗JSONを完成後に差し替え、短いロックは再試行する'
 Add-Result ($recorderServerText -match '\[IO\.FileShare\]::ReadWrite -bor \[IO\.FileShare\]::Delete') '進捗を読む側はワーカーの原子的な差し替えを妨げない'
-Add-Result ($cssText -match '\.copilot-dialog\[open\]') '閉じた記録・Copilotダイアログを画面に残さない'
-$dictationModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.Dictation.psm1'), [Text.Encoding]::UTF8)
-Add-Result ($dictationModuleText -match 'SpeechRecognitionScenario\]::Dictation') 'Win+Hと同じ口述筆記の仕組みを使う'
-Add-Result ($dictationModuleText -match 'PhraseStartTime') '受信時刻ではなく発話の開始時刻で突き合わせる'
-Add-Result ($recorderServerText -match 'Merge-MbNarrationIntoEvents') '話した内容を操作へ振り分ける'
-Add-Result ($jsText -match 'data-recorder-narration') '音声を記録するかを選べる'
-Add-Result ($jsText -match 'Microsoftのオンライン音声認識へ送られます') '音声が端末の外へ出ることを画面に明記する'
-Add-Result ($jsText -match "narrationToggle.checked = false") '音声の記録は既定で行わない'
-$copilotServerText2 = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.CopilotServer.psm1'), [Text.Encoding]::UTF8)
+Add-Result ($cssText -match '\.copilot-dialog\[open\]') '閉じた記録ダイアログを画面に残さない'
+Add-Result (($serverText -notmatch 'withNarration') -and
+    ($recorderServerText -notmatch 'ManualBuilder\.Dictation') -and
+    ($jsText -notmatch 'data-recorder-narration')) 'オンライン音声認識を通常動線から除く'
 $sceneText2 = [IO.File]::ReadAllText((Join-Path $repoRoot 'web\assets\js\video-scenes.js'), [Text.Encoding]::UTF8)
-Add-Result ($copilotServerText2 -notmatch 'System\.Speech') '精度の低いローカル音声認識を持たない'
 Add-Result ($serverText -notmatch '/api/narration/transcribe') '録画からの文字起こしの口を持たない'
 Add-Result ($sceneText2 -notmatch 'extractNarration') '録画から音声を取り出さない'
-$copilotJobText2 = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.CopilotJob.psm1'), [Text.Encoding]::UTF8)
-Add-Result ($copilotJobText2 -match 'New-MbCopilotReviewPrompt') '文章を整える依頼文を持つ'
-Add-Result ($copilotJobText2 -match '表記ゆれ') '表記ゆれを見るよう依頼する'
-Add-Result ($webModuleText -match 'data-copilot-review') '文章を整えるをメニューから選べる'
-Add-Result ($jsText -match "copilotDraft.mode === 'review'") '下書きと校正で画面の出し分けをする'
+Add-Result (($webModuleText -notmatch '文章をまとめて整える') -and
+    ($serverText -notmatch '/api/copilot/draft')) '文章整形を外部AIへ依頼する機能を持たない'
 Add-Result ($serverText -notmatch 'PowerPoint') 'PowerPoint出力を持たない'
 Add-Result ($jsText -notmatch '(?i)powerpoint') '画面にPowerPoint出力が残っていない'
 
 $excelWorkerText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\Export-ManualBuilderExcel.ps1'), [Text.Encoding]::UTF8)
 Add-Result ($excelWorkerText.Contains("Import-Module (Join-Path `$PSScriptRoot 'ManualBuilder.Capture.psm1') -Force")) `
     'Excel出力の子プロセスが操作前・操作後画像の解決関数を読み込む'
-Add-Result ($copilotModuleText.Contains('Clear-MbCopilotAttachmentState') -and
-    $copilotModuleText.Contains('残存した添付状態を完全に消すためCopilot画面を再読込します。')) `
-    'Copilot依頼前に前回の添付画像と上限警告を消す'
-$copilotWorkerText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\Invoke-ManualBuilderCopilotJob.ps1'), [Text.Encoding]::UTF8)
-Add-Result ($copilotWorkerText.Contains('$jobFileTag') -and
-    $copilotWorkerText.Contains("'mb-{0}-p{1:d2}-step-{2:d3}.jpg'")) `
-    'Copilotの再実行で同じ添付ファイル名を使わない'
+Add-Result (($serverText -notmatch 'm365\.cloud\.microsoft') -and
+    ($serverText -notmatch 'copilot-edge-profile')) '通常実行で外部AI用プロファイルを作らない'
 
 # 入口スクリプトが呼ぶ関数が、その場で解決できることを確かめる。
 #

@@ -15,9 +15,6 @@ param(
     [ValidateRange(60, 1800)][int]$WordExportTimeoutSec = 300,
     [switch]$DisableScreenshotWatcher,
     [switch]$NoBrowser,
-    # 自動テスト専用。NoBrowserはManualBuilderのタブだけを開かない指定で、
-    # 通常のローカル起動でもCopilot用Edgeの事前準備は止めない。
-    [switch]$SkipCopilotWarmup,
     # 自動E2Eテスト専用。明示したProjectPathとPortごとに別のmutexを使い、
     # 利用中の通常インスタンスを停止せず隔離プロジェクトを検証する。
     [switch]$AllowParallelTestInstance
@@ -36,7 +33,7 @@ Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Workspace.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Capture.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Web.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Excel.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.CopilotServer.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Ocr.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.RecorderServer.psm1') -Force
 
 $storageLayout = Get-MbStorageLayout -AppRoot $appRoot -DataRoot $DataRoot -ProjectPath $ProjectPath -LegacyAppRoot $LegacyAppRoot
@@ -66,13 +63,6 @@ $script:WordExportCancelRequestedAt = $null
 $script:WordExportCancelReason = ''
 $script:WordExportJobsRoot = [string]$storageLayout.ExportJobsRoot
 $script:WordExportWorkerPath = Join-Path $PSScriptRoot 'Export-ManualBuilderWord.ps1'
-# Copilot連携。Copilot操作用のプロファイルと設定はユーザーごとのローカル領域に置き、
-# 共有フォルダーへアプリを置いても利用者どうしで混ざらないようにする。
-$script:CopilotJobsRoot = Join-Path $DataRoot 'copilot-jobs'
-$script:CopilotProfileRoot = Join-Path $DataRoot 'copilot-edge-profile'
-$script:CopilotConfigPath = Join-Path $DataRoot 'copilot.json'
-Initialize-MbCopilotServer -JobsRoot $script:CopilotJobsRoot -ScriptRoot $PSScriptRoot `
-    -ProfileRoot $script:CopilotProfileRoot -ConfigPath $script:CopilotConfigPath
 # 操作記録。記録した画面はジョブ配下に置き、取り込んだ時点でプロジェクトへ移る。
 $script:RecordingJobsRoot = Join-Path $DataRoot 'recording-jobs'
 Initialize-MbRecorderServer -JobsRoot $script:RecordingJobsRoot -ScriptRoot $PSScriptRoot
@@ -90,6 +80,99 @@ function Write-MbLog {
         default { 'Gray' }
     }
     Write-Host ((Get-Date).ToString('HH:mm:ss') + " [$Level] " + $Message) -ForegroundColor $color
+}
+
+# 動画ファイルから選ばれた1コマを、外部AIへ送らず編集可能な手順として取り込む。
+function Import-MbVideoScene {
+    param(
+        [Parameter(Mandatory = $true)][object]$Project,
+        [Parameter(Mandatory = $true)][string]$ProjectPath,
+        [Parameter(Mandatory = $true)][string]$SheetId,
+        [Parameter(Mandatory = $true)][byte[]]$Bytes,
+        [int]$TimeMs = 0,
+        [AllowEmptyString()][string]$RectJson = '',
+        [AllowEmptyString()][string]$CandidatesJson = '',
+        [switch]$SkipOcr
+    )
+
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $sceneHash = [BitConverter]::ToString($sha.ComputeHash($Bytes)).Replace('-', '') }
+    finally { $sha.Dispose() }
+    $existingImage = @($Project.images | Where-Object { [string]$_.sha256 -eq $sceneHash }) | Select-Object -First 1
+    if ($null -ne $existingImage) {
+        $targetSheet = @($Project.sheets | Where-Object { [string]$_.id -eq $SheetId }) | Select-Object -First 1
+        if ($null -ne $targetSheet) {
+            foreach ($existingStep in @($targetSheet.steps | Where-Object { [string]$_.imageId -eq [string]$existingImage.id })) {
+                if ($existingStep.PSObject.Properties.Name -contains 'capture' -and $null -ne $existingStep.capture -and
+                    [string]$existingStep.capture.kind -eq 'video-scene' -and [int]$existingStep.capture.videoTimeMs -eq $TimeMs) {
+                    return [pscustomobject]@{ status = 'duplicate'; stepId = [string]$existingStep.id; clickLabel = ''; ocrAvailable = $false }
+                }
+            }
+        }
+    }
+
+    $added = Add-MbImageStep -Project $Project -ProjectPath $ProjectPath -SheetId $SheetId -Bytes $Bytes `
+        -Source 'video' -AllowDuplicateStep
+    if ([string]$added.Status -ne 'added') {
+        return [pscustomobject]@{ status = [string]$added.Status; stepId = ''; clickLabel = ''; ocrAvailable = $false }
+    }
+    $stepId = [string]$added.Step.id
+
+    $rect = $null
+    if (-not [string]::IsNullOrWhiteSpace($RectJson)) {
+        try { $rect = $RectJson | ConvertFrom-Json } catch { $rect = $null }
+        if (-not (Test-MbNormalizedRect -Rect $rect)) { $rect = $null }
+    }
+    $candidates = New-Object System.Collections.ArrayList
+    if (-not [string]::IsNullOrWhiteSpace($CandidatesJson)) {
+        $parsed = $null
+        try { $parsed = $CandidatesJson | ConvertFrom-Json } catch { $parsed = $null }
+        foreach ($candidate in @(@($parsed) | Select-Object -First 4)) {
+            if ($null -eq $candidate -or $candidate.PSObject.Properties.Name -notcontains 'rect' -or
+                -not (Test-MbNormalizedRect -Rect $candidate.rect)) { continue }
+            [void]$candidates.Add([pscustomobject]@{
+                id = 'video-diff-' + ($candidates.Count + 1)
+                source = 'video-diff'; confidence = 'low'; label = ''; targetType = ''; rect = $candidate.rect
+            })
+        }
+    }
+    if ($candidates.Count -eq 0 -and $null -ne $rect) {
+        [void]$candidates.Add([pscustomobject]@{
+            id = 'video-diff-1'; source = 'video-diff'; confidence = 'low'; label = ''; targetType = ''; rect = $rect
+        })
+    }
+
+    $screenText = ''; $ocrAvailable = $false
+    $imagePath = Get-MbImageFilePath -Project $Project -ProjectPath $ProjectPath -ImageId ([string]$added.Step.imageId)
+    if (-not $SkipOcr -and -not [string]::IsNullOrWhiteSpace($imagePath)) {
+        try {
+            $snapshot = Get-MbOcrSnapshot -Path $imagePath
+            $ocrAvailable = [bool]$snapshot.available
+            if ($ocrAvailable) { $screenText = [string]$snapshot.text }
+            if ($ocrAvailable) {
+                foreach ($candidate in @($candidates)) {
+                    $resolved = Resolve-MbOperationRect -Rect $candidate.rect -Snapshot $snapshot
+                    $candidate.rect = $resolved.rect
+                    $candidate.label = [string]$resolved.label
+                }
+            }
+        } catch { $ocrAvailable = $false }
+    }
+
+    $captured = Set-MbStepCapture -Project $Project -StepId $stepId -Kind 'video-scene' -VideoTimeMs $TimeMs `
+        -ClickLabel '' -ScreenText $screenText -TargetSource 'video-diff' `
+        -TargetConfidence $(if ($candidates.Count -gt 0) { [string]$candidates[0].confidence } else { '' }) `
+        -TargetCandidateId '' `
+        -TargetCandidatesJson $(if ($candidates.Count -gt 0) { ConvertTo-Json -InputObject @($candidates) -Depth 8 -Compress } else { '' })
+    # 動画差分だけでは正しい操作箇所を確定できないため、候補は保存しても赤枠は付けない。
+    $captured.capture.targetCandidateId = ''
+    [void](Set-MbStepDraft -Project $Project -StepId $stepId -Title '録画の場面を確認' `
+        -Description '画面の内容を確認し、必要な操作を説明します。' -Note '')
+    [void](Set-MbStepReview -Project $Project -StepId $stepId -Action 'review' `
+        -Reason '録画の画面変化から作成した手順です。必要な場面か、文章と操作箇所を確認してください。')
+    return [pscustomobject]@{
+        status = 'added'; stepId = $stepId; clickLabel = ''; hasRect = $false; ocrAvailable = $ocrAvailable
+    }
 }
 
 function Get-MbMutex {
@@ -1230,16 +1313,6 @@ function Invoke-MbRoute {
                 Write-MbResponse $Context ($status | ConvertTo-Json -Depth 8 -Compress) 200 'application/json; charset=utf-8'
                 return
             }
-            '/api/copilot/draft/status' {
-                $status = Read-MbCopilotDraftStatus
-                Write-MbResponse $Context ($status | ConvertTo-Json -Depth 8 -Compress) 200 'application/json; charset=utf-8'
-                return
-            }
-            '/api/copilot/draft/result' {
-                $result = Get-MbCopilotDraftResult
-                Write-MbResponse $Context ($result | ConvertTo-Json -Depth 8 -Compress) 200 'application/json; charset=utf-8'
-                return
-            }
             '/api/recorder/status' {
                 $status = Read-MbRecordingStatus
                 Write-MbResponse $Context ($status | ConvertTo-Json -Depth 6 -Compress) 200 'application/json; charset=utf-8'
@@ -1249,27 +1322,13 @@ function Invoke-MbRoute {
                 # 画像そのものは別の口から出す。ここでは一覧だけを返す。
                 $events = @(Get-MbRecordedEvents)
                 $localProposals = @(Get-MbRecordedLocalProposals)
-                Write-MbResponse $Context (([pscustomobject]@{ events = $events; localProposals = $localProposals } | ConvertTo-Json -Depth 10 -Compress)) 200 'application/json; charset=utf-8'
-                return
-            }
-            '/api/recorder/analyze/status' {
-                Write-MbResponse $Context ((Read-MbRecorderCopilotStatus) | ConvertTo-Json -Depth 8 -Compress) 200 'application/json; charset=utf-8'
-                return
-            }
-            '/api/recorder/analyze/result' {
-                Write-MbResponse $Context ((Get-MbRecorderCopilotResult) | ConvertTo-Json -Depth 10 -Compress) 200 'application/json; charset=utf-8'
+                $recordingStatus = Read-MbRecordingStatus
+                Write-MbResponse $Context (([pscustomobject]@{ events = $events; localProposals = $localProposals; status = $recordingStatus } | ConvertTo-Json -Depth 10 -Compress)) 200 'application/json; charset=utf-8'
                 return
             }
             '/api/recorder/capabilities' {
                 $capability = Get-MbRecordingCapability
                 Write-MbResponse $Context ($capability | ConvertTo-Json -Depth 4 -Compress) 200 'application/json; charset=utf-8'
-                return
-            }
-            '/api/copilot/capabilities' {
-                # 画面の文字認識と音声の文字起こしが使えるかを先に伝え、
-                # 使えない機能のボタンを押させないようにする。
-                $capabilities = Get-MbCopilotCapabilities
-                Write-MbResponse $Context ($capabilities | ConvertTo-Json -Depth 6 -Compress) 200 'application/json; charset=utf-8'
                 return
             }
             default { Write-MbResponse $Context 'not found' 404 'text/plain; charset=utf-8'; return }
@@ -1380,12 +1439,17 @@ function Invoke-MbRoute {
 
     if ($path -eq '/api/recorder/start') {
         try {
-            $form = Read-MbForm -Request $request
-            # 音声はマイクを入れ、Microsoftのオンライン音声認識へ送る。既定では行わない。
-            $withNarration = ([string](Get-MbFormValue -Form $form -Name 'withNarration')) -match '^(?i:true|1|on|yes)$'
             # 普段使っているEdgeを含む、現在のデスクトップだけを記録する。
             # クライアントから旧modeが送られても専用プロファイルは起動しない。
-            $status = Start-MbRecordingJob -WithNarration:$withNarration
+            $form = Read-MbForm -Request $request
+            $resultCaptureDelayMs = 700
+            try {
+                $candidateDelayMs = [int](Get-MbFormValue -Form $form -Name 'resultDelayMs')
+                if ($candidateDelayMs -ge 200 -and $candidateDelayMs -le 3000) {
+                    $resultCaptureDelayMs = $candidateDelayMs
+                }
+            } catch { }
+            $status = Start-MbRecordingJob -ResultCaptureDelayMs $resultCaptureDelayMs
             Write-MbLog '操作の記録を開始しました。' 'OK'
             Write-MbResponse $Context ($status | ConvertTo-Json -Depth 6 -Compress) 200 'application/json; charset=utf-8'
         } catch {
@@ -1414,23 +1478,6 @@ function Invoke-MbRoute {
         return
     }
 
-    if ($path -eq '/api/recorder/analyze/start') {
-        try {
-            $source = Get-MbRecordingSourceInfo
-            if ($null -eq $source) { throw '記録した画面が見つかりません。' }
-            $status = Start-MbRecorderCopilotJob -SourceInfo $source
-            Write-MbResponse $Context ($status | ConvertTo-Json -Depth 8 -Compress) 200 'application/json; charset=utf-8'
-        } catch {
-            Write-MbResponse $Context (([pscustomobject]@{ message = [string]$_.Exception.Message } | ConvertTo-Json -Compress)) 400 'application/json; charset=utf-8'
-        }
-        return
-    }
-
-    if ($path -eq '/api/recorder/analyze/cancel') {
-        Write-MbResponse $Context ((Request-MbRecorderCopilotCancel) | ConvertTo-Json -Depth 8 -Compress) 200 'application/json; charset=utf-8'
-        return
-    }
-
     # 記録した操作のうち、選ばれたものだけを手順にする。
     if ($path -eq '/api/recorder/import') {
         if (-not $tabId) {
@@ -1449,15 +1496,15 @@ function Invoke-MbRoute {
             $sheetId = [string]$request.Headers['X-Sheet-Id']
             if ([string]::IsNullOrWhiteSpace($sheetId)) { $sheetId = [string]$project.selectedSheetId }
             $imported = if ($selectionJson -match '"beforeFrame"') {
-                Import-MbRecordedCopilotSelections -Project $project -ProjectPath $ProjectPath -SheetId $sheetId -SelectionJson $selectionJson
+                Import-MbRecordedLocalSelections -Project $project -ProjectPath $ProjectPath -SheetId $sheetId -SelectionJson $selectionJson
             } else {
                 Import-MbRecordedEvents -Project $project -ProjectPath $ProjectPath -SheetId $sheetId -SelectionJson $selectionJson
             }
-            if ([int]$imported.added -gt 0) {
+            $archivedEvidence = if ($imported.PSObject.Properties.Name -contains 'archivedEvidence') { [int]$imported.archivedEvidence } else { 0 }
+            if ([int]$imported.added -gt 0 -or $archivedEvidence -gt 0) {
                 [void](Save-MbProject -Project $project -Path $ProjectPath)
                 $script:CaptureVersion++
             }
-            Remove-MbRecorderCopilotJob
             Remove-MbRecordingJob
             Write-MbLog "記録した操作を $([int]$imported.added) 件の手順にしました。" 'OK'
             Write-MbResponse $Context ($imported | ConvertTo-Json -Depth 4 -Compress) 200 'application/json; charset=utf-8'
@@ -1468,73 +1515,8 @@ function Invoke-MbRoute {
     }
 
     if ($path -eq '/api/recorder/discard') {
-        Remove-MbRecorderCopilotJob
         Remove-MbRecordingJob
         Write-MbResponse $Context '{"status":"ok"}' 200 'application/json; charset=utf-8'
-        return
-    }
-
-    if ($path -eq '/api/copilot/draft/start') {
-        try {
-            $form = Read-MbForm -Request $request
-            $includeWritten = ([string](Get-MbFormValue -Form $form -Name 'includeWritten')) -match '^(?i:true|1|on|yes)$'
-            $mode = [string](Get-MbFormValue -Form $form -Name 'mode')
-            if ($mode -notin @('draft', 'review')) { $mode = 'draft' }
-            $status = Start-MbCopilotDraftJob -ProjectPath $ProjectPath -IncludeWritten:$includeWritten -Mode $mode
-            Write-MbLog 'Copilotへ手順の下書きを依頼しました。' 'OK'
-            Write-MbResponse $Context ($status | ConvertTo-Json -Depth 8 -Compress) 200 'application/json; charset=utf-8'
-        } catch {
-            Write-MbResponse $Context (([pscustomobject]@{ message = [string]$_.Exception.Message } | ConvertTo-Json -Compress)) 400 'application/json; charset=utf-8'
-        }
-        return
-    }
-
-    if ($path -eq '/api/copilot/draft/cancel') {
-        $status = Request-MbCopilotDraftCancel
-        Write-MbResponse $Context ($status | ConvertTo-Json -Depth 8 -Compress) 200 'application/json; charset=utf-8'
-        return
-    }
-
-    # 確認画面で採用された下書きだけを書き込む。却下したものは残さない。
-    # 日本語をURLエンコードすると1文字9バイトになり、フォームの上限（1MiB）に届きうる。
-    # そのためここだけはJSONの本文をそのまま受け取る。
-    if ($path -eq '/api/copilot/draft/apply') {
-        $length = [long]$request.ContentLength64
-        if ($length -lt 1) { Write-MbResponse $Context '採用する手順がありません。' 400 'text/plain; charset=utf-8'; return }
-        if ($length -gt (8 * 1024 * 1024)) { Write-MbResponse $Context '採用する手順が多すぎます。' 400 'text/plain; charset=utf-8'; return }
-        $selectionJson = ''
-        $reader = New-Object IO.StreamReader($request.InputStream, [Text.Encoding]::UTF8, $true, 4096, $true)
-        try { $selectionJson = $reader.ReadToEnd() } finally { $reader.Dispose() }
-        try {
-            $project = Get-MbProject -Path $ProjectPath
-            $applied = Set-MbCopilotDraftSelection -Project $project -SelectionJson $selectionJson
-            # 採用0件でも、不要候補・自信なし候補の「要確認」をproject.jsonへ残す。
-            [void](Save-MbProject -Project $project -Path $ProjectPath)
-            Remove-MbCopilotDraftJob
-            Write-MbLog "Copilotの下書きを $applied 件採用しました。" 'OK'
-            # 画面の作り直しは /ui/workspace に任せる。ここでHTMLを返すと、
-            # 呼び出し側が編集画面の初期化を通らず、操作が効かなくなる。
-            Write-MbResponse $Context (([pscustomobject]@{ applied = $applied } | ConvertTo-Json -Compress)) 200 'application/json; charset=utf-8'
-        } catch {
-            Write-MbResponse $Context ('下書きを反映できませんでした: ' + $_.Exception.Message) 400 'text/plain; charset=utf-8'
-        }
-        return
-    }
-
-    if ($path -eq '/api/copilot/draft/discard') {
-        Remove-MbCopilotDraftJob
-        Write-MbResponse $Context '{"status":"ok"}' 200 'application/json; charset=utf-8'
-        return
-    }
-
-    # サインインや様子の確認のためにCopilotの画面を前面に出す。
-    if ($path -eq '/api/copilot/window') {
-        try {
-            [void](Show-MbCopilotSignInWindow)
-            Write-MbResponse $Context '{"status":"ok"}' 200 'application/json; charset=utf-8'
-        } catch {
-            Write-MbResponse $Context (([pscustomobject]@{ message = [string]$_.Exception.Message } | ConvertTo-Json -Compress)) 400 'application/json; charset=utf-8'
-        }
         return
     }
 
@@ -2251,20 +2233,6 @@ try {
     Write-MbLog "プロジェクト: $ProjectPath" 'INFO'
     Write-Host '  停止するには画面の「終了」または Ctrl+C を使用してください。' -ForegroundColor Yellow
     Write-Host ''
-
-    # Copilotは記録後の場面選択で使うため、利用者が記録を終えてからEdgeの起動を
-    # 待たなくてよいよう、サーバーの待受開始後に非同期で準備する。初期化worker側で
-    # 既存の普段使いEdgeを再利用し、サインイン確認が必要な場合も画面上へ表示する。
-    if (-not $SkipCopilotWarmup) {
-        try {
-            if (Start-MbCopilotWarmup) {
-                Write-MbLog 'Microsoft 365 Copilotの画面を準備しています。' 'INFO'
-            }
-        } catch {
-            # Copilotが使えなくても、ローカル初稿と編集・Office出力は続行できる。
-            Write-MbLog ('Copilotの事前準備を開始できませんでした: ' + $_.Exception.Message) 'WARN'
-        }
-    }
 
     if (-not $NoBrowser) {
         Start-Process $url

@@ -27,7 +27,8 @@ function New-MbTestPngBytes {
     param(
         [Drawing.Color]$Color,
         [ValidateRange(100, 4000)][int]$Width = 1920,
-        [ValidateRange(100, 4000)][int]$Height = 1080
+        [ValidateRange(100, 4000)][int]$Height = 1080,
+        [ValidateSet('Png', 'Jpeg')][string]$Format = 'Png'
     )
     $bitmap = New-Object Drawing.Bitmap $Width, $Height
     $graphics = [Drawing.Graphics]::FromImage($bitmap)
@@ -42,7 +43,8 @@ function New-MbTestPngBytes {
         )
         $font = New-Object Drawing.Font 'Arial', 48
         $graphics.DrawString('ManualBuilder Excel Test', $font, [Drawing.Brushes]::Navy, [single]($Width * 0.12), [single]($Height * 0.43))
-        $bitmap.Save($stream, [Drawing.Imaging.ImageFormat]::Png)
+        $imageFormat = if ($Format -eq 'Jpeg') { [Drawing.Imaging.ImageFormat]::Jpeg } else { [Drawing.Imaging.ImageFormat]::Png }
+        $bitmap.Save($stream, $imageFormat)
         return $stream.ToArray()
     } finally {
         if ($font) { $font.Dispose() }
@@ -72,6 +74,36 @@ try {
     [void](Set-MbStepResultImage -Project $project -ProjectPath $projectPath -StepId $first.Step.id `
         -Bytes (New-MbTestPngBytes -Color ([Drawing.Color]::LightCyan)) -Source file)
     Assert-Mb ([string]$first.Step.imageLayout -eq 'side-by-side') '操作後画像つきの手順を左右比較で準備する'
+
+    # 現行形式の操作証拠から作った手順を、そのままExcelへ出せることも同じ試験で確認する。
+    # 旧形式との互換分岐は持たず、証拠形式v2だけを正とする。
+    $sourceSessionId = 'record-' + [guid]::NewGuid().ToString('N')
+    $sourceEvidenceId = 'evidence-' + [guid]::NewGuid().ToString('N')
+    $sessionRoot = Join-Path (Join-Path $testRoot 'evidence') $sourceSessionId
+    $sessionImages = Join-Path $sessionRoot 'images'
+    [void](New-Item -ItemType Directory -Path $sessionImages -Force)
+    [IO.File]::WriteAllBytes((Join-Path $sessionImages ($sourceEvidenceId + '.jpg')), (New-MbTestPngBytes -Color ([Drawing.Color]::LightSteelBlue) -Format Jpeg))
+    [IO.File]::WriteAllLines((Join-Path $sessionRoot 'evidence-ledger.jsonl'), @(
+        ([ordered]@{ recordType='capture-start'; formatVersion=2; sessionId=$sourceSessionId; completeness='no-known-gaps' } | ConvertTo-Json -Compress),
+        ([ordered]@{ recordType='operation'; id=$sourceEvidenceId; sessionId=$sourceSessionId; kind='click'; timeMs=1000; image=($sourceEvidenceId + '.jpg') } | ConvertTo-Json -Compress),
+        ([ordered]@{ recordType='capture-end'; formatVersion=2; sessionId=$sourceSessionId; operationCount=1; reason='stopped'; completeness='no-known-gaps'; warning='' } | ConvertTo-Json -Compress)
+    ), [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $sessionRoot 'transformations.jsonl'),
+        (([ordered]@{ recordType='transformation'; sessionId=$sourceSessionId; proposalId='local-test'; evidenceIds=@($sourceEvidenceId); accepted=$true; reviewed=$true; reason='1件のクリックを1手順として採用'; decisionSource='user-review' } | ConvertTo-Json -Compress) + [Environment]::NewLine),
+        [Text.UTF8Encoding]::new($false))
+    $project.evidenceSessions = @([pscustomobject]@{
+        id=$sourceSessionId; operationCount=1; undoneCount=0; formatVersion=2
+        captureCompleteness='no-known-gaps'; captureWarning=''; retention='project-lifetime'
+        ledgerFile=('evidence/' + $sourceSessionId + '/evidence-ledger.jsonl')
+        imageDirectory=('evidence/' + $sourceSessionId + '/images')
+        decisionsFile=('evidence/' + $sourceSessionId + '/transformations.jsonl')
+        importedAt=[DateTime]::UtcNow.ToString('o')
+    })
+    [void](Set-MbStepCapture -Project $project -StepId $first.Step.id -Kind 'recorded-local' `
+        -SourceSessionId $sourceSessionId -EvidenceIdsJson (ConvertTo-Json @($sourceEvidenceId) -Compress) `
+        -SourceOperationCount 1 -TransformationReason '1件のクリックを1手順として採用しました。')
+    Assert-Mb ([string]$first.Step.capture.sourceSessionId -eq $sourceSessionId -and
+        @($first.Step.capture.evidenceIds).Count -eq 1) 'Excelへ出す手順から現行形式の操作証拠をたどれる'
 
     $wide = Add-MbImageStep -Project $project -ProjectPath $projectPath -SheetId $project.sheets[0].id `
         -Bytes (New-MbTestPngBytes -Color ([Drawing.Color]::PaleGreen) -Width 1920 -Height 500) -Source file

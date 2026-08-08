@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const appVersion = '0.46.0';
+  const appVersion = '0.51.0';
   // 番号注釈はSVG属性で指定するためCSS変数を参照できない。
   // 編集画面とExcel・Word出力（New-MbAnnotatedImage）で同じ見た目にするため、基準フォントを揃える。
   const ANNOTATION_NUMBER_FONT = '"BIZ UDPGothic", "BIZ UDPゴシック", "BIZ UDGothic", "BIZ UDゴシック", Meiryo, "Yu Gothic UI", "MS Pゴシック", sans-serif';
@@ -81,6 +81,7 @@
   document.addEventListener('toggle', (event) => {
     const menu = event.target.closest?.('details.action-menu');
     if (menu?.open) closeActionMenus(menu);
+    menu?.querySelector('summary')?.setAttribute('aria-expanded', String(Boolean(menu.open)));
   }, true);
   document.addEventListener('click', (event) => {
     if (!event.target.closest?.('details.action-menu')) closeActionMenus();
@@ -93,6 +94,24 @@
     menu.querySelector('summary')?.focus();
     event.preventDefault();
   });
+
+  const keepDialogFocusInside = (dialog) => {
+    dialog.addEventListener('keydown', (event) => {
+      if (event.key !== 'Tab') return;
+      const focusable = [...dialog.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])')]
+        .filter((item) => !item.hidden && item.getClientRects().length > 0);
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    });
+  };
 
   let deletionUndoBusy = false;
   let visibleUndoKind = '';
@@ -488,6 +507,16 @@
     document.querySelectorAll('[data-step-view]').forEach((button) => {
       button.setAttribute('aria-pressed', String(button.dataset.stepView === nextMode));
     });
+    document.querySelectorAll('.step-card button, .step-card input, .step-card textarea, .step-card select, .step-card summary').forEach((control) => {
+      const keepInReview = control.matches('[data-image-preview], [data-step-edit], [data-step-review-resolve]');
+      if (nextMode === 'review' && !keepInReview) {
+        control.tabIndex = -1;
+        control.dataset.reviewTabDisabled = 'true';
+      } else if (control.dataset.reviewTabDisabled === 'true') {
+        control.removeAttribute('tabindex');
+        delete control.dataset.reviewTabDisabled;
+      }
+    });
     if (options.persist !== false) sessionStorage.setItem(stepViewKey(), nextMode);
     window.requestAnimationFrame(renderAllCardAnnotations);
   };
@@ -682,15 +711,19 @@
     if (text) text.textContent = metrics.missingText.length ? `${metrics.missingText.length}件 未入力` : `${total}件 完了`;
     if (image) image.textContent = metrics.missingImage.length ? `${metrics.missingImage.length}件 なし` : `${total}件 あり`;
     if (annotation) annotation.textContent = `${metrics.annotated.length}/${total}件`;
-    if (attention) attention.textContent = metrics.attention.length ? `${metrics.attention.length}件 確認` : 'なし';
+    if (attention) attention.textContent = `${metrics.attention.length}件`;
+    const attentionButton = guide.querySelector('[data-finish-check="attention"]');
+    if (attentionButton) attentionButton.setAttribute('aria-label', metrics.attention.length
+      ? `未確認の ${metrics.attention.length} 件へ移動`
+      : '要確認の項目はありません');
     guide.querySelector('[data-finish-check="text"]')?.classList.toggle('finish-guide__check--warn', metrics.missingText.length > 0);
     guide.querySelector('[data-finish-check="image"]')?.classList.toggle('finish-guide__check--warn', metrics.missingImage.length > 0);
     guide.querySelector('[data-finish-check="attention"]')?.classList.toggle('finish-guide__check--warn', metrics.attention.length > 0);
     if (summary) {
       const issueCount = metrics.missingText.length + metrics.missingImage.length + metrics.attention.length;
       summary.textContent = issueCount
-        ? `出力前に ${issueCount} 箇所を確認できます`
-        : '文章と画像が揃いました。順番と赤枠を確認して出力できます';
+        ? `確認をおすすめする項目が ${issueCount} 件あります`
+        : '文章と画像が揃いました。Excelに出力できます';
     }
   };
 
@@ -713,7 +746,7 @@
     sendHeartbeat();
   };
 
-  const selectCopilotDeleteCandidatesOnCurrentSheet = () => {
+  const selectDeleteCandidatesOnCurrentSheet = () => {
     const currentSheetId = selectedSheetId();
     const visibleIds = new Set(stepCards().map((card) => card.dataset.stepId || ''));
     selectedStepIds.clear();
@@ -757,8 +790,8 @@
       else if (kind === 'attention') {
         const detail = finishAttentionSteps.get(next.stepId);
         if (detail?.action === 'delete') {
-          selectCopilotDeleteCandidatesOnCurrentSheet();
-          showToast('Copilotの不要候補を選択しました。内容を確認してから「まとめて削除」を押してください。', 'info');
+          selectDeleteCandidatesOnCurrentSheet();
+          showToast('不要候補を選択しました。内容を確認してから「まとめて削除」を押してください。', 'info');
         } else {
           card.querySelector('[data-step-review-resolve]')?.focus();
           showToast('内容と赤枠・番号を確認し、問題なければ「確認済みにする」を押してください。', 'info');
@@ -839,7 +872,9 @@
       actions.className = 'step-nav__actions action-menu';
       const more = document.createElement('summary');
       more.className = 'step-nav__more';
-      more.setAttribute('aria-label', `手順 ${index + 1} の操作`);
+      more.setAttribute('role', 'button');
+      more.setAttribute('aria-expanded', 'false');
+      more.setAttribute('aria-label', `手順 ${index + 1} の操作を開く`);
       more.textContent = '…';
       const menu = document.createElement('div');
       menu.className = 'action-menu__panel action-menu__panel--right step-nav__menu-panel';
@@ -2299,18 +2334,6 @@
     syncCaptureSnapshot(await response.text(), true);
   };
 
-  let copilotCapabilities = null;
-  const loadCopilotCapabilities = async () => {
-    if (copilotCapabilities) return copilotCapabilities;
-    try {
-      const response = await fetch('/api/copilot/capabilities', { headers: sessionHeaders() });
-      copilotCapabilities = response.ok ? await response.json() : null;
-    } catch {
-      copilotCapabilities = null;
-    }
-    return copilotCapabilities;
-  };
-
   const runAutoScenes = async () => {
     const player = videoCapture.player;
     if (!player || videoCapture.busy) return;
@@ -2858,10 +2881,10 @@
     if (outputReviewDialog) return outputReviewDialog;
     const dialog = document.createElement('dialog');
     dialog.className = 'output-review-dialog';
-    dialog.setAttribute('aria-label', '仕上げを確認して手順書を出力');
-    dialog.innerHTML = '<header class="output-review-dialog__header"><div><strong>仕上げを確認して出力</strong><span>Excelを標準形式、Wordを印刷向けの副形式として、このPCへ作成します</span></div><button type="button" class="output-review-dialog__close" data-output-close aria-label="閉じる">×</button></header>'
-      + '<div class="output-review-dialog__content"><section class="output-review-dialog__summary" aria-label="最終確認"><div><span>全手順</span><strong data-output-total>0件</strong></div><button type="button" data-output-fix="text"><span>説明なし</span><strong data-output-missing-text>0件</strong></button><button type="button" data-output-fix="image"><span>画像なし</span><strong data-output-missing-image>0件</strong></button><div><span>赤枠・番号あり</span><strong data-output-annotated>0件</strong></div><button type="button" data-output-fix="attention"><span>要確認</span><strong data-output-attention>0件</strong></button></section><p class="output-review-dialog__note" data-output-note></p>'
-      + '<section class="output-review-dialog__formats" aria-label="出力形式"><button type="button" class="output-format output-format--recommended" data-output-format="excel"><span class="output-format__badge">標準</span><strong>Excelで作成</strong><span>横長で画像と説明を見比べやすく、出力後も追記できます</span></button><button type="button" class="output-format" data-output-format="word"><strong>Wordで作成</strong><span>印刷しやすい縦型の副形式です</span></button></section></div>'
+    dialog.setAttribute('aria-label', 'Excel・Wordで出力');
+    dialog.innerHTML = '<header class="output-review-dialog__header"><div><strong>Excel・Wordで出力</strong><span>ボタンを押すと、このPCにファイルを作成します</span></div><button type="button" class="output-review-dialog__close" data-output-close aria-label="閉じる">×</button></header>'
+      + '<div class="output-review-dialog__content"><section class="output-review-dialog__summary" aria-label="出力前の確認"><div><span>全手順</span><strong data-output-total>0件</strong></div><button type="button" data-output-fix="text"><span>説明なし</span><strong data-output-missing-text>0件</strong></button><button type="button" data-output-fix="image"><span>画像なし</span><strong data-output-missing-image>0件</strong></button><button type="button" data-output-fix="attention"><span>確認待ち</span><strong data-output-attention>0件</strong></button></section><p class="output-review-dialog__note" data-output-note></p>'
+      + '<section class="output-review-dialog__formats" aria-label="出力形式"><button type="button" class="output-format output-format--recommended" data-output-format="excel"><span class="output-format__badge">おすすめ</span><strong>Excelファイルを作成</strong><span>画像と説明を見比べやすく、出力後も追記できます</span></button><button type="button" class="output-format" data-output-format="word"><strong>Wordファイルを作成</strong><span>印刷しやすい縦型です</span></button></section></div>'
       + '<footer class="output-review-dialog__footer"><span>出力後の共有や公開は、作成したファイルを利用者が管理します。</span><button type="button" class="button button--ghost" data-output-close>編集に戻る</button></footer>';
     dialog.querySelectorAll('[data-output-close]').forEach((button) => button.addEventListener('click', () => dialog.close()));
     dialog.addEventListener('click', (event) => {
@@ -2881,6 +2904,7 @@
       event.preventDefault();
       dialog.close();
     });
+    keepDialogFocusInside(dialog);
     document.body.appendChild(dialog);
     outputReviewDialog = dialog;
     return dialog;
@@ -2898,7 +2922,6 @@
     dialog.querySelector('[data-output-total]').textContent = `${metrics.total}件`;
     dialog.querySelector('[data-output-missing-text]').textContent = `${metrics.missingText.length}件`;
     dialog.querySelector('[data-output-missing-image]').textContent = `${metrics.missingImage.length}件`;
-    dialog.querySelector('[data-output-annotated]').textContent = `${metrics.annotated.length}件`;
     dialog.querySelector('[data-output-attention]').textContent = `${metrics.attention.length}件`;
     const textFix = dialog.querySelector('[data-output-fix="text"]');
     const imageFix = dialog.querySelector('[data-output-fix="image"]');
@@ -2909,11 +2932,12 @@
     const issueLabels = [];
     if (metrics.missingText.length) issueLabels.push(`説明なし ${metrics.missingText.length}件`);
     if (metrics.missingImage.length) issueLabels.push(`画像なし ${metrics.missingImage.length}件`);
-    if (metrics.attention.length) issueLabels.push(`要確認 ${metrics.attention.length}件`);
+    if (metrics.attention.length) issueLabels.push(`確認待ち ${metrics.attention.length}件`);
     dialog.querySelector('[data-output-note]').textContent = issueLabels.length
       ? `${issueLabels.join('、')}があります。件数を押すと該当手順を直せます。意図した状態ならそのまま形式を選べます。`
-      : '文章と画像が揃っています。順番と赤枠・番号を確認したら、形式を選んでください。';
+      : '文章と画像が揃っています。作成するファイルを選んでください。';
     if (!dialog.open) dialog.showModal();
+    window.requestAnimationFrame(() => dialog.querySelector('[data-output-format="excel"]')?.focus());
   };
 
   document.body.addEventListener('htmx:configRequest', (event) => {
@@ -3061,20 +3085,6 @@
       void addStepAtEnd(addStepButton);
       return;
     }
-    const copilotDraftButton = event.target.closest('[data-copilot-draft]');
-    if (copilotDraftButton) {
-      const menu = copilotDraftButton.closest('details');
-      if (menu) menu.open = false;
-      openCopilotDialog('draft');
-      return;
-    }
-    const copilotReviewButton = event.target.closest('[data-copilot-review]');
-    if (copilotReviewButton) {
-      const menu = copilotReviewButton.closest('details');
-      if (menu) menu.open = false;
-      openCopilotDialog('review');
-      return;
-    }
     if (event.target.closest('[data-open-export-dialog]')) {
       void openOutputReviewDialog();
       return;
@@ -3096,6 +3106,16 @@
     const stepViewButton = event.target.closest('[data-step-view]');
     if (stepViewButton) {
       applyStepView(stepViewButton.dataset.stepView || 'review');
+      return;
+    }
+    const stepEditButton = event.target.closest('[data-step-edit]');
+    if (stepEditButton) {
+      const card = stepEditButton.closest('.step-card');
+      if (card) {
+        applyStepView('focus');
+        setActiveStep(card.dataset.stepId, { scroll: false });
+        card.querySelector('input[name="title"]')?.focus();
+      }
       return;
     }
     if (event.target.closest('[data-step-previous]')) {
@@ -4222,23 +4242,27 @@
   // ---------------------------------------------------------------
   // 操作を記録して手順にする
   // ---------------------------------------------------------------
+  const escapeRecorderHtml = (value) => String(value ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
   const recorder = {
     dialog: null,
     timer: null,
     events: [],
     localProposals: [],
-    proposals: [],
     busy: false,
     active: false,
-    analysisActive: false,
-    useAi: false,
     reviewSource: 'local',
     eventSelection: null,
     localSelection: null,
-    proposalSelection: null,
-    copilotUnavailableUntil: 0,
+    captureCompleteness: 'unknown',
+    captureWarning: '',
     paused: false,
-    count: 0
+    undoBusy: false,
+    count: 0,
+    capabilityRequestId: 0,
+    capabilityController: null
   };
 
   const stopRecorderPolling = () => {
@@ -4254,7 +4278,9 @@
     dialog.querySelectorAll('[data-recorder-view]').forEach((section) => {
       section.hidden = section.dataset.recorderView !== view;
     });
-    dialog.querySelector('[data-recorder-start]').hidden = view !== 'setup';
+    const startButton = dialog.querySelector('[data-recorder-start]');
+    startButton.hidden = view !== 'setup';
+    startButton.textContent = '記録を開始';
     dialog.querySelector('[data-recorder-stop]').hidden = view !== 'recording';
     dialog.querySelector('[data-recorder-import]').hidden = view !== 'review';
     dialog.querySelectorAll('[data-recorder-phase]').forEach((item) => {
@@ -4277,6 +4303,66 @@
     dialog.querySelectorAll('[data-recorder-detail]').forEach((node) => { node.textContent = detail; });
   };
 
+  const showRecorderContinueBar = (result) => {
+    document.getElementById('recorder-complete-bar')?.remove();
+    const bar = document.createElement('div');
+    bar.id = 'recorder-complete-bar';
+    bar.className = 'recorder-complete-bar';
+    bar.setAttribute('role', 'status');
+    const reviewCount = Number(result?.needsReview || 0);
+    bar.innerHTML = `<span><strong>${Number(result?.added || 0)}件を追加しました</strong>${reviewCount > 0 ? `・要確認 ${reviewCount}件` : '・確認待ちはありません'}</span>`
+      + '<span class="recorder-complete-bar__actions"><button type="button" class="button button--secondary button--small" data-recorder-continue>続けて記録</button>'
+      + (reviewCount > 0 ? '<button type="button" class="button button--ghost button--small" data-recorder-review-attention>要確認だけ編集</button>' : '')
+      + '<button type="button" class="recorder-complete-bar__close" aria-label="記録結果の案内を閉じる">×</button></span>';
+    bar.querySelector('[data-recorder-continue]')?.addEventListener('click', () => {
+      bar.remove();
+      void openRecorderDialog();
+    });
+    bar.querySelector('[data-recorder-review-attention]')?.addEventListener('click', () => {
+      bar.remove();
+      void focusFinishTarget('attention');
+    });
+    bar.querySelector('.recorder-complete-bar__close')?.addEventListener('click', () => bar.remove());
+    document.body.appendChild(bar);
+  };
+
+  const updateRecorderLivePreview = (status = {}) => {
+    const panel = recorder.dialog?.querySelector('[data-recorder-live-preview]');
+    if (!panel) return;
+    const before = panel.querySelector('[data-recorder-preview-before]');
+    const after = panel.querySelector('[data-recorder-preview-after]');
+    const afterWrap = panel.querySelector('[data-recorder-preview-after-wrap]');
+    const image = String(status.lastImage || '');
+    const resultImage = String(status.lastResultImage || '');
+    if (!image) {
+      panel.hidden = true;
+      before.removeAttribute('src');
+      after.removeAttribute('src');
+      before.dataset.file = '';
+      after.dataset.file = '';
+      afterWrap.hidden = true;
+      return;
+    }
+
+    const token = encodeURIComponent(sessionHeaders()['X-Manual-Token'] || '');
+    if (before.dataset.file !== image) {
+      before.src = `/images/recording/${encodeURIComponent(image)}?token=${token}`;
+      before.dataset.file = image;
+    }
+    if (resultImage) {
+      if (after.dataset.file !== resultImage) {
+        after.src = `/images/recording/${encodeURIComponent(resultImage)}?token=${token}`;
+        after.dataset.file = resultImage;
+      }
+      afterWrap.hidden = false;
+    } else {
+      after.removeAttribute('src');
+      after.dataset.file = '';
+      afterWrap.hidden = true;
+    }
+    panel.hidden = false;
+  };
+
   const getRecommendedRecordedIndexes = (events) => {
     // 手順は Edge → Excel のように複数アプリをまたぐのが普通であり、件数が
     // 一番多いアプリだけを選ぶと、重複検出が多いアプリほど他を押し出してしまう。
@@ -4284,25 +4370,62 @@
     return new Set(events.map((item) => Number(item.index)));
   };
 
+  const isRecorderRowSelected = (row) => row?.dataset.selected !== 'false';
+
+  const setRecorderRowSelected = (row, selected) => {
+    if (!row) return;
+    row.dataset.selected = selected ? 'true' : 'false';
+    row.classList.toggle('is-excluded', !selected);
+    const button = row.querySelector('[data-recorder-toggle]');
+    if (button) {
+      button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+      button.textContent = selected ? 'この手順を使う' : '除外しました';
+    }
+  };
+
+  const bindRecorderRowControls = (list) => {
+    list.querySelectorAll('[data-recorder-toggle]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const row = button.closest('[data-recorder-event]');
+        setRecorderRowSelected(row, !isRecorderRowSelected(row));
+        updateRecorderSelectionSummary();
+      });
+    });
+  };
+
+  const applyRecorderReviewFilter = () => {
+    const filter = recorder.dialog?.querySelector('[data-recorder-filter]')?.value || 'all';
+    recorder.dialog?.querySelectorAll('[data-recorder-event]').forEach((row) => {
+      const selected = isRecorderRowSelected(row);
+      const needsReview = row.dataset.reviewRequired === 'true';
+      row.hidden = (filter === 'review' && !needsReview) || (filter === 'selected' && !selected);
+    });
+  };
+
   const updateRecorderSelectionSummary = () => {
     const summary = recorder.dialog?.querySelector('[data-recorder-selection-summary]');
     if (!summary) return;
-    const boxes = [...recorder.dialog.querySelectorAll('[data-recorder-accept]')];
-    summary.textContent = `${boxes.filter((box) => box.checked).length} / ${boxes.length} 件を取り込む`;
+    const rows = [...recorder.dialog.querySelectorAll('[data-recorder-event]')];
+    const selectedCount = rows.filter(isRecorderRowSelected).length;
+    const reviewCount = rows.filter((row) => row.dataset.reviewRequired === 'true').length;
+    const readyCount = rows.length - reviewCount;
+    const excludedCount = rows.length - selectedCount;
+    summary.textContent = reviewCount > 0
+      ? `${readyCount} 件はそのまま作成・${reviewCount} 件を確認${excludedCount > 0 ? `・${excludedCount} 件を除外` : ''}`
+      : `${selectedCount} 件の手順をそのまま作成できます`;
+    const importButton = recorder.dialog.querySelector('[data-recorder-import]');
+    if (importButton) {
+      importButton.disabled = selectedCount === 0;
+      importButton.textContent = reviewCount > 0 ? '確認した内容で手順を作成' : '手順を作成';
+    }
+    applyRecorderReviewFilter();
   };
 
-  const recorderConfidenceLabel = (confidence) => {
-    if (confidence === 'high') return '確度 高';
-    if (confidence === 'medium') return '要確認';
-    return '要確認（根拠弱）';
-  };
-
-  // Copilotが時系列フレームから選んだ「操作前／操作後」を、大きな画像で確認する。
-  // プログラム側のイベント分割はここでは手順の単位として扱わない。
-  const renderRecordedProposals = (proposals, source = 'proposals') => {
+  // このPCが時系列フレームから選んだ「操作前／操作後」を、大きな画像で確認する。
+  const renderRecordedProposals = (proposals) => {
     const list = recorder.dialog.querySelector('[data-recorder-list]');
     if (proposals.length === 0) {
-      list.innerHTML = `<p class="copilot-empty">${source === 'local' ? '手順にできる安定した場面がありませんでした。' : 'Copilotが手順として選べる場面を見つけられませんでした。'}</p>`;
+      list.innerHTML = '<p class="copilot-empty">操作を記録できませんでした。対象アプリで操作して、もう一度お試しください。</p>';
       return;
     }
     const token = encodeURIComponent(sessionHeaders()['X-Manual-Token'] || '');
@@ -4311,21 +4434,32 @@
       const afterSrc = item.afterImage
         ? `/images/recording/${encodeURIComponent(item.afterImage)}?token=${token}`
         : '';
-      const shots = `<span class="recorder-proposal__shots"><span><small>操作前 ${escapeHtml(item.beforeFrame || '')}</small><img class="recorder-proposal__shot" src="${beforeSrc}" alt="操作前" loading="lazy"></span>`
-        + (afterSrc ? `<span><small>操作後 ${escapeHtml(item.afterFrame || '')}</small><img class="recorder-proposal__shot" src="${afterSrc}" alt="操作後の結果" loading="lazy"></span>` : '')
-        + '</span>';
+      const shots = `<div class="recorder-proposal__shots"><button type="button" class="recorder-shot-preview recorder-shot-preview--primary" data-image-preview="${beforeSrc}" aria-label="手順 ${index + 1} の操作画面を拡大"><small>操作する場所</small><img class="recorder-proposal__shot" src="${beforeSrc}" alt="" loading="lazy"></button>`
+        + (afterSrc ? `<details class="recorder-result-evidence"><summary>操作後の画面も確認</summary><button type="button" class="recorder-shot-preview" data-image-preview="${afterSrc}" aria-label="手順 ${index + 1} の操作後画面を拡大"><img class="recorder-proposal__shot" src="${afterSrc}" alt="" loading="lazy"></button></details>` : '')
+        + '</div>';
       const confidence = String(item.confidence || 'low').toLowerCase();
-      const reviewClass = confidence === 'high' ? '' : ' recorder-proposal--review';
-      const selection = source === 'local' ? recorder.localSelection : recorder.proposalSelection;
-      const selected = selection instanceof Set ? selection.has(index) : true;
-      return `<label class="recorder-proposal${reviewClass}" data-recorder-event data-proposal-index="${index}">
-<span class="recorder-proposal__select"><input type="checkbox" data-recorder-accept${selected ? ' checked' : ''}><span>手順 ${index + 1}</span></span>
+      const proposalReviewRequired = typeof item.reviewRequired === 'boolean'
+        ? item.reviewRequired
+        : confidence !== 'high';
+      const captureNeedsReview = recorder.captureCompleteness !== 'no-known-gaps';
+      const reviewRequired = captureNeedsReview || proposalReviewRequired;
+      const reviewClass = reviewRequired ? ' recorder-proposal--review' : '';
+      const selected = recorder.localSelection instanceof Set ? recorder.localSelection.has(index) : true;
+      const operationCount = Math.max(1, Number(item.sourceOperationCount || item.eventIds?.length || 1));
+      const reviewReason = captureNeedsReview
+        ? (recorder.captureWarning || '記録の完全性を確認できません。前後の手順に抜けがないか確認してください。')
+        : (item.reason || '操作対象または画面の変化を自動で確定できませんでした。');
+      const transformationReason = item.transformationReason || `${operationCount} 件の操作記録から、この手順候補を作りました。`;
+      const reviewEditor = reviewRequired
+        ? `<div class="recorder-proposal__editor"><label><span>手順名</span><input type="text" maxlength="100" data-recorder-title value="${escapeRecorderHtml(item.title || '')}"></label><label><span>説明</span><textarea rows="3" maxlength="500" data-recorder-description>${escapeRecorderHtml(item.description || '')}</textarea></label></div>`
+        : '';
+      return `<article class="recorder-proposal${reviewClass}${selected ? '' : ' is-excluded'}" data-recorder-event data-proposal-index="${index}" data-review-required="${reviewRequired ? 'true' : 'false'}" data-selected="${selected ? 'true' : 'false'}">
 ${shots}
-<span class="recorder-proposal__body"><strong>${escapeHtml(item.title || `手順 ${index + 1}`)}</strong><span>${escapeHtml(item.description || '')}</span><small>${escapeHtml(recorderConfidenceLabel(confidence))}${item.reason ? `・${escapeHtml(item.reason)}` : ''}</small></span>
-</label>`;
+<div class="recorder-proposal__body"><span class="recorder-proposal__status">${reviewRequired ? '確認が必要' : 'そのまま使えます'}</span><strong>手順 ${index + 1}　${escapeRecorderHtml(item.title || '')}</strong><span>${escapeRecorderHtml(item.description || '')}</span>${reviewRequired ? `<p class="recorder-proposal__reason">${escapeRecorderHtml(reviewReason)}</p>` : ''}${reviewEditor}<div class="recorder-proposal__actions"><button type="button" class="button button--secondary button--small" data-recorder-toggle aria-pressed="${selected ? 'true' : 'false'}">${selected ? 'この手順を使う' : '除外しました'}</button></div><details class="recorder-source-evidence"><summary>元の操作を見る</summary><p>${escapeRecorderHtml(transformationReason)}</p><p>${operationCount} 件の元操作は、除外してもこのプロジェクト内に残ります。</p></details></div>
+</article>`;
     }).join('');
-    list.querySelectorAll('[data-recorder-accept]').forEach((box) => box.addEventListener('change', updateRecorderSelectionSummary));
-    recorder.reviewSource = source;
+    bindRecorderRowControls(list);
+    recorder.reviewSource = 'local';
     updateRecorderSelectionSummary();
   };
 
@@ -4338,7 +4472,7 @@ ${shots}
     }
     const tail = new Set(recorder.events.slice(start).map((item) => Number(item.index)));
     recorder.dialog.querySelectorAll('[data-recorder-event]').forEach((row) => {
-      if (tail.has(Number(row.dataset.index))) row.querySelector('[data-recorder-accept]').checked = false;
+      if (tail.has(Number(row.dataset.index))) setRecorderRowSelected(row, false);
     });
     updateRecorderSelectionSummary();
   };
@@ -4347,7 +4481,7 @@ ${shots}
   const renderRecordedEvents = (events) => {
     const list = recorder.dialog.querySelector('[data-recorder-list]');
     if (events.length === 0) {
-      list.innerHTML = '<p class="copilot-empty">記録された操作がありませんでした。</p>';
+      list.innerHTML = '<p class="copilot-empty">操作を記録できませんでした。対象アプリで操作して、もう一度お試しください。</p>';
       return;
     }
     // imgタグはヘッダーを送れないので、画像だけはクエリにトークンを載せる。
@@ -4365,202 +4499,95 @@ ${shots}
       const resultSrc = item.resultImage
         ? `/images/recording/${encodeURIComponent(item.resultImage)}?token=${token}`
         : '';
-      const shots = `<span class="recorder-event__shots"><span><small>操作前</small><img class="recorder-event__shot" src="${src}" alt="操作前" loading="lazy"></span>`
-        + (resultSrc ? `<span><small>操作後</small><img class="recorder-event__shot" src="${resultSrc}" alt="操作後の結果" loading="lazy"></span>` : '')
+      const shots = `<span class="recorder-event__shots"><button type="button" class="recorder-shot-preview" data-image-preview="${src}" aria-label="操作 ${item.index} の操作前画面を拡大"><small>操作前</small><img class="recorder-event__shot" src="${src}" alt="" loading="lazy"></button>`
+        + (resultSrc ? `<button type="button" class="recorder-shot-preview" data-image-preview="${resultSrc}" aria-label="操作 ${item.index} の操作後画面を拡大"><small>操作後</small><img class="recorder-event__shot" src="${resultSrc}" alt="" loading="lazy"></button>` : '')
         + '</span>';
       const selected = recorder.eventSelection instanceof Set
         ? recorder.eventSelection.has(Number(item.index))
         : recommended.has(Number(item.index));
       const reviewReason = selected ? '' : '<small class="recorder-event__review">別のアプリ・要確認</small>';
-      return `<label class="recorder-event" data-recorder-event data-index="${item.index}">
-<input type="checkbox" data-recorder-accept${selected ? ' checked' : ''}>
+      const reviewRequired = fallback || !item.targetName || !selected;
+      return `<article class="recorder-event${selected ? '' : ' is-excluded'}" data-recorder-event data-index="${item.index}" data-review-required="${reviewRequired ? 'true' : 'false'}" data-selected="${selected ? 'true' : 'false'}">
 ${shots}
-<span class="recorder-event__body"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(detail)}</span>${reviewReason}</span>
+<span class="recorder-event__body"><strong>操作 ${item.index}　${escapeRecorderHtml(label)}</strong><span>${escapeRecorderHtml(detail)}</span>${reviewReason}<button type="button" class="button button--secondary button--small" data-recorder-toggle aria-pressed="${selected ? 'true' : 'false'}">${selected ? 'この手順を使う' : '除外しました'}</button></span>
 <span class="recorder-event__index">${item.index}</span>
-</label>`;
+</article>`;
     }).join('');
-    list.querySelectorAll('[data-recorder-accept]').forEach((box) => box.addEventListener('change', updateRecorderSelectionSummary));
+    bindRecorderRowControls(list);
     recorder.reviewSource = 'events';
     updateRecorderSelectionSummary();
   };
 
   const rememberRecorderSelection = () => {
     if (!recorder.dialog) return;
-    if (recorder.reviewSource === 'proposals' || recorder.reviewSource === 'local') {
-      const selection = new Set([...recorder.dialog.querySelectorAll('[data-recorder-event]')]
-        .filter((row) => row.querySelector('[data-recorder-accept]')?.checked)
+    if (recorder.reviewSource === 'local') {
+      recorder.localSelection = new Set([...recorder.dialog.querySelectorAll('[data-recorder-event]')]
+        .filter(isRecorderRowSelected)
         .map((row) => Number(row.dataset.proposalIndex)));
-      if (recorder.reviewSource === 'local') recorder.localSelection = selection;
-      else recorder.proposalSelection = selection;
       return;
     }
     recorder.eventSelection = new Set([...recorder.dialog.querySelectorAll('[data-recorder-event]')]
-      .filter((row) => row.querySelector('[data-recorder-accept]')?.checked)
+      .filter(isRecorderRowSelected)
       .map((row) => Number(row.dataset.index)));
   };
 
-  const updateRecorderResultToggle = () => {
-    const button = recorder.dialog?.querySelector('[data-recorder-ai-results]');
-    if (!button) return;
-    button.hidden = recorder.proposals.length === 0;
-    const baseCount = recorder.localProposals.length || recorder.events.length;
-    button.textContent = recorder.reviewSource === 'proposals'
-      ? `このPCで選んだ候補 ${baseCount} 件に戻す`
-      : `Copilotの整理結果 ${recorder.proposals.length} 件を見る`;
-  };
-
-  const setRecorderAiRetryVisible = (visible) => {
-    const button = recorder.dialog?.querySelector('[data-recorder-ai-retry]');
-    if (button) button.hidden = !visible;
-  };
-
-  const toggleRecorderResults = () => {
-    if (recorder.proposals.length === 0) return;
-    rememberRecorderSelection();
-    const useProposals = recorder.reviewSource !== 'proposals';
-    if (useProposals) renderRecordedProposals(recorder.proposals, 'proposals');
-    else if (recorder.localProposals.length > 0) renderRecordedProposals(recorder.localProposals, 'local');
+  const showRecordedCandidates = (detail = '') => {
+    if (recorder.localProposals.length > 0) renderRecordedProposals(recorder.localProposals);
     else renderRecordedEvents(recorder.events);
-    const excludeButton = recorder.dialog?.querySelector('[data-recorder-exclude-finishing]');
-    if (excludeButton) excludeButton.hidden = useProposals || recorder.localProposals.length > 0;
-    updateRecorderResultToggle();
-    setRecorderMessage(
-      useProposals ? `${recorder.proposals.length} 件のCopilot整理結果` : `${recorder.localProposals.length || recorder.events.length} 件のローカル操作候補`,
-      useProposals
-        ? 'AIが選んだ操作前・操作後です。元の候補へ戻して比較することもできます。'
-        : '記録直後の候補です。チェック状態は切り替え前のまま保持しています。'
-    );
-  };
-
-  const showRecordedEventFallback = (detail = '') => {
-    recorder.analysisActive = false;
-    recorder.proposals = [];
-    recorder.proposalSelection = null;
-    if (recorder.localProposals.length > 0) renderRecordedProposals(recorder.localProposals, 'local');
-    else renderRecordedEvents(recorder.events);
-    const named = recorder.events.filter((item) => item.targetName).length;
     const candidateCount = recorder.localProposals.length || recorder.events.length;
+    const reviewCount = [...recorder.dialog.querySelectorAll('[data-recorder-event][data-review-required="true"]')].length;
     setRecorderMessage(
-      `${candidateCount} 件の操作候補を確認してください`,
-      detail || (candidateCount > 0
-        ? `このPCで安定した操作前後を選びました。うち ${named} 件は操作対象の名前を取得できています。`
-        : '手順にできる操作がありませんでした。もう一度記録してください。')
+      candidateCount > 0 ? `${candidateCount} 件の手順を作成・確認が必要なのは ${reviewCount} 件` : '操作を記録できませんでした',
+      candidateCount > 0
+        ? (detail || (reviewCount > 0 ? '確認が必要な手順だけを表示しています。問題なければそのまま手順を作成できます。' : '確認が必要な箇所はありません。そのまま手順を作成します。'))
+        : '対象アプリで操作して、もう一度お試しください。'
     );
     const excludeButton = recorder.dialog?.querySelector('[data-recorder-exclude-finishing]');
     if (excludeButton) excludeButton.hidden = recorder.localProposals.length > 0;
-    updateRecorderResultToggle();
     setRecorderView('review');
-  };
-
-  const loadRecorderAnalysisResult = async () => {
-    const response = await fetch('/api/recorder/analyze/result', { headers: sessionHeaders() });
-    if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
-    const payload = await response.json();
-    recorder.proposals = payload.proposals || [];
-    recorder.analysisActive = false;
-    recorder.copilotUnavailableUntil = 0;
-    setRecorderAiRetryVisible(false);
-    if (recorder.proposals.length === 0) throw new Error('必要な場面を選べませんでした。');
-    const reviewCount = recorder.proposals.filter((item) => String(item.confidence || '') !== 'high').length;
-    setRecorderMessage(
-      `${recorder.localProposals.length || recorder.events.length} 件の操作候補を確認できます`,
-      reviewCount > 0
-        ? `Copilotの整理結果 ${recorder.proposals.length} 件も準備できました。うち ${reviewCount} 件は要確認です。`
-        : `Copilotの整理結果 ${recorder.proposals.length} 件も準備できました。必要なら切り替えて比較できます。`
-    );
-    updateRecorderResultToggle();
-    setRecorderView('review');
-  };
-
-  const pollRecorderAnalysis = async () => {
-    try {
-      const response = await fetch('/api/recorder/analyze/status', { headers: sessionHeaders() });
-      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
-      const status = await response.json();
-      if (status.state === 'queued' || status.state === 'running') {
-        const packet = Number(status.currentPacket || 0);
-        const total = Number(status.totalPackets || 0);
-        const progress = total > 0 ? `（${packet} / ${total}）` : '';
-        setRecorderMessage(
-          `${recorder.localProposals.length || recorder.events.length} 件の操作候補を確認できます`,
-          `${status.message || 'Copilotが必要な場面を選んでいます'}${progress}。待たずにこのまま取り込めます。`
-        );
-        return;
-      }
-      stopRecorderPolling();
-      if (status.state === 'completed') {
-        await loadRecorderAnalysisResult();
-        return;
-      }
-      if (status.state === 'failed' || status.state === 'cancelled') {
-        const serviceUnavailable = status.errorCode === 'COPILOT_SERVICE_UNAVAILABLE'
-          || String(status.message || '').match(/問題が発生|必要な手順を選べません|RECORDER_AI_FAILED/i);
-        showRecordedEventFallback(serviceUnavailable
-          ? 'Copilotを利用できなかったため、待たずにこのPCで記録した操作候補へ切り替えました。画像を見ながら不要な候補だけ外せます。'
-          : (status.message || 'Copilotで場面を整理できなかったため、操作候補をそのまま表示します。'));
-        if (serviceUnavailable) {
-          recorder.copilotUnavailableUntil = Date.now() + (10 * 60 * 1000);
-          setRecorderAiRetryVisible(true);
-        }
-      }
-    } catch (error) {
-      stopRecorderPolling();
-      showRecordedEventFallback(`Copilotの処理状況を確認できませんでした。${error.message || ''}`);
+    const reviewList = recorder.dialog?.querySelector('[data-recorder-list]');
+    if (reviewList) reviewList.hidden = candidateCount === 0;
+    const reviewNote = recorder.dialog?.querySelector('[data-recorder-review-note]');
+    if (reviewNote) reviewNote.hidden = candidateCount === 0;
+    const captureWarning = recorder.dialog?.querySelector('[data-recorder-capture-warning]');
+    if (captureWarning) {
+      const hasCaptureRisk = recorder.captureCompleteness !== 'no-known-gaps';
+      captureWarning.hidden = !hasCaptureRisk;
+      captureWarning.textContent = hasCaptureRisk
+        ? (recorder.captureWarning || '記録の完全性を確認できません。手順の抜けを確認してください。')
+        : '';
     }
-  };
-
-  const startRecorderAnalysis = async (background = false) => {
-    recorder.analysisActive = true;
-    recorder.proposals = [];
-    setRecorderAiRetryVisible(false);
-    setRecorderMessage(
-      background ? `${recorder.localProposals.length || recorder.events.length} 件の操作候補を確認できます` : '記録画面を並べています',
-      background
-        ? 'このまま確認・取り込みできます。Copilotは背景で必要な場面を整理しています。'
-        : '原本に近い時系列フレームを一覧にし、Copilotへ渡す準備をしています。'
-    );
-    if (!background) setRecorderView('analyzing');
-    try {
-      const response = await fetch('/api/recorder/analyze/start', { method: 'POST', headers: sessionHeaders() });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload?.message || `HTTP ${response.status}`);
-      stopRecorderPolling();
-      recorder.timer = window.setInterval(pollRecorderAnalysis, 700);
-      await pollRecorderAnalysis();
-    } catch (error) {
-      stopRecorderPolling();
-      showRecordedEventFallback(`Copilotで場面を整理できませんでした。${error.message || ''}`);
+    const reviewTools = recorder.dialog?.querySelector('.recorder-review-tools');
+    if (reviewTools) reviewTools.hidden = candidateCount === 0;
+    const startButton = recorder.dialog?.querySelector('[data-recorder-start]');
+    if (startButton && candidateCount === 0) {
+      startButton.hidden = false;
+      startButton.textContent = 'もう一度記録';
     }
+    const importButton = recorder.dialog?.querySelector('[data-recorder-import]');
+    if (importButton) importButton.disabled = candidateCount === 0;
+    const filter = recorder.dialog?.querySelector('[data-recorder-filter]');
+    if (filter) filter.value = reviewCount > 0 ? 'review' : 'all';
+    applyRecorderReviewFilter();
+    return { candidateCount, reviewCount };
   };
 
   const loadRecordedEvents = async () => {
+    setRecorderMessage('手順候補を作っています', 'クリックの時刻・位置と操作前後の画面をこのPCで照合しています。');
+    setRecorderView('analyzing');
     const response = await fetch('/api/recorder/events', { headers: sessionHeaders() });
     const payload = response.ok ? await response.json() : { events: [] };
     recorder.events = payload.events || [];
     recorder.localProposals = payload.localProposals || [];
+    recorder.captureCompleteness = String(payload.status?.captureCompleteness || 'unknown');
+    recorder.captureWarning = String(payload.status?.captureWarning || '');
     recorder.active = false;
-    if (recorder.useAi) {
-      recorder.eventSelection = null;
-      recorder.localSelection = null;
-      recorder.proposalSelection = null;
-      if (recorder.localProposals.length > 0) renderRecordedProposals(recorder.localProposals, 'local');
-      else renderRecordedEvents(recorder.events);
-      const excludeButton = recorder.dialog?.querySelector('[data-recorder-exclude-finishing]');
-      if (excludeButton) excludeButton.hidden = recorder.localProposals.length > 0;
-      updateRecorderResultToggle();
-      setRecorderView('review');
-      if (Date.now() < recorder.copilotUnavailableUntil) {
-        setRecorderMessage(
-          `${recorder.localProposals.length || recorder.events.length} 件の操作候補を確認できます`,
-          '前回Copilotが応答しなかったため、今回は画像を送らずローカル候補を表示しています。必要なら再確認できます。'
-        );
-        setRecorderAiRetryVisible(true);
-        return;
-      }
-      await startRecorderAnalysis(true);
-      return;
+    recorder.eventSelection = null;
+    recorder.localSelection = null;
+    const summary = showRecordedCandidates();
+    if (summary.candidateCount > 0 && summary.reviewCount === 0) {
+      await importRecordedEvents(null, true);
     }
-    showRecordedEventFallback('このPCで安定した操作前後を選びました。画像を見ながら、不要な候補だけ外せます。');
   };
 
   const pollRecorderStatus = async () => {
@@ -4568,16 +4595,39 @@ ${shots}
       const response = await fetch('/api/recorder/status', { headers: sessionHeaders() });
       if (!response.ok) return;
       const status = await response.json();
+      if (status.state === 'starting') {
+        recorder.paused = false;
+        recorder.count = 0;
+        const pauseButton = recorder.dialog?.querySelector('[data-recorder-pause]');
+        const undoButton = recorder.dialog?.querySelector('[data-recorder-undo]');
+        const stopButton = recorder.dialog?.querySelector('[data-recorder-stop]');
+        if (pauseButton) pauseButton.disabled = true;
+        if (undoButton) undoButton.disabled = true;
+        if (stopButton) stopButton.disabled = true;
+        setRecorderMessage('記録の準備をしています', '「記録を開始しました」と表示されるまで、そのままお待ちください。');
+        return;
+      }
       if (status.state === 'recording') {
         recorder.paused = false;
         recorder.count = Number(status.count || 0);
         const pauseButton = recorder.dialog?.querySelector('[data-recorder-pause]');
         const undoButton = recorder.dialog?.querySelector('[data-recorder-undo]');
+        const stopButton = recorder.dialog?.querySelector('[data-recorder-stop]');
         if (pauseButton) pauseButton.textContent = '一時停止';
-        if (undoButton) undoButton.disabled = recorder.count < 1;
+        if (pauseButton) pauseButton.disabled = recorder.undoBusy;
+        if (undoButton) undoButton.disabled = recorder.undoBusy || recorder.count < 1;
+        if (stopButton) stopButton.disabled = recorder.undoBusy;
+        updateRecorderLivePreview(status);
+        const controllerStatus = recorder.dialog?.querySelector('[data-recorder-controller-status]');
+        if (controllerStatus) {
+          controllerStatus.textContent = status.controllerAvailable
+            ? '対象アプリの端にある記録レシートで、直前画像の確認・取消・結果画面の追加・終了ができます。'
+            : '記録レシートを開けませんでした。この画面の一時停止・取消・終了を使用してください。';
+          controllerStatus.classList.toggle('recorder-controller-unavailable', !status.controllerAvailable);
+        }
         setRecorderMessage(
           `${status.count} 件の操作を記録中`,
-          status.warning || (status.lastTarget ? `直前: ${status.lastTarget}` : 'この画面は最小化しても記録は続きます。')
+          status.warning || (status.lastTarget ? `記録を開始しました。直前: ${status.lastTarget}` : '記録を開始しました。対象のアプリへ切り替えて操作してください。')
         );
         return;
       }
@@ -4586,14 +4636,19 @@ ${shots}
         recorder.count = Number(status.count || 0);
         const pauseButton = recorder.dialog?.querySelector('[data-recorder-pause]');
         const undoButton = recorder.dialog?.querySelector('[data-recorder-undo]');
+        const stopButton = recorder.dialog?.querySelector('[data-recorder-stop]');
         if (pauseButton) pauseButton.textContent = '記録を再開';
-        if (undoButton) undoButton.disabled = recorder.count < 1;
+        if (pauseButton) pauseButton.disabled = recorder.undoBusy;
+        if (undoButton) undoButton.disabled = recorder.undoBusy || recorder.count < 1;
+        if (stopButton) stopButton.disabled = recorder.undoBusy;
+        updateRecorderLivePreview(status);
         setRecorderMessage(`${recorder.count} 件を記録・一時停止中`, '休憩や記録外の操作が終わったら［記録を再開］を押してください。');
         return;
       }
       if (status.state === 'idle') return;
       stopRecorderPolling();
       if (status.state === 'failed') {
+        updateRecorderLivePreview({});
         setRecorderMessage('記録できませんでした', String(status.message || ''));
         setRecorderView('setup');
         return;
@@ -4606,18 +4661,19 @@ ${shots}
 
   const startRecording = async () => {
     recorder.active = true;
-    recorder.analysisActive = false;
     recorder.localProposals = [];
-    recorder.proposals = [];
-    recorder.useAi = recorder.dialog.querySelector('[data-recorder-ai]').checked;
     recorder.paused = false;
+    recorder.undoBusy = false;
     recorder.count = 0;
+    updateRecorderLivePreview({});
     setRecorderMessage('記録の準備をしています', '');
     setRecorderView('recording');
+    recorder.dialog.querySelector('[data-recorder-pause]').disabled = true;
+    recorder.dialog.querySelector('[data-recorder-undo]').disabled = true;
+    recorder.dialog.querySelector('[data-recorder-stop]').disabled = true;
     try {
-      const withNarration = recorder.dialog.querySelector('[data-recorder-narration]').checked;
       const body = new URLSearchParams();
-      body.set('withNarration', withNarration ? 'true' : 'false');
+      body.set('resultDelayMs', recorder.dialog.querySelector('[data-recorder-result-delay]')?.value || '700');
       const response = await fetch('/api/recorder/start', {
         method: 'POST',
         headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' }),
@@ -4631,12 +4687,9 @@ ${shots}
         await fetch('/api/recorder/discard', { method: 'POST', headers: sessionHeaders() });
         return;
       }
-      setRecorderMessage(
-        '0 件の操作を記録中',
-        '記録したいアプリや、普段お使いのEdgeへ切り替えて操作してください。'
-      );
       stopRecorderPolling();
       recorder.timer = window.setInterval(pollRecorderStatus, 700);
+      await pollRecorderStatus();
     } catch (error) {
       recorder.active = false;
       setRecorderMessage('記録を始められませんでした', error.message || '');
@@ -4645,7 +4698,7 @@ ${shots}
   };
 
   const setRecordingPaused = async () => {
-    if (!recorder.active || recorder.busy) return;
+    if (!recorder.active || recorder.busy || recorder.undoBusy) return;
     const nextPaused = !recorder.paused;
     const body = new URLSearchParams();
     body.set('paused', nextPaused ? 'true' : 'false');
@@ -4669,22 +4722,37 @@ ${shots}
   };
 
   const undoLastRecording = async () => {
-    if (!recorder.active || recorder.count < 1 || recorder.busy) return;
+    if (!recorder.active || recorder.count < 1 || recorder.busy || recorder.undoBusy) return;
+    recorder.undoBusy = true;
+    const undoButton = recorder.dialog.querySelector('[data-recorder-undo]');
+    const pauseButton = recorder.dialog.querySelector('[data-recorder-pause]');
+    const stopButton = recorder.dialog.querySelector('[data-recorder-stop]');
+    undoButton.disabled = true;
+    pauseButton.disabled = true;
+    stopButton.disabled = true;
+    const previousCount = recorder.count;
     try {
       const response = await fetch('/api/recorder/undo', { method: 'POST', headers: sessionHeaders() });
       if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
-      recorder.count = Math.max(0, recorder.count - 1);
-      recorder.dialog.querySelector('[data-recorder-undo]').disabled = recorder.count < 1;
+      const status = await response.json();
+      recorder.count = Number(status.count || 0);
+      updateRecorderLivePreview(status);
       setRecorderMessage(
         recorder.paused ? `${recorder.count} 件を記録・一時停止中` : `${recorder.count} 件の操作を記録中`,
-        '直前の操作を取り消しました。'
+        recorder.count < previousCount ? '直前の操作を取り消しました。' : '取り消せる操作がありませんでした。'
       );
     } catch (error) {
       showToast(error.message || '直前の操作を取り消せませんでした。');
+    } finally {
+      recorder.undoBusy = false;
+      undoButton.disabled = recorder.count < 1;
+      pauseButton.disabled = false;
+      stopButton.disabled = false;
     }
   };
 
   const stopRecording = async () => {
+    if (!recorder.active || recorder.undoBusy) return;
     setRecorderMessage('記録を終了しています', '');
     try {
       const response = await fetch('/api/recorder/stop', { method: 'POST', headers: sessionHeaders() });
@@ -4708,44 +4776,55 @@ ${shots}
 
   const importRecordedEvents = async (acceptedIndexes = null, automatic = false) => {
     if (recorder.busy) return false;
+    const localRows = recorder.reviewSource === 'local' && recorder.localProposals.length > 0
+      ? [...recorder.dialog.querySelectorAll('[data-recorder-event]')]
+      : [];
     const accept = Array.isArray(acceptedIndexes)
       ? acceptedIndexes
-      : recorder.reviewSource === 'proposals' && recorder.proposals.length > 0
-        ? [...recorder.dialog.querySelectorAll('[data-recorder-event]')]
-          .filter((item) => item.querySelector('[data-recorder-accept]').checked)
-          .map((item) => recorder.proposals[Number(item.dataset.proposalIndex)])
-          .filter(Boolean)
-        : recorder.reviewSource === 'local' && recorder.localProposals.length > 0
-          ? [...recorder.dialog.querySelectorAll('[data-recorder-event]')]
-            .filter((item) => item.querySelector('[data-recorder-accept]').checked)
-            .map((item) => recorder.localProposals[Number(item.dataset.proposalIndex)])
+      : localRows.length > 0
+          ? localRows
+            .filter(isRecorderRowSelected)
+            .map((row) => {
+              const proposal = recorder.localProposals[Number(row.dataset.proposalIndex)];
+              if (!proposal) return null;
+              return {
+                ...proposal,
+                title: row.querySelector('[data-recorder-title]')?.value?.trim() || proposal.title,
+                description: row.querySelector('[data-recorder-description]')?.value?.trim() || proposal.description,
+                reviewed: row.dataset.reviewRequired === 'true'
+              };
+            })
             .filter(Boolean)
         : [...recorder.dialog.querySelectorAll('[data-recorder-event]')]
-          .filter((item) => item.querySelector('[data-recorder-accept]').checked)
+          .filter(isRecorderRowSelected)
           .map((item) => Number(item.dataset.index));
+    const decisions = localRows.map((row) => {
+      const proposal = recorder.localProposals[Number(row.dataset.proposalIndex)];
+      if (!proposal) return null;
+      return {
+        id: proposal.id,
+        accepted: isRecorderRowSelected(row),
+        reviewed: row.dataset.reviewRequired === 'true',
+        title: row.querySelector('[data-recorder-title]')?.value?.trim() || proposal.title,
+        description: row.querySelector('[data-recorder-description]')?.value?.trim() || proposal.description
+      };
+    }).filter(Boolean);
     if (accept.length === 0) {
       showToast('取り込む操作を1件以上選んでください。');
       return false;
     }
     recorder.busy = true;
-    if (recorder.analysisActive) {
-      stopRecorderPolling();
-      recorder.analysisActive = false;
-      await fetch('/api/recorder/analyze/cancel', { method: 'POST', headers: sessionHeaders() }).catch(() => { });
-    }
     const existingStepIds = new Set(stepCards().map((card) => card.dataset.stepId || ''));
     try {
       const response = await fetch('/api/recorder/import', {
         method: 'POST',
         headers: sessionHeaders({ 'Content-Type': 'application/json; charset=UTF-8', 'X-Sheet-Id': selectedSheetId() }),
-        body: JSON.stringify({ accept })
+        body: JSON.stringify({ accept, decisions })
       });
       if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
       const result = await response.json();
       recorder.events = [];
       recorder.localProposals = [];
-      recorder.proposals = [];
-      recorder.analysisActive = false;
       recorder.active = false;
       recorder.dialog.close();
       await refreshWorkspace();
@@ -4758,6 +4837,7 @@ ${shots}
       if (result.skipped > 0) parts.push(`${result.skipped} 件は画像を読み取れず除きました`);
       if (result.needsReview > 0) parts.push(`${result.needsReview} 件は確認が必要です`);
       showToast(`${parts.join('、')}。そのまま編集できます。`, result.needsReview > 0 ? 'info' : 'success');
+      showRecorderContinueBar(result);
       if (result.needsReview > 0) await focusFinishTarget('attention');
       return true;
     } catch (error) {
@@ -4775,32 +4855,34 @@ ${shots}
     dialog.id = 'recorder-dialog';
     dialog.className = 'copilot-dialog';
     dialog.setAttribute('aria-label', '操作を記録して手順にする');
-    dialog.innerHTML = '<header class="copilot-dialog__header"><div><strong>操作を記録して手順書を作る</strong><span>録画全体から必要な場面を選び、編集できる手順にします</span></div><button type="button" class="copilot-dialog__close" data-recorder-close aria-label="閉じる">×</button></header>'
+    dialog.setAttribute('aria-describedby', 'recorder-quick-start');
+    dialog.innerHTML = '<header class="copilot-dialog__header"><div><strong>操作を記録して手順書を作る</strong><span>普段どおり操作すると、クリックや入力から手順候補を自動作成します</span></div><button type="button" class="copilot-dialog__close" data-recorder-close aria-label="閉じる">×</button></header>'
       + '<div class="copilot-dialog__content">'
-      + '<ol class="recorder-flow" aria-label="作成の流れ"><li data-recorder-phase="record"><span>1</span>操作を記録</li><li data-recorder-phase="analyze"><span>2</span>場面を選ぶ</li><li data-recorder-phase="review"><span>3</span>確認して編集</li></ol>'
+      + '<ol class="recorder-flow" aria-label="作成の流れ"><li data-recorder-phase="record"><span>1</span>普段どおり操作</li><li data-recorder-phase="analyze"><span>2</span>手順を自動作成</li><li data-recorder-phase="review"><span>3</span>必要な所だけ確認</li></ol>'
       + '<section data-recorder-view="setup">'
-      + '<p class="copilot-note">クリックや入力の時刻、画面、ウィンドウ名、操作対象の候補を記録します。<strong>押したキーそのものは保存しません</strong>が、入力した文字は画面画像に写ります。隠したい箇所は、取り込み後に「画像を編集」から黒塗りしてください。</p>'
-      + '<div class="recorder-scope"><strong>普段の画面をそのまま記録</strong><span>Edge、Excel、エクスプローラーなど、いつものアプリで操作してください。記録後、このPCがクリックと画面変化から安定した操作前・操作後をすぐに選びます。クリック情報は赤枠候補の手がかりにも使います。</span></div>'
-      + '<label class="copilot-option"><input type="checkbox" data-recorder-ai><span><strong>必要ならCopilotでも場面を整理する</strong><small>番号付きの一覧画像をMicrosoft 365 Copilotへ送り、このPCの候補と比較できます。待たずに取り込みできます。</small></span></label>'
-      + '<label class="copilot-option"><input type="checkbox" data-recorder-narration><span>操作しながら話した内容も記録する</span></label>'
-      + '<p class="copilot-note copilot-note--warn" data-recorder-narration-note hidden>マイクを使い、<strong>音声はMicrosoftのオンライン音声認識へ送られます</strong>。Windowsの音声入力（Win+H）と同じ仕組みです。話した内容は手順の手がかりとして使い、そのまま文章にはしません。</p>'
-      + '<p class="copilot-capability" data-recorder-capability></p>'
+      + '<p class="recorder-quick-start" id="recorder-quick-start"><strong>［記録を開始］</strong> → 対象のアプリで普段どおり操作 → 記録レシートで確認・終了</p>'
+      + '<div class="recorder-scope"><strong>普段の画面をそのまま記録</strong><span>Edge、Excel、エクスプローラーなど、いつものアプリで操作してください。クリックと画面変化から操作前・操作後を選びます。</span></div>'
+      + '<p class="recorder-privacy-alert"><strong>入力した文字や通知も画面画像に写ります。</strong>機密情報を閉じてから記録を始めてください。取り込まなかった元画像も、作成根拠としてプロジェクト内に残ります。</p>'
+      + '<details class="recorder-advanced"><summary>うまく撮れない場合の設定</summary><label class="recorder-capture-quality"><span><strong>操作後画面を撮るまで</strong><small>通常は「標準」のままで問題ありません。読込途中の画面が多い場合だけ長めにします。</small></span><select data-recorder-result-delay><option value="300">すぐ（0.3秒）</option><option value="700" selected>標準（0.7秒）</option><option value="1200">ゆっくり（1.2秒）</option><option value="2000">とてもゆっくり（2.0秒）</option></select></label></details>'
+      + '<details class="recorder-recorded-info"><summary>記録される情報とプライバシー</summary><div><p>対応しているクリックと入力活動、その時刻、画面、ウィンドウ名、操作対象の候補を記録します。ドラッグ、スクロール、特殊な画面などは自動で確定できず、確認が必要になる場合があります。</p><p><strong>押したキーそのものは保存しません</strong>が、入力した文字は画面画像に写ります。画像と操作情報はこのPCの外へ送信しません。</p><p>黒塗りは出力画像を隠すための編集です。元の記録画像を完全に削除する機能ではありません。元画像はプロジェクトを削除するまでこのPCに残ります。</p></div></details>'
+      + '<div class="recorder-capability-status"><p class="copilot-capability" id="recorder-capability-message" data-recorder-capability role="status" aria-live="polite" aria-atomic="true"></p><button type="button" class="button button--ghost button--small" data-recorder-capability-retry aria-describedby="recorder-capability-message" hidden>記録環境を再確認</button></div>'
       + '<p class="copilot-dialog__error" data-recorder-detail></p>'
       + '</section>'
       + '<section data-recorder-view="recording" hidden>'
       + '<div class="copilot-dialog__state" role="status" aria-live="polite"><strong data-recorder-message>記録しています</strong><span data-recorder-detail></span></div>'
-      + '<p class="copilot-note">普段お使いのEdgeやアプリで、記録したい操作を行ってから［記録を終了］を押してください。この画面に戻る操作は記録されません。</p>'
+      + '<p class="copilot-note" data-recorder-controller-status>対象アプリの端に記録レシートが開きます。直前画像の確認、取消、結果画面の追加、終了をその場で操作できます。</p>'
+      + '<div class="recorder-live-preview" data-recorder-live-preview hidden><div class="recorder-live-preview__header"><strong>直前に記録した操作</strong><span>違っていたら、下のボタンですぐ取り消せます</span></div><div class="recorder-live-preview__shots"><span><small>操作前</small><img data-recorder-preview-before alt="直前に記録した操作前の画面"></span><span data-recorder-preview-after-wrap hidden><small>操作後</small><img data-recorder-preview-after alt="直前に記録した操作後の画面"></span></div></div>'
       + '<div class="recorder-controller" aria-label="記録の操作"><button type="button" class="button button--secondary" data-recorder-pause>一時停止</button><button type="button" class="button button--ghost" data-recorder-undo disabled>直前の操作を取り消す</button></div>'
       + '</section>'
       + '<section data-recorder-view="analyzing" hidden>'
       + '<div class="copilot-dialog__state" role="status" aria-live="polite"><strong data-recorder-message>記録画面を並べています</strong><span data-recorder-detail></span></div>'
-      + '<div class="recorder-analysis"><span class="recorder-analysis__pulse" aria-hidden="true"></span><div><strong>Copilotが録画全体を見て場面を選択中</strong><p>連続クリック、読込中の画面、ManualBuilderへ戻る操作を除き、理解に必要な場合だけ操作後の画面も残します。</p></div></div>'
-      + '<button type="button" class="button button--ghost" data-recorder-use-events>Copilotを待たず操作候補を確認する</button>'
+      + '<div class="recorder-analysis"><span class="recorder-analysis__pulse" aria-hidden="true"></span><div><strong>このPCで手順候補を作成中</strong><p>クリックの時刻・位置と画面変化を照合し、読込中や重複した画面を除いています。</p></div></div>'
       + '</section>'
       + '<section data-recorder-view="review" hidden>'
       + '<div class="copilot-dialog__state"><strong data-recorder-message></strong><span data-recorder-detail></span></div>'
-      + '<p class="copilot-note">画像を大きく確認し、不要な手順だけチェックを外してください。取り込み後は文章、順番、赤枠、操作前／操作後の並べ方を自由に直せます。</p>'
-      + '<div class="recorder-review-tools"><strong data-recorder-selection-summary></strong><div><button type="button" class="button button--secondary button--small" data-recorder-ai-results hidden>Copilotの整理結果を見る</button><button type="button" class="button button--ghost button--small" data-recorder-ai-retry hidden>Copilotを再確認</button><button type="button" class="button button--ghost button--small" data-recorder-select-all>すべて選択</button><button type="button" class="button button--ghost button--small" data-recorder-exclude-finishing>保存・終了を外す</button></div></div>'
+      + '<p class="recorder-capture-warning" data-recorder-capture-warning role="alert" hidden></p>'
+      + '<p class="copilot-note" data-recorder-review-note>確認が必要な手順だけを表示しています。大きな画像と理由を確認し、不要なら［この手順を使う］を押して除外してください。</p>'
+      + '<div class="recorder-review-tools"><strong data-recorder-selection-summary></strong><details class="recorder-review-adjustments"><summary>すべての候補を見る・調整</summary><div><label class="recorder-review-filter">表示<select data-recorder-filter><option value="review">要確認のみ</option><option value="all">すべて</option><option value="selected">使う手順のみ</option></select></label><button type="button" class="button button--ghost button--small" data-recorder-select-all>表示中を使う</button><button type="button" class="button button--ghost button--small" data-recorder-select-none>表示中を除外</button><button type="button" class="button button--ghost button--small" data-recorder-exclude-finishing>保存・終了を除外</button></div></details></div>'
       + '<div class="recorder-list" data-recorder-list></div>'
       + '</section>'
       + '</div>'
@@ -4809,14 +4891,15 @@ ${shots}
       + '<button type="button" class="button button--ghost" data-recorder-close>閉じる</button>'
       + '<button type="button" class="button button--primary" data-recorder-start>記録を開始</button>'
       + '<button type="button" class="button button--primary" data-recorder-stop hidden>記録を終了</button>'
-      + '<button type="button" class="button button--primary" data-recorder-import hidden>選んだ操作を取り込んで編集</button>'
+      + '<button type="button" class="button button--primary" data-recorder-import hidden>確認した内容で手順を作成</button>'
       + '</footer>';
     document.body.appendChild(dialog);
     recorder.dialog = dialog;
+    keepDialogFocusInside(dialog);
 
     const requestClose = () => {
       if (recorder.active && !window.confirm('操作を記録中です。記録を終了して破棄しますか？')) return;
-      if (!recorder.active && (recorder.events.length > 0 || recorder.localProposals.length > 0 || recorder.proposals.length > 0) && !window.confirm('まだ取り込んでいない記録を破棄しますか？')) return;
+      if (!recorder.active && (recorder.events.length > 0 || recorder.localProposals.length > 0) && !window.confirm('まだ取り込んでいない記録を破棄しますか？')) return;
       dialog.close();
     };
     dialog.querySelectorAll('[data-recorder-close]').forEach((button) => {
@@ -4827,38 +4910,33 @@ ${shots}
       requestClose();
     });
     dialog.querySelector('[data-recorder-start]').addEventListener('click', () => startRecording());
-    dialog.querySelector('[data-recorder-narration]').addEventListener('change', (event) => {
-      dialog.querySelector('[data-recorder-narration-note]').hidden = !event.target.checked;
-    });
+    dialog.querySelector('[data-recorder-capability-retry]').addEventListener('click', () => checkRecorderCapability(dialog));
     dialog.querySelector('[data-recorder-stop]').addEventListener('click', () => stopRecording());
     dialog.querySelector('[data-recorder-pause]').addEventListener('click', () => setRecordingPaused());
     dialog.querySelector('[data-recorder-undo]').addEventListener('click', () => undoLastRecording());
     dialog.querySelector('[data-recorder-select-all]').addEventListener('click', () => {
-      dialog.querySelectorAll('[data-recorder-accept]').forEach((box) => { box.checked = true; });
+      dialog.querySelectorAll('[data-recorder-event]:not([hidden])').forEach((row) => setRecorderRowSelected(row, true));
       updateRecorderSelectionSummary();
     });
+    dialog.querySelector('[data-recorder-select-none]').addEventListener('click', () => {
+      dialog.querySelectorAll('[data-recorder-event]:not([hidden])').forEach((row) => setRecorderRowSelected(row, false));
+      updateRecorderSelectionSummary();
+    });
+    dialog.querySelector('[data-recorder-filter]').addEventListener('change', applyRecorderReviewFilter);
     dialog.querySelector('[data-recorder-exclude-finishing]').addEventListener('click', excludeRecordedFinishingSequence);
-    dialog.querySelector('[data-recorder-ai-results]').addEventListener('click', toggleRecorderResults);
-    dialog.querySelector('[data-recorder-ai-retry]').addEventListener('click', async () => {
-      recorder.copilotUnavailableUntil = 0;
-      await startRecorderAnalysis(true);
-    });
-    dialog.querySelector('[data-recorder-use-events]').addEventListener('click', async () => {
-      stopRecorderPolling();
-      recorder.analysisActive = false;
-      await fetch('/api/recorder/analyze/cancel', { method: 'POST', headers: sessionHeaders() }).catch(() => { });
-      showRecordedEventFallback('Copilotの処理を待たず、クリックと入力から作った操作候補を表示しています。');
-    });
     dialog.querySelector('[data-recorder-import]').addEventListener('click', () => importRecordedEvents());
     dialog.addEventListener('close', () => {
       stopRecorderPolling();
+      recorder.capabilityRequestId += 1;
+      recorder.capabilityController?.abort();
+      recorder.capabilityController = null;
       // 開始途中・記録中を含め、取り込まずに閉じたらプロセスと記録画像を片付ける。
-      const shouldDiscard = recorder.active || recorder.analysisActive || recorder.events.length > 0 || recorder.localProposals.length > 0 || recorder.proposals.length > 0;
+      const shouldDiscard = recorder.active || recorder.events.length > 0 || recorder.localProposals.length > 0;
       recorder.active = false;
-      recorder.analysisActive = false;
       recorder.events = [];
       recorder.localProposals = [];
-      recorder.proposals = [];
+      recorder.captureCompleteness = 'unknown';
+      recorder.captureWarning = '';
       if (shouldDiscard) {
         fetch('/api/recorder/discard', { method: 'POST', headers: sessionHeaders() }).catch(() => { });
       }
@@ -4866,438 +4944,68 @@ ${shots}
     return dialog;
   };
 
+  const checkRecorderCapability = async (dialog) => {
+    recorder.capabilityController?.abort();
+    const controller = new AbortController();
+    recorder.capabilityController = controller;
+    recorder.capabilityRequestId += 1;
+    const requestId = recorder.capabilityRequestId;
+    const timeoutId = window.setTimeout(() => controller.abort(), 8000);
+    const capability = dialog.querySelector('[data-recorder-capability]');
+    const retryButton = dialog.querySelector('[data-recorder-capability-retry]');
+    const startButton = dialog.querySelector('[data-recorder-start]');
+    capability.hidden = false;
+    capability.textContent = '記録できるか確認しています…';
+    retryButton.hidden = true;
+    retryButton.disabled = true;
+    startButton.disabled = true;
+    let available = false;
+    try {
+      const response = await fetch('/api/recorder/capabilities', { headers: sessionHeaders(), signal: controller.signal });
+      const payload = response.ok ? await response.json() : null;
+      if (requestId !== recorder.capabilityRequestId) return false;
+      available = Boolean(payload?.available);
+      if (available) {
+        capability.textContent = '';
+        capability.hidden = true;
+      } else {
+        const reason = String(payload?.reason || 'この環境では操作を記録できません。');
+        capability.textContent = `${reason} ［記録環境を再確認］を押してください。改善しない場合はManualBuilderを再起動してください。`;
+      }
+    } catch (error) {
+      if (requestId !== recorder.capabilityRequestId) return false;
+      capability.textContent = error?.name === 'AbortError'
+        ? '記録環境の確認が時間内に終わりませんでした。［記録環境を再確認］を押してください。改善しない場合はManualBuilderを再起動してください。'
+        : '記録機能との接続を確認できませんでした。［記録環境を再確認］を押してください。改善しない場合はManualBuilderを再起動してください。';
+    } finally {
+      window.clearTimeout(timeoutId);
+      if (requestId === recorder.capabilityRequestId) recorder.capabilityController = null;
+    }
+    if (requestId !== recorder.capabilityRequestId) return false;
+    startButton.disabled = !available;
+    retryButton.hidden = available;
+    retryButton.disabled = false;
+    if (dialog.open) window.requestAnimationFrame(() => (available ? startButton : retryButton)?.focus());
+    return available;
+  };
+
   const openRecorderDialog = async () => {
     const dialog = createRecorderDialog();
     recorder.events = [];
     recorder.localProposals = [];
-    recorder.proposals = [];
-    recorder.analysisActive = false;
+    recorder.captureCompleteness = 'unknown';
+    recorder.captureWarning = '';
     recorder.reviewSource = 'local';
     recorder.eventSelection = null;
     recorder.localSelection = null;
-    recorder.proposalSelection = null;
-    recorder.useAi = false;
+    dialog.querySelector('[data-recorder-filter]').value = 'review';
     setRecorderView('setup');
     setRecorderMessage('', '');
 
-    const capability = dialog.querySelector('[data-recorder-capability]');
-    capability.hidden = false;
-    capability.textContent = '記録できるか確認しています…';
-    const narrationToggle = dialog.querySelector('[data-recorder-narration]');
-    const aiToggle = dialog.querySelector('[data-recorder-ai]');
-    aiToggle.checked = false;
-    narrationToggle.checked = false;
-    dialog.querySelector('[data-recorder-narration-note]').hidden = true;
-    let available = false;
-    try {
-      const response = await fetch('/api/recorder/capabilities', { headers: sessionHeaders() });
-      const payload = response.ok ? await response.json() : null;
-      available = Boolean(payload?.available);
-      const notes = available ? [] : [String(payload?.reason || 'この環境では操作を記録できません。')];
-      // 音声が使えない理由は、対処が分かるようにそのまま出す。
-      const narration = payload?.narration;
-      narrationToggle.disabled = !narration?.available;
-      if (!narration?.available && narration?.reason) notes.push(narration.reason);
-      capability.textContent = notes.join(' ');
-      capability.hidden = notes.length === 0;
-    } catch {
-      capability.textContent = 'この環境で記録できるかを確認できませんでした。';
-      capability.hidden = false;
-      narrationToggle.disabled = true;
-    }
-    dialog.querySelector('[data-recorder-start]').disabled = !available;
     dialog.showModal();
+    await checkRecorderCapability(dialog);
   };
 
-  // ---------------------------------------------------------------
-  // Copilotに手順の下書きを作らせる
-  // ---------------------------------------------------------------
-  const copilotDraft = { dialog: null, timer: null, drafts: [], busy: false, mode: 'draft' };
-
-  const stopCopilotPolling = () => {
-    if (copilotDraft.timer) {
-      window.clearInterval(copilotDraft.timer);
-      copilotDraft.timer = null;
-    }
-  };
-
-  const setCopilotView = (view) => {
-    const dialog = copilotDraft.dialog;
-    if (!dialog) return;
-    dialog.querySelectorAll('[data-copilot-view]').forEach((section) => {
-      section.hidden = section.dataset.copilotView !== view;
-    });
-    // 表示中のビューに対応するボタンだけを出す。
-    dialog.querySelector('[data-copilot-start]').hidden = view !== 'setup';
-    dialog.querySelector('[data-copilot-cancel]').hidden = view !== 'progress';
-    dialog.querySelector('[data-copilot-apply]').hidden = view !== 'review';
-    dialog.querySelector('[data-copilot-signin]').hidden = view === 'review';
-    dialog.querySelector('[data-copilot-selection-summary]').hidden = view !== 'review';
-  };
-
-  // 同じ目印の要素が各ビューにあるため、まとめて書き換える。
-  // 見えているビューは1つなので、利用者には常に1か所だけ見える。
-  const setCopilotMessage = (message, detail = '') => {
-    const dialog = copilotDraft.dialog;
-    if (!dialog) return;
-    dialog.querySelectorAll('[data-copilot-message]').forEach((node) => { node.textContent = message; });
-    dialog.querySelectorAll('[data-copilot-detail]').forEach((node) => { node.textContent = detail; });
-  };
-
-  const escapeHtml = (value) => String(value ?? '')
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-
-  const updateCopilotSelectionSummary = () => {
-    const dialog = copilotDraft.dialog;
-    if (!dialog) return;
-    const items = [...dialog.querySelectorAll('[data-copilot-draft-item]')];
-    const selected = items.filter((item) => item.querySelector('[data-copilot-accept]')?.checked).length;
-    const needsReview = items.filter((item) => item.dataset.dropped === 'true'
-      || item.dataset.uncertain === 'true' || item.dataset.visualUncertain === 'true').length;
-    const summary = dialog.querySelector('[data-copilot-selection-summary]');
-    summary.textContent = `${selected}/${items.length}件を反映${needsReview ? `・要確認 ${needsReview}件` : ''}`;
-  };
-
-  // 下書きを1件ずつ確認できる形で並べる。
-  // 既に文章がある手順は、何がどう変わるかが分かるように今の内容も出す。
-  const renderCopilotDrafts = (drafts) => {
-    const list = copilotDraft.dialog.querySelector('[data-copilot-list]');
-    // imgタグでは認証ヘッダーを送れないため、提案画像のURLにもセッショントークンを付ける。
-    const token = sessionHeaders()['X-Manual-Token'] || '';
-    if (drafts.length === 0) {
-      list.innerHTML = '<p class="copilot-empty">採用できる下書きがありませんでした。</p>';
-      updateCopilotSelectionSummary();
-      return;
-    }
-    list.innerHTML = drafts.map((draft, index) => {
-      const review = copilotDraft.mode === 'review';
-      const uncertain = draft.confident === false;
-      // 画像があるのに赤枠候補が無い手順も要確認にする。
-      // 「文章と赤枠を反映」が初期選択のままだと、確認していない画像まで確定したように見える。
-      const visualUncertain = !review && Boolean(draft.imageId)
-        && (!draft.targetCandidateId || draft.visualConfident === false);
-      const dropped = draft.keep === false;
-      const flags = [];
-      if (draft.kind) flags.push(`<span class="copilot-flag copilot-flag--kind">${escapeHtml(draft.kind)}</span>`);
-      if (dropped && !review) flags.push('<span class="copilot-flag copilot-flag--drop">不要かもしれません</span>');
-      if (uncertain && !review) flags.push('<span class="copilot-flag copilot-flag--unsure">自信なし</span>');
-      if (visualUncertain && !review) flags.push('<span class="copilot-flag copilot-flag--unsure">枠を要確認</span>');
-      if (draft.targetCandidateId && !review) flags.push(`<span class="copilot-flag">候補: ${escapeHtml(draft.targetCandidateId)}</span>`);
-      if (draft.clickLabel && !review) flags.push(`<span class="copilot-flag">操作対象: ${escapeHtml(draft.clickLabel)}</span>`);
-      const reasons = [draft.visualReason, draft.reason].filter(Boolean).map((value) => escapeHtml(value)).join(' / ');
-      const reason = reasons ? `<p class="copilot-draft__reason">${reasons}</p>` : '';
-      const currentText = `${escapeHtml(draft.currentTitle)}／${escapeHtml(draft.currentDescription)}`;
-      const current = (draft.currentTitle || draft.currentDescription)
-        ? (review
-          ? `<p class="copilot-draft__before"><span>今の内容</span>${currentText}</p>`
-          : `<details class="copilot-draft__current"><summary>今の内容</summary><p>${currentText}</p></details>`)
-        : '';
-      const rect = draft.targetRect;
-      const hasRect = rect && [rect.x1, rect.y1, rect.x2, rect.y2].every(Number.isFinite)
-        && rect.x2 > rect.x1 && rect.y2 > rect.y1;
-      const imageUrl = draft.imageId ? `/images/${encodeURIComponent(draft.imageId)}?token=${encodeURIComponent(token)}` : '';
-      const imageAspect = Number(draft.imageWidth) > 0 && Number(draft.imageHeight) > 0
-        ? `${Number(draft.imageWidth)} / ${Number(draft.imageHeight)}` : '16 / 9';
-      const previewRect = hasRect ? [rect.x1, rect.y1, rect.x2, rect.y2].join(',') : '';
-      const targetBox = hasRect
-        ? `<span class="copilot-draft__target-box" style="left:${rect.x1 * 100}%;top:${rect.y1 * 100}%;width:${(rect.x2 - rect.x1) * 100}%;height:${(rect.y2 - rect.y1) * 100}%"></span>`
-        : '';
-      const visual = (!review && imageUrl)
-        ? `<button type="button" class="copilot-draft__visual" data-image-preview="${escapeHtml(imageUrl)}" data-preview-rect="${escapeHtml(previewRect)}" aria-label="Copilotが選んだ赤枠候補を拡大表示"><span class="copilot-draft__visual-stage" style="aspect-ratio:${escapeHtml(imageAspect)}"><img src="${escapeHtml(imageUrl)}" alt=""><span class="copilot-draft__visual-overlay">${targetBox}</span></span><span>${hasRect ? 'Copilotが選んだ赤枠候補（クリックで拡大）' : '合う赤枠候補なし'}</span></button>`
-        : '';
-      // 自信がない下書きと不要判定は、既定では採用しない。取りこぼしより誤採用を避ける。
-      const checked = (review || (!uncertain && !visualUncertain && !dropped)) ? ' checked' : '';
-      return `<article class="copilot-draft" data-copilot-draft-item data-step-id="${escapeHtml(draft.id)}" data-sheet-id="${escapeHtml(draft.sheetId || '')}" data-target-candidate-id="${escapeHtml(draft.targetCandidateId || '')}" data-zoom="${escapeHtml(draft.zoom || 'keep')}" data-dropped="${dropped ? 'true' : 'false'}" data-uncertain="${uncertain ? 'true' : 'false'}" data-visual-uncertain="${visualUncertain ? 'true' : 'false'}">
-<label class="copilot-draft__accept"><input type="checkbox" data-copilot-accept${checked}><span>文章と赤枠を反映</span></label>
-<div class="copilot-draft__body">
-${visual}
-<div class="copilot-draft__flags">${flags.join('')}</div>
-<label class="copilot-draft__field"><span>手順名</span><input type="text" data-copilot-title value="${escapeHtml(draft.title)}" maxlength="100"></label>
-<label class="copilot-draft__field"><span>説明</span><textarea data-copilot-description rows="3" maxlength="4000">${escapeHtml(draft.description)}</textarea></label>
-<label class="copilot-draft__field"><span>補足</span><input type="text" data-copilot-note value="${escapeHtml(draft.note)}" maxlength="2000"></label>
-${review ? current + reason : reason + current}
-</div>
-<span class="copilot-draft__index">${index + 1}</span>
-</article>`;
-    }).join('');
-    list.querySelectorAll('[data-copilot-accept]').forEach((box) => {
-      box.addEventListener('change', updateCopilotSelectionSummary);
-    });
-    updateCopilotSelectionSummary();
-  };
-
-  const applyCopilotDrafts = async () => {
-    if (copilotDraft.busy) return;
-    const items = [...copilotDraft.dialog.querySelectorAll('[data-copilot-draft-item]')];
-    const accept = items
-      .filter((item) => item.querySelector('[data-copilot-accept]').checked)
-      .map((item) => ({
-        id: item.dataset.stepId,
-        title: item.querySelector('[data-copilot-title]').value,
-        description: item.querySelector('[data-copilot-description]').value,
-        note: item.querySelector('[data-copilot-note]').value,
-        targetCandidateId: item.dataset.targetCandidateId || '',
-        zoom: item.dataset.zoom || 'keep'
-      }));
-    const suggestedDeletes = items
-      .filter((item) => item.dataset.dropped === 'true' && !item.querySelector('[data-copilot-accept]').checked)
-      .map((item) => ({
-        stepId: item.dataset.stepId,
-        sheetId: item.dataset.sheetId,
-        action: 'delete',
-        reason: item.querySelector('.copilot-draft__reason')?.textContent?.trim() || '不要な手順の可能性があります。'
-      }))
-      .filter((item) => item.stepId && item.sheetId);
-    const suggestedReviews = items
-      .filter((item) => item.dataset.dropped !== 'true'
-        && !item.querySelector('[data-copilot-accept]').checked
-        && (item.dataset.uncertain === 'true' || item.dataset.visualUncertain === 'true'))
-      .map((item) => ({
-        stepId: item.dataset.stepId,
-        sheetId: item.dataset.sheetId,
-        action: 'review',
-        reason: item.querySelector('.copilot-draft__reason')?.textContent?.trim() || '文章または赤枠・番号を確認してください。'
-      }))
-      .filter((item) => item.stepId && item.sheetId);
-    if (accept.length === 0 && suggestedDeletes.length === 0 && suggestedReviews.length === 0) {
-      showToast('反映する手順を1件以上選んでください。');
-      return;
-    }
-    copilotDraft.busy = true;
-    try {
-      // 日本語をフォーム形式で送ると本文が膨らむため、JSONのまま送る。
-      const response = await fetch('/api/copilot/draft/apply', {
-        method: 'POST',
-        headers: sessionHeaders({ 'Content-Type': 'application/json; charset=UTF-8' }),
-        body: JSON.stringify({
-          accept,
-          attention: [...suggestedDeletes, ...suggestedReviews].map((item) => ({
-            id: item.stepId,
-            action: item.action,
-            reason: item.reason
-          }))
-        })
-      });
-      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
-      const result = await response.json();
-      // 採用ずみなので、閉じるときに破棄を送らないようにしてから閉じる。
-      copilotDraft.drafts = [];
-      copilotDraft.dialog.close();
-      selectedStepIds.clear();
-      lastSelectedStepId = '';
-      await refreshWorkspace();
-      const firstAttention = suggestedDeletes[0] || suggestedReviews[0];
-      if (firstAttention) {
-        await selectSheetForFinishTarget(firstAttention);
-        setActiveStep(firstAttention.stepId, { scroll: false });
-        if (suggestedDeletes.length) selectCopilotDeleteCandidatesOnCurrentSheet();
-        updateFinishGuide();
-        showToast(`${result.applied}件を反映しました。不要候補${suggestedDeletes.length}件、判断に自信がない候補${suggestedReviews.length}件を「要確認」に残しました。シートをまたぐ候補も1件ずつ確認できます。`, 'info');
-      } else {
-        showToast(copilotDraft.mode === 'review'
-          ? `${result.applied}件を反映しました。仕上げ状況を確認して出力できます。`
-          : `${result.applied}件を反映しました。次は文章・画像・順番を仕上げてください。`, 'info');
-      }
-    } catch (error) {
-      showToast(error.message || '下書きを反映できませんでした。');
-    } finally {
-      copilotDraft.busy = false;
-    }
-  };
-
-  const finishCopilotJob = async (status) => {
-    stopCopilotPolling();
-    if (status.state === 'completed') {
-      const response = await fetch('/api/copilot/draft/result', { headers: sessionHeaders() });
-      const result = response.ok ? await response.json() : { drafts: [] };
-      copilotDraft.drafts = [...(result.drafts || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
-      renderCopilotDrafts(copilotDraft.drafts);
-      const failures = (result.failures || []).length;
-      const summary = copilotDraft.mode === 'review'
-        ? `${copilotDraft.drafts.length} 件の直したい箇所が見つかりました`
-        : `${copilotDraft.drafts.length} 件の下書きができました`;
-      setCopilotMessage(
-        summary,
-        failures > 0 ? `${failures} 件のまとまりは受け取れませんでした。あとで作り直せます。` : '採用するものを選んでください。'
-      );
-      setCopilotView('review');
-      return;
-    }
-    if (status.state === 'cancelled') {
-      setCopilotMessage('中止しました', '');
-      setCopilotView('setup');
-      return;
-    }
-    setCopilotMessage('下書きを作れませんでした', String(status.message || ''));
-    setCopilotView('setup');
-  };
-
-  const pollCopilotStatus = async () => {
-    try {
-      const response = await fetch('/api/copilot/draft/status', { headers: sessionHeaders() });
-      if (!response.ok) return;
-      const status = await response.json();
-      const progress = copilotDraft.dialog?.querySelector('[data-copilot-progress]');
-      if (progress) {
-        const percent = Math.max(0, Math.min(100, Number(status.percent) || 0));
-        progress.style.width = `${percent}%`;
-        // 進捗の現在値を伝えないと、読み上げでは0%のまま止まって見える。
-        progress.closest('[role="progressbar"]')?.setAttribute('aria-valuenow', String(percent));
-      }
-      if (status.state === 'queued' || status.state === 'running') {
-        setCopilotMessage(String(status.message || '処理しています'), 'Copilotの画面は裏で動いています。編集は続けられます。');
-        return;
-      }
-      if (status.state === 'idle') return;
-      await finishCopilotJob(status);
-    } catch {
-      // 一時的に取れなくても次の巡回で拾う。
-    }
-  };
-
-  const startCopilotDraft = async () => {
-    const includeWritten = copilotDraft.dialog.querySelector('[data-copilot-include-written]').checked;
-    setCopilotMessage('Copilotの準備をしています', '初回はサインインを求められることがあります。');
-    setCopilotView('progress');
-    try {
-      const body = new URLSearchParams();
-      body.set('includeWritten', includeWritten ? 'true' : 'false');
-      body.set('mode', copilotDraft.mode);
-      const response = await fetch('/api/copilot/draft/start', {
-        method: 'POST',
-        headers: sessionHeaders({ 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' }),
-        body: body.toString()
-      });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload?.message || `HTTP ${response.status}`);
-      stopCopilotPolling();
-      copilotDraft.timer = window.setInterval(pollCopilotStatus, 2000);
-    } catch (error) {
-      setCopilotMessage('下書きを始められませんでした', error.message || '');
-      setCopilotView('setup');
-    }
-  };
-
-  const createCopilotDialog = () => {
-    if (copilotDraft.dialog) return copilotDraft.dialog;
-    const dialog = document.createElement('dialog');
-    dialog.id = 'copilot-draft-dialog';
-    dialog.className = 'copilot-dialog';
-    dialog.setAttribute('aria-label', 'Copilotで手順の文章を作る');
-    dialog.innerHTML = '<header class="copilot-dialog__header"><div><strong data-copilot-title>Copilotの赤枠候補と文章を確認する</strong><span data-copilot-subtitle>画面と候補をMicrosoft 365 Copilotへ渡し、候補の選択と文章の提案を受け取ります</span></div><button type="button" class="copilot-dialog__close" data-copilot-close aria-label="閉じる">×</button></header>'
-      + '<div class="copilot-dialog__content">'
-      + '<section data-copilot-view="setup">'
-      + '<p class="copilot-note" data-copilot-note>画像は普段お使いのMicrosoft 365 Copilotへ添付されます。会社の規程で扱えない画面が含まれていないか確かめてください。</p>'
-      + '<label class="copilot-option"><input type="checkbox" data-copilot-include-written><span>すでに文章を書いた手順も対象にする</span></label>'
-      + '<p class="copilot-capability" data-copilot-capability></p>'
-      + '<p class="copilot-dialog__error" data-copilot-detail></p>'
-      + '</section>'
-      + '<section data-copilot-view="progress" hidden>'
-      + '<div class="copilot-dialog__state" role="status" aria-live="polite"><strong data-copilot-message>準備しています</strong><span data-copilot-detail></span></div>'
-      + '<div class="excel-export-progress" role="progressbar" aria-label="下書きの進捗" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span data-copilot-progress></span></div>'
-      + '</section>'
-      + '<section data-copilot-view="review" hidden>'
-      + '<div class="copilot-dialog__state"><strong data-copilot-message></strong><span data-copilot-detail></span></div>'
-      + '<div class="copilot-list" data-copilot-list></div>'
-      + '</section>'
-      + '</div>'
-      + '<footer class="copilot-dialog__footer">'
-      + '<button type="button" class="button button--ghost" data-copilot-signin>Copilotの画面を開く</button>'
-      + '<span class="copilot-dialog__selection-summary" data-copilot-selection-summary hidden></span>'
-      + '<span class="excel-export-dialog__spacer"></span>'
-      + '<button type="button" class="button button--ghost" data-copilot-cancel hidden>中止</button>'
-      + '<button type="button" class="button button--ghost" data-copilot-close>閉じる</button>'
-      + '<button type="button" class="button button--primary" data-copilot-start>下書きを作る</button>'
-      + '<button type="button" class="button button--primary" data-copilot-apply hidden>選んだ手順に入れる</button>'
-      + '</footer>';
-    document.body.appendChild(dialog);
-    copilotDraft.dialog = dialog;
-
-    const requestCopilotClose = () => {
-      if (copilotDraft.busy) return;
-      if (copilotDraft.drafts.length > 0
-        && !window.confirm('Copilotの提案と、この画面で編集した内容を破棄して閉じますか？')) return;
-      dialog.close();
-    };
-    dialog.querySelectorAll('[data-copilot-close]').forEach((button) => {
-      button.addEventListener('click', requestCopilotClose);
-    });
-    dialog.addEventListener('cancel', (event) => {
-      event.preventDefault();
-      requestCopilotClose();
-    });
-    dialog.querySelector('[data-copilot-start]').addEventListener('click', () => startCopilotDraft());
-    dialog.querySelector('[data-copilot-apply]').addEventListener('click', () => applyCopilotDrafts());
-    dialog.querySelector('[data-copilot-cancel]').addEventListener('click', async () => {
-      try {
-        await fetch('/api/copilot/draft/cancel', { method: 'POST', headers: sessionHeaders() });
-      } catch {
-        // 中止を伝えられなくても、次の巡回で状態が分かる。
-      }
-    });
-    dialog.querySelector('[data-copilot-signin]').addEventListener('click', async () => {
-      try {
-        const response = await fetch('/api/copilot/window', { method: 'POST', headers: sessionHeaders() });
-        if (!response.ok) {
-          const payload = await response.json().catch(() => null);
-          throw new Error(payload?.message || `HTTP ${response.status}`);
-        }
-        showToast('Copilotの画面を開きました。サインインしてから、この画面に戻ってください。', 'info');
-      } catch (error) {
-        showToast(error.message || 'Copilotの画面を開けませんでした。');
-      }
-    });
-    dialog.addEventListener('close', () => {
-      stopCopilotPolling();
-      // 確認せずに閉じた下書きは残さない。次に開いたとき古い結果が出ないようにする。
-      if (copilotDraft.drafts.length > 0) {
-        copilotDraft.drafts = [];
-        fetch('/api/copilot/draft/discard', { method: 'POST', headers: sessionHeaders() }).catch(() => { });
-      }
-    });
-    return dialog;
-  };
-
-  const openCopilotDialog = async (mode = 'draft') => {
-    const dialog = createCopilotDialog();
-    copilotDraft.mode = mode;
-    copilotDraft.drafts = [];
-    setCopilotView('setup');
-    setCopilotMessage('', '');
-
-    const review = mode === 'review';
-    const dialogTitle = review ? 'Copilotで文章を整える' : 'Copilotの赤枠候補と文章を確認する';
-    dialog.setAttribute('aria-label', dialogTitle);
-    dialog.querySelector('[data-copilot-title]').textContent = dialogTitle;
-    dialog.querySelector('[data-copilot-subtitle]').textContent = review
-      ? '敬体の統一、表記ゆれ、用語の不統一、誤字を確認します'
-      : '画面と操作対象の候補をMicrosoft 365 Copilotへ渡し、赤枠と文章の提案を受け取ります';
-    dialog.querySelector('[data-copilot-note]').textContent = review
-      ? '手順の文章だけをMicrosoft 365 Copilotへ渡します。画像は渡しません。'
-      : '画像は普段お使いのMicrosoft 365 Copilotへ添付されます。会社の規程で扱えない画面が含まれていないか確かめてください。';
-    dialog.querySelector('[data-copilot-start]').textContent = review ? '文章を確認する' : '下書きを作る';
-    dialog.querySelector('[data-copilot-apply]').textContent = review ? '選んだ修正を反映して仕上げへ' : '反映して仕上げへ';
-    // 校正では対象の絞り込みが要らない。文章のある手順がすべて対象。
-    dialog.querySelector('[data-copilot-include-written]').closest('label').hidden = review;
-
-    const capability = dialog.querySelector('[data-copilot-capability]');
-    if (review) {
-      capability.textContent = '';
-      dialog.showModal();
-      return;
-    }
-    capability.textContent = '文字認識の状態を確認しています…';
-    const capabilities = await loadCopilotCapabilities();
-    const notes = [];
-    if (capabilities?.ocr?.available) {
-      notes.push('画面の文字を読み取って赤枠と操作対象を補います。');
-    } else if (capabilities?.ocr?.reason) {
-      notes.push(`画面の文字は読み取れません（${capabilities.ocr.reason}）。操作対象は録画の変化などから作った候補をCopilotが確認します。`);
-    }
-    capability.textContent = notes.join(' ');
-    dialog.showModal();
-  };
 
   window.setInterval(pollCaptures, 1500);
   document.addEventListener('visibilitychange', () => {

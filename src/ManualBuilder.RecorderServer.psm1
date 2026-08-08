@@ -10,13 +10,14 @@ Set-StrictMode -Version 2.0
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Project.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Capture.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Recorder.psm1')
-Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Dictation.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.LocalDraft.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.RecorderCopilot.psm1')
+Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Ocr.psm1')
 
 $script:MbRecordingJobsRoot = ''
 $script:MbRecordingScriptRoot = ''
 $script:MbRecordingJob = $null
+$script:MbRecorderOcrSnapshotCache = @{}
 
 function New-MbRecorderProcessIdentity {
     param([Parameter(Mandatory = $true)]$Process)
@@ -76,38 +77,91 @@ function Initialize-MbRecorderServer {
 function Get-MbRecordingIdleStatus {
     return [pscustomobject]@{
         jobId = ''; state = 'idle'; count = 0; message = ''; lastTarget = ''; updatedAt = ''
+        lastImage = ''; lastResultImage = ''; lastEventIndex = 0; controllerAvailable = $false
     }
+}
+
+function Get-MbRecordingLatestPreview {
+    if ($null -eq $script:MbRecordingJob) {
+        return [pscustomobject]@{ image = ''; resultImage = ''; index = 0 }
+    }
+
+    $eventsPath = [string]$script:MbRecordingJob.EventsPath
+    $eventsDirectory = [string]$script:MbRecordingJob.EventsDirectory
+    if (-not (Test-Path -LiteralPath $eventsPath -PathType Leaf)) {
+        return [pscustomobject]@{ image = ''; resultImage = ''; index = 0 }
+    }
+
+    try {
+        $share = [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
+        $stream = [IO.File]::Open($eventsPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)
+        try {
+            $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $true, 1024, $false)
+            try { $raw = $reader.ReadToEnd() } finally { $reader.Dispose() }
+        } finally { $stream.Dispose() }
+
+        $lines = @($raw -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+            try { $event = $lines[$i] | ConvertFrom-Json } catch { continue }
+            if ($null -eq $event -or -not ($event.PSObject.Properties.Name -contains 'image')) { continue }
+            $image = [IO.Path]::GetFileName([string]$event.image)
+            if ($image -notmatch '^event-\d{3}\.jpg$' -or
+                -not (Test-Path -LiteralPath (Join-Path $eventsDirectory $image) -PathType Leaf)) { continue }
+            $index = if ($event.PSObject.Properties.Name -contains 'index') { [int]$event.index } else { 0 }
+            $resultImage = if ($index -gt 0) { 'event-{0:d3}-result.jpg' -f $index } else { '' }
+            if ([string]::IsNullOrWhiteSpace($resultImage) -or
+                -not (Test-Path -LiteralPath (Join-Path $eventsDirectory $resultImage) -PathType Leaf)) {
+                $resultImage = ''
+            }
+            return [pscustomobject]@{ image = $image; resultImage = $resultImage; index = $index }
+        }
+    } catch { }
+    return [pscustomobject]@{ image = ''; resultImage = ''; index = 0 }
 }
 
 function Read-MbRecordingStatus {
     if ($null -eq $script:MbRecordingJob) { return (Get-MbRecordingIdleStatus) }
     $statusPath = [string]$script:MbRecordingJob.StatusPath
-    if (-not (Test-Path -LiteralPath $statusPath -PathType Leaf)) { return (Get-MbRecordingIdleStatus) }
     $status = $null
-    try {
-        # 記録ワーカーが完成済みのstatus.jsonを差し替えられるよう、
-        # 読み取り中も書き込みと削除（原子的な置換）を共有する。
-        $share = [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
-        $stream = [IO.File]::Open($statusPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)
+    # 原子的な差し替えのごく短い隙間を idle と誤表示しないよう、この要求内で
+    # 完成済みJSONを数回読み直す。状態の推測や旧データへの退避は行わない。
+    for ($readAttempt = 0; $readAttempt -lt 5 -and $null -eq $status; $readAttempt++) {
         try {
-            $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $true, 1024, $false)
+            # 記録ワーカーが完成済みのstatus.jsonを差し替えられるよう、
+            # 読み取り中も書き込みと削除（原子的な置換）を共有する。
+            $share = [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
+            $stream = [IO.File]::Open($statusPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)
             try {
-                $raw = $reader.ReadToEnd()
+                $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $true, 1024, $false)
+                try {
+                    $raw = $reader.ReadToEnd()
+                } finally {
+                    $reader.Dispose()
+                }
             } finally {
-                $reader.Dispose()
+                $stream.Dispose()
             }
-        } finally {
-            $stream.Dispose()
+            $status = $raw | ConvertFrom-Json
+        } catch {
+            if ($readAttempt -lt 4) { Start-Sleep -Milliseconds 15 }
         }
-        $status = $raw | ConvertFrom-Json
-    } catch {
-        # 差し替えと同時になった場合は、次の巡回で読み直す。
-        return (Get-MbRecordingIdleStatus)
     }
     if ($null -eq $status) { return (Get-MbRecordingIdleStatus) }
+    if ($null -eq $status) { return (Get-MbRecordingIdleStatus) }
+
+    $preview = Get-MbRecordingLatestPreview
+    $status | Add-Member -NotePropertyName 'lastImage' -NotePropertyValue ([string]$preview.image) -Force
+    $status | Add-Member -NotePropertyName 'lastResultImage' -NotePropertyValue ([string]$preview.resultImage) -Force
+    $status | Add-Member -NotePropertyName 'lastEventIndex' -NotePropertyValue ([int]$preview.index) -Force
+    $controllerAvailable = $false
+    if ($script:MbRecordingJob.PSObject.Properties.Name -contains 'ControllerProcessIdentity' -and
+        $null -ne $script:MbRecordingJob.ControllerProcessIdentity) {
+        try { $controllerAvailable = Test-MbRecorderProcessIdentity -Identity $script:MbRecordingJob.ControllerProcessIdentity } catch { }
+    }
+    $status | Add-Member -NotePropertyName 'controllerAvailable' -NotePropertyValue ([bool]$controllerAvailable) -Force
 
     # 記録プロセスが落ちたまま recording / paused が残らないようにする。
-    if ([string]$status.state -in @('recording', 'paused')) {
+    if ([string]$status.state -in @('starting', 'recording', 'paused')) {
         $alive = $false
         try {
             $alive = if ($script:MbRecordingJob.PSObject.Properties.Name -contains 'ProcessIdentity') {
@@ -143,45 +197,68 @@ function Read-MbRecordingStatus {
 
 function Start-MbRecordingJob {
     param(
-        [string[]]$IgnoreTitlePatterns = @('ManualBuilder'),
-        [switch]$WithNarration
+        [string[]]$IgnoreTitlePatterns = @('ManualBuilder', 'ManualBuilder Recorder'),
+        [ValidateRange(200, 3000)][int]$ResultCaptureDelayMs = 700
     )
 
     $current = Read-MbRecordingStatus
-    if ([string]$current.state -in @('recording', 'paused')) { return $current }
+    if ([string]$current.state -in @('starting', 'recording', 'paused')) { return $current }
 
     $capability = Get-MbRecorderCapability
     if (-not $capability.available) { throw ([string]$capability.reason) }
 
+    # 記録モニターはWPF + WebView2版だけを使用する。欠落時に旧UIへ退避せず、
+    # 記録を開始する前に明確なエラーとして止める。
+    $controllerRoot = Join-Path $script:MbRecordingScriptRoot 'RecorderCompanion'
+    $controllerPath = Join-Path $controllerRoot 'Invoke-RecorderCompanion.ps1'
+    $controllerSourcePath = Join-Path $controllerRoot 'ManualBuilder.RecorderCompanion.cs'
+    $controllerVendorRoot = Join-Path $controllerRoot 'vendor\WebView2'
+    $controllerWebRoot = Join-Path $controllerRoot 'web'
+    foreach ($requiredPath in @(
+        $controllerPath,
+        $controllerSourcePath,
+        (Join-Path $controllerVendorRoot 'Microsoft.Web.WebView2.Core.dll'),
+        (Join-Path $controllerVendorRoot 'Microsoft.Web.WebView2.Wpf.dll'),
+        (Join-Path $controllerVendorRoot 'WebView2Loader.dll'),
+        (Join-Path $controllerWebRoot 'index.html'),
+        (Join-Path $controllerWebRoot 'styles.css'),
+        (Join-Path $controllerWebRoot 'app.js')
+    )) {
+        if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
+            throw "記録モニターが見つかりません。ManualBuilderを再配置してください: $requiredPath"
+        }
+    }
+
     # 前回の記録が残っていれば片付けてから始める。
     Remove-MbRecordingJob
+    $script:MbRecorderOcrSnapshotCache = @{}
 
     $jobId = 'record-' + [guid]::NewGuid().ToString('N')
     $jobDirectory = Join-Path $script:MbRecordingJobsRoot $jobId
     $eventsDirectory = Join-Path $jobDirectory 'events'
     [void](New-Item -ItemType Directory -Path $eventsDirectory -Force)
+    $evidenceDirectory = Join-Path $jobDirectory 'evidence'
+    [void](New-Item -ItemType Directory -Path $evidenceDirectory -Force)
     $framesDirectory = Join-Path $jobDirectory 'frames'
     [void](New-Item -ItemType Directory -Path $framesDirectory -Force)
     $statusPath = Join-Path $jobDirectory 'status.json'
     $eventsPath = Join-Path $jobDirectory 'events.jsonl'
+    $ledgerPath = Join-Path $jobDirectory 'evidence-ledger.jsonl'
     $framesPath = Join-Path $jobDirectory 'frames.jsonl'
     $stopPath = Join-Path $jobDirectory 'stop.requested'
     $pausePath = Join-Path $jobDirectory 'pause.requested'
     $undoPath = Join-Path $jobDirectory 'undo.requested'
-    $narrationPath = Join-Path $jobDirectory 'narration.jsonl'
-    $narrationStatusPath = Join-Path $jobDirectory 'narration-status.json'
+    $manualResultPath = Join-Path $jobDirectory 'result.requested'
     $uiaTargetPath = Join-Path $jobDirectory 'uia-target.json'
     $uiaLogPath = Join-Path $jobDirectory 'uia-monitor.log'
 
     $queued = [pscustomobject]@{
-        jobId = $jobId; state = 'recording'; count = 0
+        jobId = $jobId; state = 'starting'; count = 0
         message = '記録の準備をしています'
         lastTarget = ''; updatedAt = [DateTime]::UtcNow.ToString('o')
     }
     [IO.File]::WriteAllText($statusPath, ($queued | ConvertTo-Json -Depth 5), (New-Object Text.UTF8Encoding($false)))
 
-    # 記録プロセスと音声プロセスが同じ時計を使うよう、開始時刻を揃えて渡す。
-    $startedAtUtc = [DateTime]::UtcNow
     $powerShellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     if (-not (Test-Path -LiteralPath $powerShellPath -PathType Leaf)) { throw 'Windows PowerShell 5.1が見つかりません。' }
     $workerPath = Join-Path $script:MbRecordingScriptRoot 'Invoke-ManualBuilderRecorder.ps1'
@@ -212,14 +289,18 @@ function Start-MbRecordingJob {
         '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-STA', '-File', (& $quote $workerPath),
         '-EventsDirectory', (& $quote $eventsDirectory),
         '-EventsPath', (& $quote $eventsPath),
+        '-EvidenceDirectory', (& $quote $evidenceDirectory),
+        '-LedgerPath', (& $quote $ledgerPath),
         '-FramesDirectory', (& $quote $framesDirectory),
         '-FramesPath', (& $quote $framesPath),
         '-StatusPath', (& $quote $statusPath),
         '-StopPath', (& $quote $stopPath),
         '-PausePath', (& $quote $pausePath),
         '-UndoPath', (& $quote $undoPath),
+        '-ManualResultPath', (& $quote $manualResultPath),
         '-JobId', (& $quote $jobId),
-        '-UiaTargetPath', (& $quote $uiaTargetPath)
+        '-UiaTargetPath', (& $quote $uiaTargetPath),
+        '-ResultCaptureDelayMs', ([string]$ResultCaptureDelayMs)
     )
     if (@($IgnoreTitlePatterns).Count -gt 0) {
         $arguments += '-IgnoreTitlePatterns'
@@ -239,55 +320,84 @@ function Start-MbRecordingJob {
         throw
     }
 
-    # 音声の聞き取りは記録ループと同居できない。並走する別プロセスにする。
-    # 起動に失敗しても操作の記録は続けられるので、ここでは止めない。
-    $dictationProcessId = 0; $dictationProcessIdentity = $null
-    if ($WithNarration) {
-        try {
-            $dictationWorkerPath = Join-Path $script:MbRecordingScriptRoot 'Invoke-ManualBuilderDictation.ps1'
-            $dictationArguments = @(
-                '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-STA', '-File', (& $quote $dictationWorkerPath),
-                '-OutputPath', (& $quote $narrationPath),
-                '-StopPath', (& $quote $stopPath),
-                '-PausePath', (& $quote $pausePath),
-                '-StatusPath', (& $quote $narrationStatusPath),
-                '-StartedAtUtcTicks', ([string]$startedAtUtc.Ticks)
-            )
-            $dictationWorker = Start-Process -FilePath $powerShellPath -ArgumentList $dictationArguments -WindowStyle Hidden -PassThru
-            $dictationProcessId = [int]$dictationWorker.Id
-            $dictationProcessIdentity = New-MbRecorderProcessIdentity -Process $dictationWorker
-            $dictationWorker.Dispose()
-        } catch {
-            $dictationProcessId = 0; $dictationProcessIdentity = $null
+    # 対象アプリを操作したまま使えるWebView2記録モニター。UIが準備できなければ
+    # 記録だけを裏で続けず、開始処理全体を取り消す。
+    $controllerProcessId = 0; $controllerProcessIdentity = $null
+    try {
+        $controllerArguments = @(
+            '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-STA',
+            '-File', (& $quote $controllerPath),
+            '-StatusPath', (& $quote $statusPath),
+            '-EventsDirectory', (& $quote $eventsDirectory),
+            '-PausePath', (& $quote $pausePath),
+            '-UndoPath', (& $quote $undoPath),
+            '-ResultPath', (& $quote $manualResultPath),
+            '-StopPath', (& $quote $stopPath),
+            '-JobId', (& $quote $jobId),
+            '-WebRoot', (& $quote $controllerWebRoot)
+        )
+        $controller = Start-Process -FilePath $powerShellPath -ArgumentList $controllerArguments `
+            -WorkingDirectory $controllerVendorRoot -WindowStyle Hidden -PassThru
+        $controllerProcessId = [int]$controller.Id
+        $controllerProcessIdentity = New-MbRecorderProcessIdentity -Process $controller
+        if ($null -eq $controllerProcessIdentity) { throw '記録モニターの所有情報を確認できません。' }
+        $controller.Dispose()
+        $controllerReadyPath = $statusPath + '.companion.ready'
+        # WebView2 Runtimeの初回初期化は、PC起動直後やウイルス対策ソフトの検査中に
+        # 数秒を超えることがある。表示準備を省略せず最大15秒まで待つ。
+        $controllerReadyTimeoutMs = 15000
+        $controllerReadyIntervalMs = 50
+        $controllerReadyAttempts = [Math]::Ceiling($controllerReadyTimeoutMs / $controllerReadyIntervalMs)
+        for ($attempt = 0; $attempt -lt $controllerReadyAttempts -and -not (Test-Path -LiteralPath $controllerReadyPath -PathType Leaf); $attempt++) {
+            if (-not (Test-MbRecorderProcessIdentity -Identity $controllerProcessIdentity)) { break }
+            Start-Sleep -Milliseconds $controllerReadyIntervalMs
         }
+        if (-not (Test-Path -LiteralPath $controllerReadyPath -PathType Leaf)) {
+            throw '記録モニターの画面を準備できませんでした。WebView2 Runtimeを確認してください。'
+        }
+    } catch {
+        try { [IO.File]::WriteAllText($stopPath, 'stop', (New-Object Text.UTF8Encoding($false))) } catch { }
+        [void](Stop-MbRecorderOwnedProcess -Identity $controllerProcessIdentity)
+        [void](Stop-MbRecorderOwnedProcess -Identity $processIdentity)
+        [void](Stop-MbRecorderOwnedProcess -Identity $uiaWorkerProcessIdentity)
+        try { Remove-Item -LiteralPath $jobDirectory -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+        throw
     }
 
     $script:MbRecordingJob = [pscustomobject]@{
         JobId = $jobId; ProcessId = $processId; JobDirectory = $jobDirectory
         ProcessIdentity = $processIdentity
         EventsDirectory = $eventsDirectory; EventsPath = $eventsPath
+        EvidenceDirectory = $evidenceDirectory; LedgerPath = $ledgerPath
         FramesDirectory = $framesDirectory; FramesPath = $framesPath
-        StatusPath = $statusPath; StopPath = $stopPath; PausePath = $pausePath; UndoPath = $undoPath; StartedAt = Get-Date
-        NarrationPath = $narrationPath; NarrationStatusPath = $narrationStatusPath
-        DictationProcessId = $dictationProcessId
-        DictationProcessIdentity = $dictationProcessIdentity
+        StatusPath = $statusPath; StopPath = $stopPath; PausePath = $pausePath; UndoPath = $undoPath
+        ManualResultPath = $manualResultPath; StartedAt = Get-Date
         UiaTargetPath = $uiaTargetPath; UiaLogPath = $uiaLogPath
         UiaWorkerProcessId = $uiaWorkerProcessId
         UiaWorkerProcessIdentity = $uiaWorkerProcessIdentity
+        ControllerProcessId = $controllerProcessId
+        ControllerProcessIdentity = $controllerProcessIdentity
     }
-    return (Read-MbRecordingStatus)
+    # 開始APIが返った直後から最初の操作を拾えるよう、ワーカーがフックを準備して
+    # recording を書くまで短時間だけ待つ。遅い環境では starting のまま返し、UIが巡回する。
+    $status = Read-MbRecordingStatus
+    for ($attempt = 0; $attempt -lt 60 -and [string]$status.state -eq 'starting'; $attempt++) {
+        Start-Sleep -Milliseconds 50
+        $status = Read-MbRecordingStatus
+    }
+    return $status
 }
 
 function Stop-MbRecordingJob {
     if ($null -eq $script:MbRecordingJob) { return (Get-MbRecordingIdleStatus) }
     $status = Read-MbRecordingStatus
-    if ([string]$status.state -in @('recording', 'paused')) {
+    if ([string]$status.state -in @('starting', 'recording', 'paused')) {
         [IO.File]::WriteAllText([string]$script:MbRecordingJob.StopPath, 'stop', (New-Object Text.UTF8Encoding($false)))
         # 記録プロセスが停止を見て後始末を終えるまで少しだけ待つ。
         for ($i = 0; $i -lt 40; $i++) {
             Start-Sleep -Milliseconds 100
             $status = Read-MbRecordingStatus
-            if ([string]$status.state -notin @('recording', 'paused')) { break }
+            if ([string]$status.state -notin @('starting', 'recording', 'paused')) { break }
         }
     }
     return $status
@@ -311,7 +421,17 @@ function Undo-MbLastRecordingEvent {
     if ($null -eq $script:MbRecordingJob) { return (Get-MbRecordingIdleStatus) }
     $status = Read-MbRecordingStatus
     if ([string]$status.state -notin @('recording', 'paused')) { return $status }
-    [IO.File]::WriteAllText([string]$script:MbRecordingJob.UndoPath, 'undo', (New-Object Text.UTF8Encoding($false)))
+    $previousCount = [int]$status.count
+    $requestId = [guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText([string]$script:MbRecordingJob.UndoPath, $requestId, (New-Object Text.UTF8Encoding($false)))
+    # UIの件数を先に減らさない。ワーカーがログと画像を削除してstatusを更新するまで待ち、
+    # 確定した件数とプレビューを返す。HTTPサーバーは1本なので連打も直列化される。
+    for ($attempt = 0; $attempt -lt 200; $attempt++) {
+        Start-Sleep -Milliseconds 50
+        $status = Read-MbRecordingStatus
+        if ([string]$status.state -notin @('recording', 'paused') -or
+            ([string]$status.undoRequestId -eq $requestId -and [int]$status.count -le $previousCount)) { break }
+    }
     return $status
 }
 
@@ -410,13 +530,18 @@ function Merge-MbRecordedEditInteractions {
         if ([string]$current.kind -eq 'input') {
             while ($result.Count -gt 0) {
                 $candidate = $result[$result.Count - 1]
-                $isEditClick = [string]$candidate.kind -eq 'click' -and
-                    [string]$candidate.targetType -in @('ControlType.Edit', 'ControlType.DataItem')
-                $sameField = -not [string]::IsNullOrWhiteSpace([string]$candidate.targetName) -and
-                    [string]$candidate.targetName -eq [string]$current.targetName -and
-                    [string]$candidate.windowTitle -eq [string]$current.windowTitle -and
-                    ((Test-SamePosition -First $candidate -Second $current -Tolerance 0.02) -or
-                        (-not (Test-HasPosition -Event $candidate) -and -not (Test-HasPosition -Event $current)))
+                $sameWindow = [string]$candidate.windowTitle -eq [string]$current.windowTitle
+                $samePosition = Test-SamePosition -First $candidate -Second $current -Tolerance 0.02
+                $isEditClick = [string]$candidate.kind -eq 'click' -and (
+                    [string]$candidate.targetType -in @('ControlType.Edit', 'ControlType.DataItem') -or
+                    ([string]$candidate.targetType -eq 'ControlType.ClickPoint' -and $samePosition))
+                $sameNamedField = -not [string]::IsNullOrWhiteSpace([string]$candidate.targetName) -and
+                    [string]$candidate.targetName -eq [string]$current.targetName
+                $sameUnknownField = [string]::IsNullOrWhiteSpace([string]$candidate.targetName) -and
+                    [string]::IsNullOrWhiteSpace([string]$current.targetName) -and $samePosition
+                $sameField = $sameWindow -and (($sameNamedField -and ($samePosition -or
+                        (-not (Test-HasPosition -Event $candidate) -and -not (Test-HasPosition -Event $current)))) -or
+                    $sameUnknownField)
                 $gapMs = [int]$current.timeMs - [int]$candidate.timeMs
                 if (-not ($isEditClick -and $sameField -and $gapMs -ge 0 -and $gapMs -le $MaxGapMs)) { break }
                 $result.RemoveAt($result.Count - 1)
@@ -425,6 +550,154 @@ function Merge-MbRecordedEditInteractions {
         [void]$result.Add($current)
     }
     return @($result)
+}
+
+function ConvertTo-MbRecorderOcrLabel {
+    param([AllowEmptyString()][string]$Value = '')
+
+    $label = [regex]::Replace([string]$Value, '\s+', ' ').Trim()
+    # Windows OCRは大きな日本語ボタンを「詳 細 を 表 示」のように1文字ずつ
+    # 分けることがある。英単語間の空白は維持し、日本語同士だけをつなぐ。
+    $japanese = '一-龯々ぁ-んァ-ヶー'
+    $label = [regex]::Replace($label, "(?<=[$japanese])\s+(?=[$japanese])", '')
+    # 横棒を漢数字の「一」と読み違える既知ケース（一覧へ戻る）を限定補正する。
+    $label = [regex]::Replace($label, '^[\-‐‑‒–—―−]\s*覧(?=へ|に|を|で|$)', '一覧')
+    if ($label.Length -gt 80) { $label = $label.Substring(0, 79).TrimEnd() + '…' }
+    return $label
+}
+
+function Test-MbRecorderUnreliableOcrLabel {
+    param(
+        [AllowEmptyString()][string]$Label = '',
+        [AllowEmptyString()][string]$ActionKind = '',
+        [AllowEmptyString()][string]$Source = ''
+    )
+    if ($Source -notmatch '(?i)OCR') { return $false }
+    $value = ([string]$Label).Trim()
+    if ([string]::IsNullOrWhiteSpace($value)) { return $true }
+    # 入力欄内OCRは、項目名ではなく入力済みの値を読むことが多い。
+    if ($ActionKind -eq 'input') { return $true }
+    # Excelエラーや1文字だけの断片を、ボタン名・セル名として断定しない。
+    if ($value -match '^#[A-Z0-9/]+[!?]$' -or $value.Length -le 1) { return $true }
+    return $false
+}
+
+function Get-MbRecorderOcrLabelConfidence {
+    param([AllowEmptyString()][string]$Label = '')
+
+    if ([string]::IsNullOrWhiteSpace($Label)) { return 'low' }
+    $hasJapanese = $Label -match '[一-龯々ぁ-んァ-ヶー]'
+    $latinTokens = @([regex]::Matches($Label, '[A-Za-z]+') | ForEach-Object { [string]$_.Value })
+    if (-not $hasJapanese -or $latinTokens.Count -eq 0) { return 'medium' }
+    # 日本語OCRが英字を「自 i ロ n」のような日英1文字の交互列へ崩す場合は、
+    # 文章を確定扱いにせず要確認へ残す。CSV、PDFなど複数文字の実用語は維持する。
+    if (@($latinTokens | Where-Object { $_.Length -ge 2 }).Count -eq 0) { return 'low' }
+    return 'medium'
+}
+
+function Get-MbRecorderOcrSnapshotCached {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+    $file = Get-Item -LiteralPath $Path
+    $key = $file.FullName + '|' + [string]$file.Length + '|' + [string]$file.LastWriteTimeUtc.Ticks
+    if ($script:MbRecorderOcrSnapshotCache.ContainsKey($key)) {
+        return $script:MbRecorderOcrSnapshotCache[$key]
+    }
+    $snapshot = Get-MbOcrSnapshot -Path $file.FullName
+    # 1回の記録は最大300件。別ジョブを繰り返してもメモリを増やし続けない。
+    if ($script:MbRecorderOcrSnapshotCache.Count -ge 320) { $script:MbRecorderOcrSnapshotCache = @{} }
+    $script:MbRecorderOcrSnapshotCache[$key] = $snapshot
+    return $snapshot
+}
+
+function Add-MbRecorderLocalOcrEvidence {
+    param(
+        [AllowEmptyCollection()][object[]]$Events = @(),
+        [Parameter(Mandatory = $true)][string]$EventsDirectory
+    )
+
+    foreach ($record in @($Events)) {
+        if ($null -eq $record) { continue }
+        $name = if ($record.PSObject.Properties.Name -contains 'targetName') { [string]$record.targetName } else { '' }
+        $source = if ($record.PSObject.Properties.Name -contains 'targetSource') { [string]$record.targetSource } else { '' }
+        $type = if ($record.PSObject.Properties.Name -contains 'targetType') { [string]$record.targetType } else { '' }
+        $isClickPoint = $source -eq 'click-point' -or $type -eq 'ControlType.ClickPoint'
+        if (-not [string]::IsNullOrWhiteSpace($name) -or -not $isClickPoint -or
+            $record.PSObject.Properties.Name -notcontains 'rect' -or $null -eq $record.rect -or
+            -not (Test-MbNormalizedRect -Rect $record.rect)) { continue }
+        $imageName = if ($record.PSObject.Properties.Name -contains 'image') { [string]$record.image } else { '' }
+        if ($imageName -notmatch '^event-\d{3}\.jpg$') { continue }
+
+        $snapshot = Get-MbRecorderOcrSnapshotCached -Path (Join-Path $EventsDirectory $imageName)
+        if ($null -eq $snapshot -or -not [bool]$snapshot.available) { continue }
+        $resolved = Resolve-MbOperationRect -Rect $record.rect -Snapshot $snapshot -NearestLimit 0.055
+        $label = ConvertTo-MbRecorderOcrLabel -Value ([string]$resolved.label)
+        if ([string]::IsNullOrWhiteSpace($label) -or [string]$resolved.matched -notin @('inside', 'nearest')) { continue }
+        $ocrConfidence = Get-MbRecorderOcrLabelConfidence -Label $label
+
+        $ocrCandidate = [pscustomobject]@{
+            id = 'ocr-click-1'
+            source = 'click-point+OCR'
+            confidence = $ocrConfidence
+            label = $label
+            targetType = 'ControlType.OcrText'
+            rect = $resolved.rect
+        }
+        $existing = if ($record.PSObject.Properties.Name -contains 'targetCandidates') { @($record.targetCandidates) } else { @() }
+        $remaining = @($existing | Where-Object { $null -ne $_ -and [string]$_.id -ne 'ocr-click-1' } | Select-Object -First 3)
+        $record | Add-Member -NotePropertyName targetName -NotePropertyValue $label -Force
+        $record | Add-Member -NotePropertyName targetSource -NotePropertyValue 'click-point+OCR' -Force
+        $record | Add-Member -NotePropertyName confidence -NotePropertyValue $ocrConfidence -Force
+        $record | Add-Member -NotePropertyName targetType -NotePropertyValue 'ControlType.OcrText' -Force
+        $record | Add-Member -NotePropertyName rect -NotePropertyValue $resolved.rect -Force
+        $record | Add-Member -NotePropertyName targetCandidateId -NotePropertyValue 'ocr-click-1' -Force
+        $record | Add-Member -NotePropertyName targetCandidates -NotePropertyValue (@($ocrCandidate) + @($remaining)) -Force
+    }
+    return @($Events)
+}
+
+function Repair-MbRecorderUnlabeledInputAnchors {
+    param(
+        [AllowEmptyCollection()][object[]]$Events = @(),
+        [int]$MaximumGapMs = 5000
+    )
+
+    $ordered = @($Events | Sort-Object { [int]$_.timeMs }, { [int]$_.index })
+    for ($index = 1; $index -lt $ordered.Count; $index++) {
+        $current = $ordered[$index]
+        $previous = $ordered[$index - 1]
+        if ([string]$current.kind -ne 'input' -or
+            -not [string]::IsNullOrWhiteSpace([string]$current.targetName) -or
+            [string]$previous.kind -notin @('click', 'double-click') -or
+            [string]::IsNullOrWhiteSpace([string]$previous.targetName) -or
+            [string]$current.windowTitle -ne [string]$previous.windowTitle) { continue }
+        $gap = [int]$current.timeMs - [int]$previous.timeMs
+        if ($gap -lt 0 -or $gap -gt $MaximumGapMs) { continue }
+        $previousType = [string]$previous.targetType
+        if ($previousType -notin @('ControlType.Edit', 'ControlType.DataItem', 'ControlType.OcrText')) { continue }
+
+        foreach ($property in @('targetName', 'targetSource', 'confidence', 'rect', 'targetCandidateId', 'targetCandidates', 'clickPoint')) {
+            if ($previous.PSObject.Properties.Name -contains $property) {
+                $current | Add-Member -NotePropertyName $property -NotePropertyValue $previous.$property -Force
+            }
+        }
+        # 文字入力が実際に続いたため、OCR文字は単なる画面ラベルではなく入力欄のラベルである。
+        if ($previousType -eq 'ControlType.OcrText') {
+            $previous.targetType = 'ControlType.Edit'
+            $current | Add-Member -NotePropertyName targetType -NotePropertyValue 'ControlType.Edit' -Force
+            foreach ($event in @($previous, $current)) {
+                if ($event.PSObject.Properties.Name -contains 'targetCandidates') {
+                    foreach ($candidate in @($event.targetCandidates | Where-Object { [string]$_.id -eq 'ocr-click-1' })) {
+                        $candidate.targetType = 'ControlType.Edit'
+                    }
+                }
+            }
+        } else {
+            $current | Add-Member -NotePropertyName targetType -NotePropertyValue $previousType -Force
+        }
+    }
+    return @($ordered)
 }
 
 function Get-MbRecordedRawEvents {
@@ -445,7 +718,15 @@ function Get-MbRecordedRawEvents {
         }
         [void]$events.Add($record)
     }
-    return @($events)
+    # UIAを取得できなかったクリックは、外部送信しないWindows OCRと実クリック位置を
+    # 組み合わせる。ページ全体の文字から推測せず、クリック枠の中か直近の語だけを採用する。
+    $events = @(Add-MbRecorderLocalOcrEvidence -Events @($events) `
+        -EventsDirectory ([string]$script:MbRecordingJob.EventsDirectory))
+    # 直後に入力が続いた場合、そのクリックが入力欄だったことは操作列から確定できる。
+    $events = @(Repair-MbRecorderUnlabeledInputAnchors -Events @($events))
+    # AI workerだけで補助アンカーを復元しても、取り込み時に原本eventsを
+    # 読み直すと赤枠が消える。同じ保守的なExcel補間を表示・取り込み側にも適用する。
+    return @(Repair-MbRecorderExcelInputEventAnchors -Events @($events))
 }
 
 function Get-MbRecordedEvents {
@@ -466,6 +747,65 @@ function Get-MbRecordedFrames {
         } catch { }
     }
     return @($frames)
+}
+
+function Get-MbRecorderTransformationReason {
+    param(
+        [AllowEmptyCollection()][object[]]$Events = @(),
+        [AllowEmptyString()][string]$ActionKind = '',
+        [bool]$HasAfterImage = $false
+    )
+    $kinds = @($Events | ForEach-Object { [string]$_.kind } | Where-Object { $_ })
+    if ($ActionKind -eq 'visual-change' -and $Events.Count -eq 0) {
+        return '操作イベントが無い区間ですが、画面変化を証拠候補として残しました。'
+    }
+    $basis = if ($Events.Count -le 1) {
+        '1件の操作証拠から1手順を作りました。'
+    } elseif ($kinds -contains 'input' -and @($kinds | Where-Object { $_ -in @('click', 'right-click') }).Count -gt 0) {
+        '入力欄を選んだ操作と、その直後の入力を1手順にまとめました。'
+    } else {
+        ("{0}件の連続した操作証拠を、同じ目的の1手順としてまとめました。" -f $Events.Count)
+    }
+    if ($HasAfterImage) { return $basis + ' 操作後に安定した画面も結果候補として保持しています。' }
+    return $basis
+}
+
+# UI Automation が返した名前と矩形を、クリック座標で独立に照合できた場合だけ
+# 「そのまま使える」候補へ昇格する。DOM/OCR/推定UIAや入力操作は対象外にし、
+# 自動採用を増やすために安全条件を緩めない。
+function Test-MbRecorderTrustedLocalTarget {
+    param(
+        [AllowNull()]$Event,
+        [AllowEmptyString()][string]$ActionKind = ''
+    )
+    if ($null -eq $Event -or $ActionKind -in @('input', 'visual-change')) { return $false }
+    $source = if ($Event.PSObject.Properties.Name -contains 'targetSource') { [string]$Event.targetSource } else { '' }
+    $confidence = if ($Event.PSObject.Properties.Name -contains 'confidence') { [string]$Event.confidence } else { '' }
+    $label = if ($Event.PSObject.Properties.Name -contains 'targetName') { [string]$Event.targetName } else { '' }
+    if ($source -notin @('UIA', 'UIA-CACHE') -or $confidence -notin @('medium', 'high')) { return $false }
+    if ([string]::IsNullOrWhiteSpace($label) -or
+        (Test-MbRecorderUnreliableOcrLabel -Label $label -ActionKind $ActionKind -Source $source)) {
+        return $false
+    }
+    $allowedTypes = @(
+        'ControlType.Button', 'ControlType.SplitButton', 'ControlType.Hyperlink', 'ControlType.MenuItem',
+        'ControlType.ListItem', 'ControlType.ComboBox', 'ControlType.TabItem', 'ControlType.DataItem',
+        'ControlType.CheckBox', 'ControlType.RadioButton', 'ControlType.TreeItem'
+    )
+    $targetType = if ($Event.PSObject.Properties.Name -contains 'targetType') { [string]$Event.targetType } else { '' }
+    if ($targetType -notin $allowedTypes -or
+        $Event.PSObject.Properties.Name -notcontains 'rect' -or
+        $Event.PSObject.Properties.Name -notcontains 'clickPoint' -or
+        $null -eq $Event.rect -or $null -eq $Event.clickPoint) { return $false }
+    try {
+        $x1 = [double]$Event.rect.x1; $y1 = [double]$Event.rect.y1
+        $x2 = [double]$Event.rect.x2; $y2 = [double]$Event.rect.y2
+        $x = [double]$Event.clickPoint.x; $y = [double]$Event.clickPoint.y
+        $width = $x2 - $x1; $height = $y2 - $y1
+        if ($x1 -lt 0 -or $y1 -lt 0 -or $x2 -gt 1 -or $y2 -gt 1 -or
+            $width -le 0 -or $height -le 0 -or ($width * $height) -gt 0.08) { return $false }
+        return $x -ge $x1 -and $x -le $x2 -and $y -ge $y1 -and $y -le $y2
+    } catch { return $false }
 }
 
 function Get-MbRecordedLocalProposals {
@@ -498,6 +838,19 @@ function Get-MbRecordedLocalProposals {
         $targetSource = if ($null -ne $draftEvent -and $draftEvent.PSObject.Properties.Name -contains 'targetSource') { [string]$draftEvent.targetSource } else { '' }
         $targetConfidence = if ($null -ne $draftEvent -and $draftEvent.PSObject.Properties.Name -contains 'confidence') { [string]$draftEvent.confidence } else { '' }
         $isVisualChange = [string]$candidate.actionKind -eq 'visual-change'
+        # 赤枠アンカーを選べなかった入力では、イベントに残った古いセル名を文章へ
+        # 使わない。OCRで入力値を項目名として読んだ場合も同様に安全な文言へ退避する。
+        $hasTrustedDraftAnchor = [int]$candidate.targetEventId -gt 0
+        if (([string]$candidate.actionKind -eq 'input' -and -not $hasTrustedDraftAnchor) -or
+            (Test-MbRecorderUnreliableOcrLabel -Label $targetName -ActionKind ([string]$candidate.actionKind) -Source $targetSource)) {
+            $targetName = ''
+            $targetType = ''
+            $targetSource = if ($hasTrustedDraftAnchor) { $targetSource } else { '' }
+            $targetConfidence = 'low'
+        }
+        if (Test-MbRecorderTrustedLocalTarget -Event $draftEvent -ActionKind ([string]$candidate.actionKind)) {
+            $targetConfidence = 'high'
+        }
         $draft = if ($isVisualChange) {
             [pscustomobject]@{
                 title = '画面の変化を確認'
@@ -510,15 +863,26 @@ function Get-MbRecordedLocalProposals {
                 -TargetType $targetType -WindowTitle $windowTitle -TargetSource $targetSource `
                 -TargetConfidence $targetConfidence
         }
+        $evidenceIds = @($groupEvents | ForEach-Object {
+            if ($_.PSObject.Properties.Name -contains 'evidenceId' -and
+                [string]$_.evidenceId -match '^evidence-[a-f0-9]{32}$') { [string]$_.evidenceId }
+        } | Where-Object { $_ } | Select-Object -Unique)
+        $transformationReason = Get-MbRecorderTransformationReason -Events $groupEvents `
+            -ActionKind ([string]$candidate.actionKind) -HasAfterImage (-not [string]::IsNullOrWhiteSpace([string]$candidate.afterImage))
         [void]$result.Add([pscustomobject]@{
             id = [string]$candidate.id
             beforeFrame = [string]$candidate.beforeFrame
             afterFrame = [string]$candidate.afterFrame
             eventIds = @($candidate.eventIds)
+            evidenceIds = @($evidenceIds)
+            sourceOperationCount = $groupEvents.Count
+            transformationReason = $transformationReason
             targetEventId = [int]$candidate.targetEventId
+            actionKind = [string]$candidate.actionKind
             title = [string]$draft.title
             description = [string]$draft.description
-            confidence = $(if ([bool]$draft.reviewRequired) { 'low' } else { 'medium' })
+            reviewRequired = [bool]$draft.reviewRequired
+            confidence = $(if ([bool]$draft.reviewRequired) { 'low' } else { 'high' })
             reason = $(if ([bool]$draft.reviewRequired) { [string]$draft.reviewReason } else { 'このPCで記録した操作前後から作成しました。' })
             timeMs = [int]$candidate.timeMs
             beforeImage = [string]$candidate.beforeImage
@@ -526,7 +890,11 @@ function Get-MbRecordedLocalProposals {
             source = 'local'
         })
     }
-    return @($result)
+    # ローカル候補でも、AI経路と同じ安全補正を通す。読込中の操作後画像や
+    # Excelの選択範囲を、確認画面へ出す前に可能な範囲で修復する。
+    $repaired = @(Repair-MbRecorderTransientAfterFrames -Frames $frames -Events $events -Proposals @($result))
+    $repaired = @(Expand-MbRecorderExcelRangeSelectionProposals -Events $events -Proposals $repaired)
+    return @($repaired)
 }
 
 function Get-MbRecordedEventImagePath {
@@ -664,8 +1032,18 @@ function Import-MbRecordedEvents {
         }
     }
 
-    # 話した内容を、どの操作の説明かで振り分けておく。
-    $narration = Merge-MbNarrationIntoEvents -Events $events -Phrases (@(Get-MbRecordedNarration))
+    $evidenceSession = Import-MbRecordedEvidenceSession -Project $Project -ProjectPath $ProjectPath
+    $sessionId = if ($null -ne $evidenceSession) { [string]$evidenceSession.id } else { '' }
+    $acceptedIndexes = New-Object 'System.Collections.Generic.HashSet[int]'
+    foreach ($record in $events) {
+        $recordIndex = 0
+        try { $recordIndex = [int]$record.index } catch { $recordIndex = 0 }
+        if ($recordIndex -gt 0 -and ($null -eq $wanted -or $wanted.Contains($recordIndex))) {
+            [void]$acceptedIndexes.Add($recordIndex)
+        }
+    }
+    Save-MbRecordedRawTransformationDecisions -ProjectPath $ProjectPath -SessionId $sessionId `
+        -Events $events -AcceptedIndexes $acceptedIndexes
 
     $added = 0
     $skipped = 0
@@ -710,7 +1088,8 @@ function Import-MbRecordedEvents {
                     $resultAsset = Add-MbImageAsset -Project $Project -ProjectPath $ProjectPath `
                         -Bytes ([IO.File]::ReadAllBytes($resultImagePath)) -Source 'recorder'
                     $result.Step.resultImageId = [string]$resultAsset.Image.id
-                    $result.Step.imageLayout = 'side-by-side'
+                    # 結果画像は失わず保存するが、初稿では案内画像1枚を使う。
+                    $result.Step.imageLayout = 'before'
                     $result.Step.imageOrder = 'before-after'
                     $result.Step.updatedAt = [DateTime]::UtcNow.ToString('o')
                 } catch {
@@ -750,8 +1129,6 @@ function Import-MbRecordedEvents {
             $suffix = '（右クリック）'
         }
         $targetName = ConvertTo-MbRecorderTargetName -Value $targetName -Suffix $suffix
-        $spoken = ''
-        if ($narration.ContainsKey($index)) { $spoken = [string]$narration[$index] }
         $targetSource = if ($record.PSObject.Properties.Name -contains 'targetSource') { [string]$record.targetSource } else { '' }
         $targetConfidence = if ($record.PSObject.Properties.Name -contains 'confidence' -and
             [string]$record.confidence -in @('high', 'medium', 'low')) { [string]$record.confidence } else { '' }
@@ -794,11 +1171,23 @@ function Import-MbRecordedEvents {
                 x = [double]$record.clickPoint.x; y = [double]$record.clickPoint.y
             }) -Compress
         } else { '' }
+        $recordEvidenceIds = @()
+        if ($record.PSObject.Properties.Name -contains 'evidenceId' -and
+            [string]$record.evidenceId -match '^evidence-[a-f0-9]{32}$') {
+            $recordEvidenceIds = @([string]$record.evidenceId)
+        }
+        $recordEvidenceIdsJson = if ($recordEvidenceIds.Count -gt 0) {
+            ConvertTo-Json -InputObject ([object[]]$recordEvidenceIds) -Compress
+        } else { '' }
+        $recordTransformationReason = Get-MbRecorderTransformationReason -Events @($record) `
+            -ActionKind ([string]$record.kind) -HasAfterImage (-not [string]::IsNullOrWhiteSpace($resultImagePath))
         [void](Set-MbStepCapture -Project $Project -StepId $stepId -Kind $kind `
             -VideoTimeMs ([int]$record.timeMs) -ClickLabel $targetName `
-            -WindowTitle ([string]$record.windowTitle) -Narration $spoken -TargetType $targetType `
+            -WindowTitle ([string]$record.windowTitle) -Narration '' -TargetType $targetType `
             -TargetSource $targetSource -TargetConfidence $targetConfidence `
-            -TargetCandidateId $candidateId -TargetCandidatesJson $candidatesJson -ClickPointJson $clickPointJson)
+            -TargetCandidateId $candidateId -TargetCandidatesJson $candidatesJson -ClickPointJson $clickPointJson `
+            -SourceSessionId $sessionId -EvidenceIdsJson $recordEvidenceIdsJson `
+            -SourceOperationCount 1 -TransformationReason $recordTransformationReason)
 
         # Copilotを待たず、記録できた事実だけから編集可能な初稿を作る。
         $draft = Get-MbLocalStepDraft -ActionKind ([string]$record.kind) -TargetName $targetName `
@@ -815,23 +1204,231 @@ function Import-MbRecordedEvents {
         }
         $added++
     }
-    return [pscustomobject]@{ added = $added; skipped = $skipped; generated = $generated; needsReview = $needsReview }
+    return [pscustomobject]@{
+        added = $added; skipped = $skipped; generated = $generated; needsReview = $needsReview
+        sourceOperations = $(if ($null -ne $evidenceSession) { [int]$evidenceSession.operationCount } else { $events.Count })
+        archivedEvidence = $(if ($null -ne $evidenceSession) { [int]$evidenceSession.operationCount } else { 0 })
+        sourceSessionId = $sessionId
+    }
 }
 
-# Copilotがコンタクトシートから選んだ原画像と操作群を、編集可能な手順へ変換する。
-function Import-MbRecordedCopilotSelections {
+function Import-MbRecordedEvidenceSession {
+    param(
+        [Parameter(Mandatory = $true)][object]$Project,
+        [Parameter(Mandatory = $true)][string]$ProjectPath
+    )
+    if ($null -eq $script:MbRecordingJob) { return $null }
+    if ($script:MbRecordingJob.PSObject.Properties.Name -notcontains 'JobId' -or
+        $script:MbRecordingJob.PSObject.Properties.Name -notcontains 'LedgerPath' -or
+        $script:MbRecordingJob.PSObject.Properties.Name -notcontains 'EvidenceDirectory') {
+        throw 'この記録には操作証拠がありません。新しい形式で記録し直してください。'
+    }
+    $jobId = [string]$script:MbRecordingJob.JobId
+    if ($jobId -notmatch '^record-[a-f0-9]{32}$') { throw '証拠セッションIDが正しくありません。' }
+    $ledgerSource = [string]$script:MbRecordingJob.LedgerPath
+    $evidenceSource = [string]$script:MbRecordingJob.EvidenceDirectory
+    if (-not (Test-Path -LiteralPath $ledgerSource -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $evidenceSource -PathType Container)) {
+        throw '操作証拠の台帳または画像がありません。新しい形式で記録し直してください。'
+    }
+    $ledgerEntries = New-Object System.Collections.ArrayList
+    foreach ($line in @([IO.File]::ReadAllLines($ledgerSource, [Text.Encoding]::UTF8))) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        try { [void]$ledgerEntries.Add(($line | ConvertFrom-Json)) }
+        catch { throw '操作証拠の台帳が壊れています。記録を取り込まずに停止しました。' }
+    }
+    $captureStart = @($ledgerEntries | Where-Object { [string]$_.recordType -eq 'capture-start' } | Select-Object -First 1)
+    $captureEnd = @($ledgerEntries | Where-Object { [string]$_.recordType -eq 'capture-end' } | Select-Object -Last 1)
+    if ($captureStart.Count -ne 1 -or $captureEnd.Count -ne 1 -or
+        [int]$captureStart[0].formatVersion -ne 2 -or [int]$captureEnd[0].formatVersion -ne 2) {
+        throw 'この記録は現在の証拠形式ではありません。新しい形式で記録し直してください。'
+    }
+    if ([string]$captureStart[0].sessionId -ne $jobId -or [string]$captureEnd[0].sessionId -ne $jobId -or
+        @($ledgerEntries | Where-Object { [string]$_.recordType -eq 'capture-gap' -and [string]$_.sessionId -ne $jobId }).Count -gt 0) {
+        throw '操作証拠のセッション情報が一致しません。取り込まずに停止しました。'
+    }
+    $operations = @($ledgerEntries | Where-Object { [string]$_.recordType -eq 'operation' })
+    if ($operations.Count -eq 0) { throw '取り込める操作証拠がありません。' }
+    foreach ($operation in $operations) {
+        $evidenceId = [string]$operation.id
+        $imageName = [string]$operation.image
+        if ([string]$operation.sessionId -ne $jobId -or
+            $evidenceId -notmatch '^evidence-[a-f0-9]{32}$' -or
+            $imageName -ne ($evidenceId + '.jpg') -or
+            -not (Test-Path -LiteralPath (Join-Path $evidenceSource $imageName) -PathType Leaf)) {
+            throw '操作証拠の画像が不足しています。欠けたまま手順へ変換せずに停止しました。'
+        }
+    }
+    if ($Project.PSObject.Properties.Name -notcontains 'evidenceSessions') {
+        $Project | Add-Member -NotePropertyName 'evidenceSessions' -NotePropertyValue @() -Force
+    }
+    $existing = @($Project.evidenceSessions | Where-Object { [string]$_.id -eq $jobId } | Select-Object -First 1)
+    if ($existing.Count -gt 0) { return $existing[0] }
+
+    $projectDirectory = Split-Path -Parent ([IO.Path]::GetFullPath($ProjectPath))
+    $archiveRoot = Join-Path $projectDirectory 'evidence'
+    $sessionRoot = Join-Path $archiveRoot $jobId
+    [void](New-Item -ItemType Directory -Path $sessionRoot -Force)
+    $ledgerDestination = Join-Path $sessionRoot 'evidence-ledger.jsonl'
+    Copy-Item -LiteralPath $ledgerSource -Destination $ledgerDestination -Force
+    $imagesDestination = Join-Path $sessionRoot 'images'
+    [void](New-Item -ItemType Directory -Path $imagesDestination -Force)
+    foreach ($operation in $operations) {
+        $imageName = [string]$operation.image
+        Copy-Item -LiteralPath (Join-Path $evidenceSource $imageName) `
+            -Destination (Join-Path $imagesDestination $imageName) -Force
+    }
+    $operationCount = 0; $undoneCount = 0
+    foreach ($entry in $ledgerEntries) {
+        if ([string]$entry.recordType -eq 'operation') { $operationCount++ }
+        elseif ([string]$entry.recordType -eq 'decision' -and [string]$entry.action -eq 'undo') { $undoneCount++ }
+    }
+    $captureGaps = @($ledgerEntries | Where-Object { [string]$_.recordType -eq 'capture-gap' })
+    $captureCompleteness = if ($captureGaps.Count -gt 0 -or
+        [string]$captureStart[0].completeness -eq 'known-gaps' -or
+        [string]$captureEnd[0].completeness -eq 'known-gaps') { 'known-gaps' } else { 'no-known-gaps' }
+    $captureWarning = if ($captureCompleteness -eq 'known-gaps') {
+        $warning = [string]$captureEnd[0].warning
+        if ([string]::IsNullOrWhiteSpace($warning)) { '一部の操作を記録できなかった可能性があります。' } else { $warning }
+    } else { '' }
+    $session = [pscustomobject]@{
+        id = $jobId
+        operationCount = $operationCount
+        undoneCount = $undoneCount
+        ledgerFile = ('evidence/' + $jobId + '/evidence-ledger.jsonl')
+        imageDirectory = ('evidence/' + $jobId + '/images')
+        decisionsFile = ('evidence/' + $jobId + '/transformations.jsonl')
+        formatVersion = 2
+        captureCompleteness = $captureCompleteness
+        captureWarning = $captureWarning
+        retention = 'project-lifetime'
+        importedAt = [DateTime]::UtcNow.ToString('o')
+    }
+    $Project.evidenceSessions = @($Project.evidenceSessions) + @($session)
+    return $session
+}
+
+function Save-MbRecordedTransformationDecisions {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectPath,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$SessionId,
+        [AllowEmptyCollection()][object[]]$AllProposals = @(),
+        [AllowEmptyCollection()][object[]]$AcceptedItems = @(),
+        [AllowEmptyCollection()][object[]]$DecisionItems = @()
+    )
+    if ($SessionId -notmatch '^record-[a-f0-9]{32}$') { return }
+    $acceptedIds = New-Object 'System.Collections.Generic.HashSet[string]'
+    $acceptedItemsById = @{}
+    foreach ($item in @($AcceptedItems)) {
+        if ($null -ne $item -and $item.PSObject.Properties.Name -contains 'id') {
+            $acceptedId = [string]$item.id
+            [void]$acceptedIds.Add($acceptedId)
+            $acceptedItemsById[$acceptedId] = $item
+        }
+    }
+    $decisionItemsById = @{}
+    foreach ($item in @($DecisionItems)) {
+        if ($null -ne $item -and $item.PSObject.Properties.Name -contains 'id') {
+            $decisionItemsById[[string]$item.id] = $item
+        }
+    }
+    $projectDirectory = Split-Path -Parent ([IO.Path]::GetFullPath($ProjectPath))
+    $path = Join-Path (Join-Path (Join-Path $projectDirectory 'evidence') $SessionId) 'transformations.jsonl'
+    $revisionId = 'revision-' + [guid]::NewGuid().ToString('N')
+    $lines = New-Object System.Collections.ArrayList
+    foreach ($proposal in @($AllProposals)) {
+        if ($null -eq $proposal -or $proposal.PSObject.Properties.Name -notcontains 'id') { continue }
+        $proposalId = [string]$proposal.id
+        $evidenceIds = if ($proposal.PSObject.Properties.Name -contains 'evidenceIds') { @($proposal.evidenceIds) } else { @() }
+        $sourceOperationCount = if ($proposal.PSObject.Properties.Name -contains 'sourceOperationCount') {
+            [int]$proposal.sourceOperationCount
+        } else { $evidenceIds.Count }
+        $reason = if ($proposal.PSObject.Properties.Name -contains 'transformationReason') {
+            [string]$proposal.transformationReason
+        } else { '' }
+        $acceptedItem = if ($acceptedItemsById.ContainsKey($proposalId)) { $acceptedItemsById[$proposalId] } else { $null }
+        $decisionItem = if ($decisionItemsById.ContainsKey($proposalId)) { $decisionItemsById[$proposalId] } else { $acceptedItem }
+        $reviewed = $null -ne $decisionItem -and $decisionItem.PSObject.Properties.Name -contains 'reviewed' -and [bool]$decisionItem.reviewed
+        $finalTitle = if ($null -ne $decisionItem -and $decisionItem.PSObject.Properties.Name -contains 'title') { [string]$decisionItem.title } else { '' }
+        $finalDescription = if ($null -ne $decisionItem -and $decisionItem.PSObject.Properties.Name -contains 'description') { [string]$decisionItem.description } else { '' }
+        $record = [ordered]@{
+            recordType = 'transformation'
+            id = 'transformation-' + [guid]::NewGuid().ToString('N')
+            revisionId = $revisionId
+            sessionId = $SessionId
+            proposalId = $proposalId
+            evidenceIds = $evidenceIds
+            sourceOperationCount = $sourceOperationCount
+            accepted = $acceptedIds.Contains($proposalId)
+            reason = $reason
+            reviewed = $reviewed
+            finalTitle = $finalTitle
+            finalDescription = $finalDescription
+            decisionSource = $(if ($reviewed) { 'user-review' } else { 'automatic' })
+            transformer = 'local-v1'
+            decidedAt = [DateTime]::UtcNow.ToString('o')
+        }
+        [void]$lines.Add(($record | ConvertTo-Json -Depth 8 -Compress))
+    }
+    if ($lines.Count -gt 0) {
+        [IO.File]::AppendAllText($path, ((@($lines) -join [Environment]::NewLine) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+    }
+}
+
+function Save-MbRecordedRawTransformationDecisions {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectPath,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$SessionId,
+        [AllowEmptyCollection()][object[]]$Events = @(),
+        [Parameter(Mandatory = $true)]$AcceptedIndexes
+    )
+    if ($SessionId -notmatch '^record-[a-f0-9]{32}$') { return }
+    $proposals = New-Object System.Collections.ArrayList
+    $accepted = New-Object System.Collections.ArrayList
+    foreach ($event in @($Events)) {
+        $index = 0
+        try { $index = [int]$event.index } catch { $index = 0 }
+        if ($index -le 0) { continue }
+        $evidenceIds = @()
+        if ($event.PSObject.Properties.Name -contains 'evidenceId' -and
+            [string]$event.evidenceId -match '^evidence-[a-f0-9]{32}$') {
+            $evidenceIds = @([string]$event.evidenceId)
+        }
+        $proposal = [pscustomobject]@{
+            id = ('raw-event-{0:d5}' -f $index)
+            evidenceIds = $evidenceIds
+            sourceOperationCount = 1
+            transformationReason = Get-MbRecorderTransformationReason -Events @($event) `
+                -ActionKind ([string]$event.kind) -HasAfterImage ($event.PSObject.Properties.Name -contains 'resultImage' -and -not [string]::IsNullOrWhiteSpace([string]$event.resultImage))
+        }
+        [void]$proposals.Add($proposal)
+        if ($AcceptedIndexes.Contains($index)) { [void]$accepted.Add([pscustomobject]@{ id = [string]$proposal.id }) }
+    }
+    Save-MbRecordedTransformationDecisions -ProjectPath $ProjectPath -SessionId $SessionId `
+        -AllProposals @($proposals) -AcceptedItems @($accepted)
+}
+
+# このPCで選んだ原画像と操作群を、編集可能な手順へ変換する。
+function Import-MbRecordedLocalSelections {
     param(
         [Parameter(Mandatory = $true)][object]$Project,
         [Parameter(Mandatory = $true)][string]$ProjectPath,
         [Parameter(Mandatory = $true)][string]$SheetId,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$SelectionJson
     )
-    if ([string]::IsNullOrWhiteSpace($SelectionJson)) { throw '取り込むAI手順候補がありません。' }
-    try { $selection = $SelectionJson | ConvertFrom-Json } catch { throw 'AI手順候補の形式が正しくありません。' }
+    if ([string]::IsNullOrWhiteSpace($SelectionJson)) { throw '取り込む手順候補がありません。' }
+    try { $selection = $SelectionJson | ConvertFrom-Json } catch { throw '手順候補の形式が正しくありません。' }
     $items = @($selection)
     if ($selection.PSObject.Properties.Name -contains 'accept') { $items = @($selection.accept) }
     elseif ($selection.PSObject.Properties.Name -contains 'steps') { $items = @($selection.steps) }
+    $decisionItems = if ($selection.PSObject.Properties.Name -contains 'decisions') { @($selection.decisions) } else { @() }
     if ($items.Count -gt 300) { throw '一度に取り込める手順は300件までです。' }
+
+    $evidenceSession = Import-MbRecordedEvidenceSession -Project $Project -ProjectPath $ProjectPath
+    $sessionId = if ($null -ne $evidenceSession) { [string]$evidenceSession.id } else { '' }
+    $allProposals = @(Get-MbRecordedLocalProposals)
+    Save-MbRecordedTransformationDecisions -ProjectPath $ProjectPath -SessionId $sessionId `
+        -AllProposals $allProposals -AcceptedItems $items -DecisionItems $decisionItems
 
     $frameMap = @{}
     foreach ($frame in @(Get-MbRecordedFrames)) { $frameMap[[string]$frame.id] = $frame }
@@ -888,7 +1485,7 @@ function Import-MbRecordedCopilotSelections {
                 try {
                     $asset = Add-MbImageAsset -Project $Project -ProjectPath $ProjectPath -Bytes ([IO.File]::ReadAllBytes($afterPath)) -Source 'recorder'
                     $result.Step.resultImageId = [string]$asset.Image.id
-                    $result.Step.imageLayout = 'side-by-side'; $result.Step.imageOrder = 'before-after'
+                    $result.Step.imageLayout = 'before'; $result.Step.imageOrder = 'before-after'
                 } catch { }
             }
         }
@@ -917,23 +1514,46 @@ function Import-MbRecordedCopilotSelections {
         $targetConfidence = $(if ($null -ne $anchor -and $anchor.PSObject.Properties.Name -contains 'confidence') { [string]$anchor.confidence } else { '' })
         $candidateId = $(if ($null -ne $anchor -and $anchor.PSObject.Properties.Name -contains 'targetCandidateId') { [string]$anchor.targetCandidateId } else { '' })
         $candidatesJson = $(if ($null -ne $anchor -and $anchor.PSObject.Properties.Name -contains 'targetCandidates') { ConvertTo-Json -InputObject @($anchor.targetCandidates) -Depth 8 -Compress } else { '' })
+        $itemActionKind = if ($item.PSObject.Properties.Name -contains 'actionKind') { [string]$item.actionKind } else { '' }
+        if (Test-MbRecorderUnreliableOcrLabel -Label $targetName -ActionKind $itemActionKind -Source $targetSource) {
+            # 不採用にしたOCR入力値を、手順の表示外メタデータへも残さない。
+            # 矩形とクリック点は赤枠の確認用に維持する。
+            $targetName = ''
+            $candidateId = ''
+            $candidatesJson = ''
+        }
         $clickPointJson = $(if ($null -ne $anchor -and $anchor.PSObject.Properties.Name -contains 'clickPoint') {
             ConvertTo-Json -InputObject ([pscustomobject]@{ x = [double]$anchor.clickPoint.x; y = [double]$anchor.clickPoint.y }) -Compress
         } else { '' })
-        [void](Set-MbStepCapture -Project $Project -StepId $stepId -Kind 'recorded-ai' -VideoTimeMs ([int]$beforeFrame.timeMs) `
+        [object[]]$evidenceIds = @(if ($item.PSObject.Properties.Name -contains 'evidenceIds') { @($item.evidenceIds) } else { @() })
+        $evidenceIdsJson = if ($evidenceIds.Count -gt 0) { ConvertTo-Json -InputObject ([object[]]@($evidenceIds)) -Compress } else { '' }
+        $sourceOperationCount = if ($item.PSObject.Properties.Name -contains 'sourceOperationCount') { [int]$item.sourceOperationCount } else { $eventIds.Count }
+        $transformationReason = if ($item.PSObject.Properties.Name -contains 'transformationReason') { [string]$item.transformationReason } else {
+            Get-MbRecorderTransformationReason -Events @($eventIds | ForEach-Object { $eventMap[[int]$_] }) `
+                -ActionKind $itemActionKind -HasAfterImage ($null -ne $afterFrame)
+        }
+        [void](Set-MbStepCapture -Project $Project -StepId $stepId -Kind 'recorded-local' -VideoTimeMs ([int]$beforeFrame.timeMs) `
             -ClickLabel $targetName -WindowTitle ([string]$beforeFrame.windowTitle) -TargetType $targetType `
             -TargetSource $targetSource -TargetConfidence $targetConfidence -TargetCandidateId $candidateId `
-            -TargetCandidatesJson $candidatesJson -ClickPointJson $clickPointJson)
+            -TargetCandidatesJson $candidatesJson -ClickPointJson $clickPointJson -SourceSessionId $sessionId `
+            -EvidenceIdsJson $evidenceIdsJson -SourceOperationCount $sourceOperationCount `
+            -TransformationReason $transformationReason)
         $confidence = if ($item.PSObject.Properties.Name -contains 'confidence') { [string]$item.confidence } else { 'low' }
-        if ($confidence -ne 'high' -or @($annotations).Count -eq 0) {
+        $userReviewed = $item.PSObject.Properties.Name -contains 'reviewed' -and [bool]$item.reviewed
+        if (($confidence -ne 'high' -or @($annotations).Count -eq 0) -and -not $userReviewed) {
             $reason = if ($item.PSObject.Properties.Name -contains 'reason') { [string]$item.reason } else { '' }
-            if ([string]::IsNullOrWhiteSpace($reason)) { $reason = 'AIが選んだ画像と手順です。文章と赤枠を確認してください。' }
+            if ([string]::IsNullOrWhiteSpace($reason)) { $reason = 'このPCで選んだ画像と手順です。文章と赤枠を確認してください。' }
             [void](Set-MbStepReview -Project $Project -StepId $stepId -Action 'review' -Reason $reason)
             $needsReview++
         } else { [void](Set-MbStepReview -Project $Project -StepId $stepId -Action '' -Reason '') }
         $added++
     }
-    return [pscustomobject]@{ added = $added; skipped = $skipped; generated = $added; needsReview = $needsReview }
+    return [pscustomobject]@{
+        added = $added; skipped = $skipped; generated = $added; needsReview = $needsReview
+        sourceOperations = $(if ($null -ne $evidenceSession) { [int]$evidenceSession.operationCount } else { $eventMap.Count })
+        archivedEvidence = $(if ($null -ne $evidenceSession) { [int]$evidenceSession.operationCount } else { 0 })
+        sourceSessionId = $sessionId
+    }
 }
 
 function Get-MbRecordedFrameImagePath {
@@ -952,17 +1572,20 @@ function Get-MbRecordingSourceInfo {
         jobDirectory = [string]$script:MbRecordingJob.JobDirectory
         eventsPath = [string]$script:MbRecordingJob.EventsPath
         eventsDirectory = [string]$script:MbRecordingJob.EventsDirectory
+        evidenceDirectory = [string]$script:MbRecordingJob.EvidenceDirectory
+        ledgerPath = [string]$script:MbRecordingJob.LedgerPath
         framesPath = [string]$script:MbRecordingJob.FramesPath
         framesDirectory = [string]$script:MbRecordingJob.FramesDirectory
     }
 }
 
 function Remove-MbRecordingJob {
+    $script:MbRecorderOcrSnapshotCache = @{}
     if ($null -eq $script:MbRecordingJob) { return }
     $job = $script:MbRecordingJob
     $directory = [string]$job.JobDirectory
     $processIdentities = New-Object System.Collections.ArrayList
-    foreach ($property in @('ProcessIdentity', 'DictationProcessIdentity', 'UiaWorkerProcessIdentity')) {
+    foreach ($property in @('ProcessIdentity', 'DictationProcessIdentity', 'UiaWorkerProcessIdentity', 'ControllerProcessIdentity')) {
         if ($job.PSObject.Properties.Name -contains $property -and $null -ne $job.$property) {
             [void]$processIdentities.Add($job.$property)
         }
@@ -982,15 +1605,9 @@ function Remove-MbRecordingJob {
 # 本体からは この関数を通して記録できるかどうかを受け取る。
 function Get-MbRecordingCapability {
     $recorder = Get-MbRecorderCapability
-    # 音声は任意。使えなくても操作の記録はできるので、別々に返す。
-    $dictation = $null
-    try { $dictation = Get-MbDictationCapability } catch {
-        $dictation = [pscustomobject]@{ available = $false; reason = 'この環境では音声入力を利用できません。'; language = '' }
-    }
     return [pscustomobject]@{
         available = $recorder.available
         reason    = $recorder.reason
-        narration = $dictation
     }
 }
 
@@ -1013,7 +1630,7 @@ Export-ModuleMember -Function @(
     'Get-MbRecordedFrameImagePath',
     'Get-MbRecordingSourceInfo',
     'Import-MbRecordedEvents',
-    'Import-MbRecordedCopilotSelections',
+    'Import-MbRecordedLocalSelections',
     'Get-MbRecordedNarration',
     'Merge-MbNarrationIntoEvents',
     'Remove-MbRecordingJob',

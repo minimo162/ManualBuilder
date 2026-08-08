@@ -23,6 +23,9 @@
 *.yaml text eol=lf
 
 # Binary formats
+*.exe binary
+*.dll binary
+*.pdb binary
 *.png binary
 *.jpg binary
 *.jpeg binary

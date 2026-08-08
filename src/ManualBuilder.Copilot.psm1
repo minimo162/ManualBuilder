@@ -1145,6 +1145,28 @@ function Invoke-MbClickStop {
     } catch { return $null }
 }
 
+function Invoke-MbClickRetry {
+    param([Parameter(Mandatory = $true)][string]$WsUrl)
+    $js = @'
+(() => {
+  const visible=e=>{if(!e)return false;const r=e.getBoundingClientRect(),s=e.ownerDocument.defaultView.getComputedStyle(e);return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden';};
+  const docs=[document];for(const f of document.querySelectorAll('iframe')){try{if(f.contentDocument)docs.push(f.contentDocument)}catch(e){}}
+  const buttons=docs.flatMap(d=>Array.from(d.querySelectorAll('button,[role="button"]')));
+  for(const b of buttons){
+    const label=(b.getAttribute('aria-label')||b.title||b.textContent||'').trim();
+    if(!/^(再試行|retry|try again)$/i.test(label))continue;
+    if(b.disabled||b.getAttribute('aria-disabled')==='true'||!visible(b))continue;
+    b.click();return JSON.stringify({clicked:true,label});
+  }
+  return JSON.stringify({clicked:false});
+})()
+'@
+    try {
+        $raw = Invoke-MbCdpEval -WebSocketUrl $WsUrl -Expression $js -TimeoutSeconds 15
+        return ($raw | ConvertFrom-Json)
+    } catch { return [pscustomobject]@{ clicked = $false } }
+}
+
 function Test-MbCopilotGenerating {
     param([Parameter(Mandatory = $true)][string]$WsUrl)
     $js = @'
@@ -1310,6 +1332,14 @@ function Wait-MbCopilotResponse {
 
         # マーカーが出ない画面もあるため、生成が止まってから読めるJSONがあれば採用する。
         $generating = Test-MbCopilotGenerating -WsUrl $WsUrl
+        if ((Test-MbCopilotServiceErrorText -Text $region) -and -not $generating) {
+            $tail = $region
+            if ($tail.Length -gt 400) { $tail = $tail.Substring($tail.Length - 400) }
+            return [pscustomobject]@{
+                ok = $false; cancelled = $false; completedBy = 'service-error'; answer = $null
+                tail = $tail; errorCode = 'COPILOT_SERVICE_UNAVAILABLE'; retryable = $false
+            }
+        }
         $meaningfulLength = Get-MbCopilotMeaningfulTextLength -Text $region
         if (-not $generating -and $meaningfulLength -gt 0 -and $meaningfulLength -eq $lastLength) {
             $idleChecks++
@@ -1369,6 +1399,21 @@ function Invoke-MbCopilotRequest {
     if ($gate.cancelled) { return [pscustomobject]@{ ok = $false; cancelled = $true; completedBy = 'cancelled'; answer = $null; tail = '' } }
     if (-not $gate.ok) { throw ([string]$gate.message) }
 
+    # 前回のタイムアウト後もM365側だけが生成を続けることがある。その状態で
+    # 新しい添付と依頼を送ると、送信ボタンが反応しないか前の回答へ混ざる。
+    # 新規チャットへ進む前に生成停止を確認し、同じ画面へ重ねて送らない。
+    if (Test-MbCopilotGenerating -WsUrl $wsUrl) {
+        Write-MbCopilotLog '前回の回答生成が残っているため停止します。' 'WARN'
+        $null = Invoke-MbClickStop -WsUrl $wsUrl
+        $stopDeadline = (Get-Date).AddSeconds(15)
+        while ((Get-Date) -lt $stopDeadline -and (Test-MbCopilotGenerating -WsUrl $wsUrl)) {
+            Start-Sleep -Milliseconds 500
+        }
+        if (Test-MbCopilotGenerating -WsUrl $wsUrl) {
+            throw '前回のCopilot回答を停止できませんでした。しばらく待ってからもう一度お試しください。'
+        }
+    }
+
     # 手順のまとまりごとに新しいチャットで始める。前の依頼の添付や文脈を引きずらない。
     $null = Invoke-MbFreshChat -WsUrl $wsUrl -Settings $Settings
     $gate = Wait-MbCopilotScreenReady -WsUrl $wsUrl -Settings $Settings -TimeoutSeconds 60 -ShouldCancel $ShouldCancel
@@ -1381,12 +1426,26 @@ function Invoke-MbCopilotRequest {
         & $report 'attaching'
         $attached = Invoke-MbCopilotAttachFiles -WsUrl $wsUrl -Settings $Settings -Files $AttachPaths -ShouldCancel $ShouldCancel
         if ($attached.cancelled) { return [pscustomobject]@{ ok = $false; cancelled = $true; completedBy = 'cancelled'; answer = $null; tail = '' } }
+        # 添付カードはファイル選択直後に表示されるが、M365内部では画像の解析が
+        # 数秒続く。実機では3画像を約2秒後に送ると汎用サービスエラーになった。
+        # ボタンの有効状態だけに頼らず、複数画像ほど長い最小待機時間を保証する。
+        $attachmentSettleSeconds = if (@($AttachPaths).Count -gt 1) { 8 } else { 3 }
+        $attachmentSettleDeadline = (Get-Date).AddSeconds($attachmentSettleSeconds)
+        Write-MbCopilotLog ("添付画像の内部処理を待ちます count={0} seconds={1}" -f @($AttachPaths).Count, $attachmentSettleSeconds) 'INFO'
+        while ((Get-Date) -lt $attachmentSettleDeadline) {
+            if ($ShouldCancel -and (& $ShouldCancel)) {
+                return [pscustomobject]@{ ok = $false; cancelled = $true; completedBy = 'cancelled'; answer = $null; tail = '' }
+            }
+            Start-Sleep -Milliseconds 250
+        }
     }
 
     & $report 'sending'
     Invoke-MbInsertPrompt -WsUrl $wsUrl -Settings $Settings -Prompt $Prompt
-    # 添付の後始末の最中は送信ボタンが一時的に無効になる。少しの間は押し直す。
-    $sendDeadline = (Get-Date).AddSeconds(20)
+    # 添付カードが表示された後もM365側の画像処理は続き、複数画像では20秒を
+    # 超えて送信が無効なことがある。添付数に応じて送信可能になるまで待つ。
+    $sendWaitSeconds = if (@($AttachPaths).Count -gt 1) { 60 } elseif (@($AttachPaths).Count -eq 1) { 35 } else { 20 }
+    $sendDeadline = (Get-Date).AddSeconds($sendWaitSeconds)
     $sent = $false
     $lastError = ''
     while ((Get-Date) -lt $sendDeadline) {
@@ -1415,9 +1474,23 @@ function Invoke-MbCopilotRequest {
     if (-not $sent) { throw ('Copilotへ送信できませんでした: ' + $lastError) }
 
     & $report 'waiting'
-    return (Wait-MbCopilotResponse -WsUrl $wsUrl -Settings $Settings -Marker $Marker `
+    $response = Wait-MbCopilotResponse -WsUrl $wsUrl -Settings $Settings -Marker $Marker `
         -TimeoutSeconds ([int]$Settings.request_timeout) -ShouldCancel $ShouldCancel -OnProgress $OnWaitProgress `
-        -AllowEmptySteps:$AllowEmptySteps)
+        -AllowEmptySteps:$AllowEmptySteps
+    if (-not $response.ok -and -not $response.cancelled -and
+        (Test-MbCopilotServiceErrorText -Text ([string]$response.tail))) {
+        # M365自身が表示する［再試行］は、添付を再アップロードせず同じ要求を
+        # 再送する正式な回復経路。1回だけ押し、失敗が続く場合は呼び出し元へ返す。
+        $retry = Invoke-MbClickRetry -WsUrl $wsUrl
+        if ($null -ne $retry -and [bool]$retry.clicked) {
+            Write-MbCopilotLog 'M365のサービスエラーに対して画面の［再試行］を1回実行します。' 'WARN'
+            Start-Sleep -Milliseconds 700
+            $response = Wait-MbCopilotResponse -WsUrl $wsUrl -Settings $Settings -Marker $Marker `
+                -TimeoutSeconds ([int]$Settings.request_timeout) -ShouldCancel $ShouldCancel -OnProgress $OnWaitProgress `
+                -AllowEmptySteps:$AllowEmptySteps
+        }
+    }
+    return $response
 }
 
 function Test-MbCopilotWindowBoundsVisible {
@@ -1460,14 +1533,6 @@ function Show-MbCopilotWindow {
             throw 'Copilot用Edgeのウィンドウを画面上に表示できませんでした。'
         }
 
-        if ((Test-MbCopilotServiceErrorText -Text $region) -and -not (Test-MbCopilotGenerating -WsUrl $WsUrl)) {
-            $tail = $region
-            if ($tail.Length -gt 400) { $tail = $tail.Substring($tail.Length - 400) }
-            return [pscustomobject]@{
-                ok = $false; cancelled = $false; completedBy = 'service-error'; answer = $null
-                tail = $tail; errorCode = 'COPILOT_SERVICE_UNAVAILABLE'; retryable = $false
-            }
-        }
         Write-MbCopilotLog ("Copilot用Edgeの表示を確認しました: windowId=$windowId state=$([string]$verified.result.bounds.windowState) left=$([int]$verified.result.bounds.left) top=$([int]$verified.result.bounds.top)") 'INFO'
         return $true
     } finally {
@@ -1492,6 +1557,7 @@ Export-ModuleMember -Function @(
     'Invoke-MbInsertPrompt',
     'Invoke-MbClickSend',
     'Invoke-MbClickStop',
+    'Invoke-MbClickRetry',
     'Wait-MbCopilotResponse',
     'Invoke-MbCopilotRequest',
     'Show-MbCopilotWindow',

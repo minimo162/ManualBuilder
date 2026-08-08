@@ -120,14 +120,13 @@ if (appJs) {
     ['Excel出力', 'data-export-excel'],
     ['Word出力', 'data-export-word'],
     ['録画からの自動分割', 'data-video-auto'],
-    ['操作の記録', 'recorder-dialog'],
-    ['Copilotの下書き', 'copilot-draft-dialog']
+    ['操作の記録', 'recorder-dialog']
   ];
   for (const [name, marker] of markers) {
     check(`${name} の呼び出しが残っている`, appJs.includes(marker));
   }
   check('HTML出力の呼び出しが残っていない', !appJs.includes('data-export-html') && !appJs.includes('/api/export/html'));
-  check('Excelを標準、Wordを副形式として案内する', appJs.includes('Excelを標準形式、Wordを印刷向けの副形式'));
+  check('Excelを主選択、Wordを印刷向けとして案内する', appJs.includes('Excelファイルを作成') && appJs.includes('Wordファイルを作成') && appJs.includes('印刷しやすい縦型'));
   check('完成ファイルの共有は手動だと案内する', appJs.includes('完成ファイルを手動でコピーまたは送付してください'));
   const recommendation = appJs.match(/const getRecommendedRecordedIndexes = \(events\) => \{([\s\S]*?)\n  \};/);
   let multiAppSelected = false;
@@ -141,28 +140,83 @@ if (appJs) {
     multiAppSelected = selected instanceof Set && [1, 2, 3].every((index) => selected.has(index));
   }
   check('録画レビューでEdgeとExcelを件数に関係なく既定選択する', multiAppSelected);
-  check('録画レビューでAI候補を大きな操作前・操作後画像として確認する', appJs.includes('renderRecordedProposals') && appJs.includes('recorder-proposal__shot'));
+  check('録画レビューで操作画面を大きく表示し、操作後画像を必要なときだけ開く',
+    appJs.includes('renderRecordedProposals') && appJs.includes('recorder-proposal__shot') &&
+    appJs.includes('操作後の画面も確認'));
   check('録画レビューで保存・終了操作を一括除外できる', appJs.includes('excludeRecordedFinishingSequence'));
   check('録画レビューで選択件数を表示する', appJs.includes('data-recorder-selection-summary'));
-  check('録画終了後はローカル候補を先に表示してCopilotを背景処理にする',
-    appJs.includes("renderRecordedProposals(recorder.localProposals, 'local')") && appJs.includes('待たずにこのまま取り込めます'));
-  check('Copilot結果は一覧を自動置換せず利用者が切り替えて比較する',
-    appJs.includes('data-recorder-ai-results') && appJs.includes('toggleRecorderResults') &&
-    appJs.includes('このPCで選んだ候補 ${baseCount} 件に戻す'));
-  check('Copilotは既定で送信せず利用者が必要な場合だけ選べる',
-    appJs.includes('必要ならCopilotでも場面を整理する') &&
-    appJs.includes('aiToggle.checked = false') && appJs.includes('useAi: false'));
-  check('ローカル候補も操作前・操作後の大きな画像で表示して取り込む',
+  check('全候補の一括調整を初回の主導線から畳む', appJs.includes('recorder-review-adjustments') && appJs.includes('<summary>すべての候補を見る・調整</summary>'));
+  check('候補をチェックボックスでなく明示的な採否ボタンで扱う',
+    appJs.includes('data-recorder-toggle') && appJs.includes('aria-pressed=') && !appJs.includes('data-recorder-accept'));
+  check('再描画した手順メニューもボタンとして読み上げる',
+    appJs.includes("more.setAttribute('role', 'button')") &&
+    appJs.includes("more.setAttribute('aria-expanded', 'false')") &&
+    appJs.includes('の操作を開く`'));
+  check('操作後画面の撮影待ち時間を利用者が選べる',
+    appJs.includes('data-recorder-result-delay') && appJs.includes("body.set('resultDelayMs'"));
+  check('撮影待ち時間を初回の主画面から詳細設定へ移す', appJs.includes('recorder-advanced') && appJs.includes('うまく撮れない場合の設定'));
+  check('入力文字と通知が画像に写る注意を記録開始前に常時表示する', appJs.includes('recorder-privacy-alert') && appJs.includes('入力した文字や通知も画面画像に写ります'));
+  check('記録環境の確認失敗から利用者が再試行できる',
+    appJs.includes('data-recorder-capability-retry') &&
+    appJs.includes('記録環境を再確認') &&
+    appJs.includes('ManualBuilderを再起動してください') &&
+    appJs.includes('checkRecorderCapability(dialog)'));
+  check('記録環境の確認が応答待ちでも再試行へ戻る',
+    appJs.includes('new AbortController()') &&
+    appJs.includes('controller.abort(), 8000') &&
+    appJs.includes('capabilityRequestId') &&
+    appJs.includes('recorder.capabilityController?.abort()'));
+  check('記録環境の確認結果を読み上げて再確認ボタンと関連付ける',
+    appJs.includes('id="recorder-capability-message"') &&
+    appJs.includes('role="status" aria-live="polite" aria-atomic="true"') &&
+    appJs.includes('aria-describedby="recorder-capability-message"'));
+  check('操作候補が0件なら取り込みを無効にして再記録を案内する',
+    appJs.includes('importButton.disabled = candidateCount === 0') && appJs.includes("startButton.textContent = 'もう一度記録'") &&
+    appJs.includes('reviewTools.hidden = candidateCount === 0') &&
+    appJs.includes('reviewList.hidden = candidateCount === 0') &&
+    appJs.includes('reviewNote.hidden = candidateCount === 0'));
+  check('記録中に直前の操作前・操作後画像を確認できる',
+    appJs.includes('updateRecorderLivePreview') && appJs.includes('data-recorder-preview-before') &&
+    appJs.includes('data-recorder-preview-after'));
+  check('対象アプリ上の記録レシートで記録結果を確認できると案内する',
+    appJs.includes('data-recorder-controller-status') &&
+    appJs.includes('直前画像の確認・取消・結果画面の追加・終了'));
+  check('記録後に同じマニュアルへ続けて追加できる',
+    appJs.includes('showRecorderContinueBar') &&
+    appJs.includes('data-recorder-continue') && appJs.includes('続けて記録'));
+  check('記録後は要確認候補から表示する',
+    appJs.includes("filter.value = reviewCount > 0 ? 'review' : 'all'") && appJs.includes('applyRecorderReviewFilter()'));
+  check('確認不要なら全件検品を挟まず手順を自動作成する',
+    appJs.includes('summary.reviewCount === 0') && appJs.includes('importRecordedEvents(null, true)'));
+  check('既知の記録欠落がある場合は自動取込みせず全候補を確認対象にする',
+    appJs.includes("recorder.captureCompleteness !== 'no-known-gaps'") &&
+    appJs.includes('data-recorder-capture-warning') &&
+    appJs.includes("payload.status?.captureCompleteness || 'unknown'"));
+  check('要確認の文章を候補画面で直接直し確認済みとして取り込める',
+    appJs.includes('data-recorder-title') && appJs.includes('data-recorder-description') &&
+    appJs.includes("reviewed: row.dataset.reviewRequired === 'true'"));
+  check('採用・除外を含む利用者の確認判断を証拠履歴へ送る',
+    appJs.includes('const decisions = localRows.map') &&
+    appJs.includes('accepted: isRecorderRowSelected(row)') &&
+    appJs.includes('JSON.stringify({ accept, decisions })'));
+  check('記録中の補助画面を役割が分かる記録レシートと呼ぶ',
+    appJs.includes('記録レシートで確認・終了') &&
+    appJs.includes('対象アプリの端に記録レシートが開きます'));
+  check('変換理由と元操作件数は詳細を開いたときだけ表示する',
+    appJs.includes('recorder-source-evidence') && appJs.includes('<summary>元の操作を見る</summary>') &&
+    appJs.includes('sourceOperationCount'));
+  check('録画終了後はローカル候補だけを表示する',
+    appJs.includes('renderRecordedProposals(recorder.localProposals)') &&
+    !appJs.includes("fetch('/api/recorder/analyze/"));
+  check('画像と操作情報を外部送信しないと案内する',
+    appJs.includes('画像と操作情報はこのPCの外へ送信しません') &&
+    !appJs.includes('data-recorder-ai') && !appJs.includes('data-recorder-narration'));
+  check('ローカル候補を主画像と任意の操作後画像で表示して取り込む',
     appJs.includes('recorder.localProposals = payload.localProposals || []') &&
-    appJs.includes("recorder.reviewSource === 'local'") && appJs.includes('recorder.localProposals[Number(item.dataset.proposalIndex)]'));
-  check('Copilot障害時も記録内容を失わずローカル候補へ移る',
-    appJs.includes('COPILOT_SERVICE_UNAVAILABLE') &&
-    appJs.includes('Copilotを利用できなかったため、待たずにこのPCで記録した操作候補へ切り替えました'));
-  check('背景AI中に取り込むとAIだけ中止してローカル候補を保存する',
-    appJs.includes("fetch('/api/recorder/analyze/cancel'") && appJs.includes("recorder.reviewSource === 'proposals'"));
-  check('Copilotサービス障害後は10分間画像を再送せず手動で再確認できる',
-    appJs.includes('copilotUnavailableUntil') && appJs.includes('10 * 60 * 1000') &&
-    appJs.includes('data-recorder-ai-retry') && appJs.includes('今回は画像を送らずローカル候補を表示しています'));
+    appJs.includes("recorder.reviewSource === 'local'") && appJs.includes('recorder.localProposals[Number(row.dataset.proposalIndex)]'));
+  check('ローカル候補をそのまま取り込める',
+    appJs.includes("recorder.reviewSource === 'local'") &&
+    appJs.includes('recorder.localProposals[Number(row.dataset.proposalIndex)]'));
 }
 
 // ---------------------------------------------------------------
@@ -176,7 +230,7 @@ if (appJs) {
   check('通知を閉じられる', appJs.includes('toast__close'));
   check('サーバーが返した具体的な失敗理由を表示する', appJs.includes("contentType.includes('text/plain')") && appJs.includes('serverMessage ||'));
   check('動きを減らす設定を尊重する', appJs.includes('prefers-reduced-motion'));
-  check('Copilot後に仕上げ状況を集計する', appJs.includes('updateFinishGuide'));
+  check('取り込み後に仕上げ状況を集計する', appJs.includes('updateFinishGuide'));
   check('未完了手順へ移動できる', appJs.includes('focusFinishTarget'));
   check('選択手順を一括で並べ替えられる', appJs.includes('reorderSelectedSteps'));
   check('手順の並べ替えを画面下から元に戻せる', appJs.includes("showVisibleUndo('step-reorder'") && appJs.includes('undoStepReorder'));
@@ -207,14 +261,9 @@ if (appJs) {
   check('移動中のスクロール追跡で手順が戻らない', appJs.includes('reviewScrollSyncPausedUntil') && appJs.includes('Date.now() < reviewScrollSyncPausedUntil'));
   check('誤った赤枠だけをその場で外せる', appJs.includes('removeFocusRects') && appJs.includes("item?.type !== 'rect'"));
   check('出力前に完成状態を確認できる', appJs.includes('openOutputReviewDialog'));
-  check('出力前の不足内容を文章・画像・要確認に分ける', appJs.includes("issueLabels.push(`説明なし") && appJs.includes("issueLabels.push(`画像なし") && appJs.includes("issueLabels.push(`要確認"));
-  check('Copilotの不要候補をシート別の要確認として残す', appJs.includes('suggestedDeletes') && appJs.includes('selectCopilotDeleteCandidatesOnCurrentSheet'));
-  check('Copilotの曖昧候補も要確認として残す', appJs.includes('suggestedReviews') && appJs.includes('data-visual-uncertain'));
-  check('赤枠候補なしを初期未選択の要確認にする', appJs.includes('!draft.targetCandidateId || draft.visualConfident === false'));
-  check('Copilotの反映件数と要確認件数を固定フッターへ表示する', appJs.includes('data-copilot-selection-summary') && appJs.includes('updateCopilotSelectionSummary'));
-  check('Copilot候補へ既存の複数選択を混ぜない', /const selectCopilotDeleteCandidatesOnCurrentSheet[\s\S]{0,260}selectedStepIds\.clear\(\)/.test(appJs));
-  check('Copilot結果を閉じる前に破棄確認する', appJs.includes('Copilotの提案と、この画面で編集した内容を破棄して閉じますか？'));
-  check('Copilot提案画像へ認証トークンを付ける', /const renderCopilotDrafts[\s\S]{0,260}const token = sessionHeaders\(\)\['X-Manual-Token'\]/.test(appJs));
+  check('記録と出力のダイアログからTab移動を外へ逃がさない', appJs.includes('keepDialogFocusInside(dialog)'));
+  check('出力前の不足内容を文章・画像・確認待ちに分ける', appJs.includes("issueLabels.push(`説明なし") && appJs.includes("issueLabels.push(`画像なし") && appJs.includes("issueLabels.push(`確認待ち"));
+  check('不要候補へ移動すると既存の複数選択を解除する', /const selectDeleteCandidatesOnCurrentSheet[\s\S]{0,260}selectedStepIds\.clear\(\)/.test(appJs));
   check('全シートの仕上げ状況を読み込む', appJs.includes('projectFinishItems') && appJs.includes('data-project-finish-data'));
   check('構造変更と出力の前に保存待ちする', appJs.includes('flushPendingStructuralSaves'));
   check('文章保存のHTTP応答完了まで待つ', appJs.includes('pendingStepSaveRequests') && appJs.includes('waitForPendingStepSaves'));

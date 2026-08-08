@@ -30,7 +30,7 @@ try {
         '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA',
         '-File', ('"' + $serverScript + '"'), '-Port', $Port,
         '-DataRoot', ('"' + $dataRoot + '"'), '-LegacyAppRoot', ('"' + $legacyRoot + '"'),
-        '-DisableScreenshotWatcher', '-NoBrowser', '-SkipCopilotWarmup', '-AllowParallelTestInstance'
+        '-DisableScreenshotWatcher', '-NoBrowser', '-AllowParallelTestInstance'
     )
     $child = Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
     $ready = $false

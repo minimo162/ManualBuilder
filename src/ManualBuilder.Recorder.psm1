@@ -7,11 +7,12 @@
 #
 # 実装上の判断:
 #
-#   低レベルフック（WH_MOUSE_LL）は使わない。
-#     フックのコールバックが LowLevelHooksTimeout（既定 300ms）を超えると、Windows は
-#     警告なくフックを外す。コールバック内でスクリーンショットを撮れば確実に超える。
-#     60Hz で GetAsyncKeyState を見るポーリングなら、メッセージポンプもデリゲートの
-#     寿命管理も要らず、人間の操作速度には十分間に合う。
+#   低レベルマウスフック（WH_MOUSE_LL）は座標の受け取りだけに使う。
+#     スクリーンショットや UI Automation を同じコールバックで実行すると
+#     LowLevelHooksTimeout を超えるため、コールバックは時刻・座標・ウィンドウを
+#     スレッドセーフなキューへ積んですぐ戻る。重い処理は記録ループが後から行う。
+#     これにより画像保存中に続いたクリックも1件へ潰れない。フックを開始できない
+#     環境だけは GetAsyncKeyState のポーリングへ安全にフォールバックする。
 #
 #   キーの文字は記録しない。
 #     GetAsyncKeyStateからは「入力があった」ことだけを見て、文字列へ変換しない。
@@ -29,6 +30,10 @@ $script:MbRecorderUiaReady = $false
 $script:MbRecorderJobsRoot = ''
 $script:MbRecorderScriptRoot = ''
 $script:MbRecorderJob = $null
+$script:MbRecorderLastUndoRequestId = ''
+$script:MbRecorderLastResultRequestId = ''
+$script:MbRecorderCaptureCompleteness = 'unknown'
+$script:MbRecorderCaptureWarning = ''
 
 # 記録から除くウィンドウ。タスクバーとデスクトップを押しただけの操作は手順にしない。
 $script:MbRecorderIgnoredClasses = @('Shell_TrayWnd', 'Shell_SecondaryTrayWnd', 'WorkerW', 'Progman', 'NotifyIconOverflowWindow')
@@ -48,8 +53,11 @@ function Initialize-MbRecorderNative {
     Add-Type -AssemblyName Accessibility -ErrorAction Stop
     Add-Type -TypeDefinition @'
 using System;
+using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 
 public static class MbRecorderNative
 {
@@ -59,8 +67,106 @@ public static class MbRecorderNative
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MSLLHOOKSTRUCT
+    {
+        public POINT Point;
+        public uint MouseData;
+        public uint Flags;
+        public uint Time;
+        public UIntPtr ExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KBDLLHOOKSTRUCT
+    {
+        public uint VirtualKey;
+        public uint ScanCode;
+        public uint Flags;
+        public uint Time;
+        public UIntPtr ExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MSG
+    {
+        public IntPtr HWnd;
+        public uint Message;
+        public UIntPtr WParam;
+        public IntPtr LParam;
+        public uint Time;
+        public POINT Point;
+    }
+
+    public sealed class MouseClick
+    {
+        public int X;
+        public int Y;
+        public int Message;
+        public long WindowHandle;
+        public long Timestamp;
+    }
+
+    // キーの内容は保存せず、「文字が変わる操作」か「入力確定」かという事実だけを
+    // 一時キューへ積む。重い画面取得中の短いキー押下も取りこぼさないために使う。
+    public sealed class KeyboardActivity
+    {
+        public int Kind; // 1=text-changing, 2=commit
+        public long WindowHandle;
+        public long Timestamp;
+    }
+
+    private delegate IntPtr LowLevelMouseProc(int nCode, IntPtr wParam, IntPtr lParam);
+    private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+    private static readonly ConcurrentQueue<MouseClick> MouseClicks = new ConcurrentQueue<MouseClick>();
+    private static readonly ConcurrentQueue<KeyboardActivity> KeyboardActivities = new ConcurrentQueue<KeyboardActivity>();
+    private static readonly object MouseHookSync = new object();
+    private static LowLevelMouseProc MouseHookCallback;
+    private static Thread MouseHookThread;
+    private static ManualResetEventSlim MouseHookReady;
+    private static IntPtr MouseHookHandle = IntPtr.Zero;
+    private static LowLevelKeyboardProc KeyboardHookCallback;
+    private static IntPtr KeyboardHookHandle = IntPtr.Zero;
+    private static bool KeyboardHookStarted;
+    private static uint MouseHookThreadId;
+    private static bool MouseHookStarted;
+    private static long DroppedMouseClickCount;
+    private static long DroppedKeyboardActivityCount;
+
     [DllImport("user32.dll")]
     public static extern short GetAsyncKeyState(int vKey);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelMouseProc callback, IntPtr module, uint threadId);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc callback, IntPtr module, uint threadId);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool UnhookWindowsHookEx(IntPtr hook);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern int GetMessage(out MSG message, IntPtr window, uint minimum, uint maximum);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool PostThreadMessage(uint threadId, uint message, UIntPtr wParam, IntPtr lParam);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr GetModuleHandle(string moduleName);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr WindowFromPoint(POINT point);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetAncestor(IntPtr window, uint flags);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -68,6 +174,9 @@ public static class MbRecorderNative
 
     [DllImport("user32.dll")]
     public static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -125,6 +234,187 @@ public static class MbRecorderNative
         GetWindowTextW(hWnd, builder, builder.Capacity);
         return builder.ToString();
     }
+
+    private static IntPtr HandleMouseHook(int code, IntPtr wParam, IntPtr lParam)
+    {
+        const int WM_LBUTTONDOWN = 0x0201;
+        const int WM_RBUTTONDOWN = 0x0204;
+        if (code >= 0)
+        {
+            int message = unchecked((int)wParam.ToInt64());
+            if (message == WM_LBUTTONDOWN || message == WM_RBUTTONDOWN)
+            {
+                MSLLHOOKSTRUCT data = (MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(MSLLHOOKSTRUCT));
+                IntPtr target = WindowFromPoint(data.Point);
+                IntPtr root = target == IntPtr.Zero ? IntPtr.Zero : GetAncestor(target, 2); // GA_ROOT
+                MouseClicks.Enqueue(new MouseClick {
+                    X = data.Point.X,
+                    Y = data.Point.Y,
+                    Message = message,
+                    WindowHandle = root.ToInt64(),
+                    Timestamp = Stopwatch.GetTimestamp()
+                });
+                while (MouseClicks.Count > 512)
+                {
+                    MouseClick ignored;
+                    if (!MouseClicks.TryDequeue(out ignored)) { break; }
+                    Interlocked.Increment(ref DroppedMouseClickCount);
+                }
+            }
+        }
+        return CallNextHookEx(MouseHookHandle, code, wParam, lParam);
+    }
+
+    private static bool IsTextChangingKey(uint key)
+    {
+        if ((key >= 0x30 && key <= 0x5A) || (key >= 0x60 && key <= 0x6F) ||
+            (key >= 0xBA && key <= 0xE2)) { return true; }
+        return key == 0x08 || key == 0x20 || key == 0x2E; // Backspace, Space, Delete
+    }
+
+    private static IntPtr HandleKeyboardHook(int code, IntPtr wParam, IntPtr lParam)
+    {
+        const int WM_KEYDOWN = 0x0100;
+        const int WM_SYSKEYDOWN = 0x0104;
+        if (code >= 0)
+        {
+            int message = unchecked((int)wParam.ToInt64());
+            if (message == WM_KEYDOWN || message == WM_SYSKEYDOWN)
+            {
+                KBDLLHOOKSTRUCT data = (KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(KBDLLHOOKSTRUCT));
+                int kind = (data.VirtualKey == 0x0D || data.VirtualKey == 0x09) ? 2 :
+                    (IsTextChangingKey(data.VirtualKey) ? 1 : 0);
+                bool control = (GetAsyncKeyState(0x11) & 0x8000) != 0;
+                bool commandModifier = (GetAsyncKeyState(0x12) & 0x8000) != 0 ||
+                    (GetAsyncKeyState(0x5B) & 0x8000) != 0 || (GetAsyncKeyState(0x5C) & 0x8000) != 0;
+                if (commandModifier || (control && data.VirtualKey != 0x56 &&
+                    data.VirtualKey != 0x58 && data.VirtualKey != 0x5A)) { kind = 0; }
+                if (kind != 0)
+                {
+                    IntPtr foreground = GetForegroundWindow();
+                    KeyboardActivities.Enqueue(new KeyboardActivity {
+                        Kind = kind,
+                        WindowHandle = foreground.ToInt64(),
+                        Timestamp = Stopwatch.GetTimestamp()
+                    });
+                    while (KeyboardActivities.Count > 2048)
+                    {
+                        KeyboardActivity ignored;
+                        if (!KeyboardActivities.TryDequeue(out ignored)) { break; }
+                        Interlocked.Increment(ref DroppedKeyboardActivityCount);
+                    }
+                }
+            }
+        }
+        return CallNextHookEx(KeyboardHookHandle, code, wParam, lParam);
+    }
+
+    private static void RunMouseHook()
+    {
+        const int WH_MOUSE_LL = 14;
+        MouseHookThreadId = GetCurrentThreadId();
+        MouseHookCallback = HandleMouseHook;
+        MouseHookHandle = SetWindowsHookEx(WH_MOUSE_LL, MouseHookCallback, GetModuleHandle(null), 0);
+        KeyboardHookCallback = HandleKeyboardHook;
+        KeyboardHookHandle = SetWindowsHookEx(13, KeyboardHookCallback, GetModuleHandle(null), 0); // WH_KEYBOARD_LL
+        KeyboardHookStarted = KeyboardHookHandle != IntPtr.Zero;
+        MouseHookStarted = MouseHookHandle != IntPtr.Zero;
+        MouseHookReady.Set();
+        if (!MouseHookStarted)
+        {
+            // StartMouseHook() reports failure when the mouse half cannot start. Do not
+            // leave a keyboard-only hook alive behind that failed recorder session.
+            if (KeyboardHookHandle != IntPtr.Zero) { UnhookWindowsHookEx(KeyboardHookHandle); }
+            KeyboardHookHandle = IntPtr.Zero;
+            KeyboardHookStarted = false;
+            MouseHookThreadId = 0;
+            return;
+        }
+        MSG message;
+        while (GetMessage(out message, IntPtr.Zero, 0, 0) > 0) { }
+        UnhookWindowsHookEx(MouseHookHandle);
+        if (KeyboardHookHandle != IntPtr.Zero) { UnhookWindowsHookEx(KeyboardHookHandle); }
+        MouseHookHandle = IntPtr.Zero;
+        KeyboardHookHandle = IntPtr.Zero;
+        KeyboardHookStarted = false;
+        MouseHookStarted = false;
+    }
+
+    public static bool StartMouseHook()
+    {
+        lock (MouseHookSync)
+        {
+            if (MouseHookStarted) { return true; }
+            ClearMouseClicks();
+            ClearKeyboardActivities();
+            Interlocked.Exchange(ref DroppedMouseClickCount, 0);
+            Interlocked.Exchange(ref DroppedKeyboardActivityCount, 0);
+            MouseHookReady = new ManualResetEventSlim(false);
+            MouseHookThread = new Thread(RunMouseHook);
+            MouseHookThread.IsBackground = true;
+            MouseHookThread.Name = "ManualBuilder mouse capture";
+            MouseHookThread.Start();
+            if (!MouseHookReady.Wait(1500)) { return false; }
+            return MouseHookStarted;
+        }
+    }
+
+    public static void StopMouseHook()
+    {
+        lock (MouseHookSync)
+        {
+            if (MouseHookThreadId != 0) { PostThreadMessage(MouseHookThreadId, 0x0012, UIntPtr.Zero, IntPtr.Zero); }
+            if (MouseHookThread != null && MouseHookThread.IsAlive) { MouseHookThread.Join(1000); }
+            MouseHookThread = null;
+            MouseHookThreadId = 0;
+            MouseHookStarted = false;
+            KeyboardHookStarted = false;
+            ClearMouseClicks();
+            ClearKeyboardActivities();
+        }
+    }
+
+    public static MouseClick DequeueMouseClick()
+    {
+        MouseClick click;
+        return MouseClicks.TryDequeue(out click) ? click : null;
+    }
+
+    public static MouseClick PeekMouseClick()
+    {
+        MouseClick click;
+        return MouseClicks.TryPeek(out click) ? click : null;
+    }
+
+    public static void ClearMouseClicks()
+    {
+        MouseClick ignored;
+        while (MouseClicks.TryDequeue(out ignored)) { }
+    }
+
+    public static KeyboardActivity DequeueKeyboardActivity()
+    {
+        KeyboardActivity activity;
+        return KeyboardActivities.TryDequeue(out activity) ? activity : null;
+    }
+
+    public static KeyboardActivity PeekKeyboardActivity()
+    {
+        KeyboardActivity activity;
+        return KeyboardActivities.TryPeek(out activity) ? activity : null;
+    }
+
+    public static void ClearKeyboardActivities()
+    {
+        KeyboardActivity ignored;
+        while (KeyboardActivities.TryDequeue(out ignored)) { }
+    }
+
+    public static long GetTimestamp() { return Stopwatch.GetTimestamp(); }
+    public static long TimestampFrequency { get { return Stopwatch.Frequency; } }
+    public static bool KeyboardHookAvailable { get { return KeyboardHookStarted; } }
+    public static long DroppedMouseClicks { get { return Interlocked.Read(ref DroppedMouseClickCount); } }
+    public static long DroppedKeyboardActivities { get { return Interlocked.Read(ref DroppedKeyboardActivityCount); } }
 }
 '@ -ErrorAction Stop
 
@@ -951,13 +1241,23 @@ function Get-MbUiaFocusedElement {
 # 画面の取得
 # ---------------------------------------------------------------------
 
-function Get-MbForegroundWindowInfo {
+function Get-MbWindowInfo {
+    param([IntPtr]$Handle = [IntPtr]::Zero)
+
     Initialize-MbRecorderNative
-    $handle = [MbRecorderNative]::GetForegroundWindow()
+    $handle = $Handle
     if ($handle -eq [IntPtr]::Zero) { return $null }
     $rect = [MbRecorderNative]::GetVisualWindowRect($handle)
+    [uint32]$processId = 0
+    $processName = ''
+    try {
+        [void][MbRecorderNative]::GetWindowThreadProcessId($handle, [ref]$processId)
+        if ($processId -gt 0) { $processName = [Diagnostics.Process]::GetProcessById([int]$processId).ProcessName }
+    } catch { $processName = '' }
     return [pscustomobject]@{
         handle = [long]$handle.ToInt64()
+        processId = [int]$processId
+        processName = [string]$processName
         title  = [MbRecorderNative]::GetWindowTitle($handle)
         class  = [MbRecorderNative]::GetWindowClass($handle)
         left   = [int]$rect.Left
@@ -965,6 +1265,11 @@ function Get-MbForegroundWindowInfo {
         width  = [int]($rect.Right - $rect.Left)
         height = [int]($rect.Bottom - $rect.Top)
     }
+}
+
+function Get-MbForegroundWindowInfo {
+    Initialize-MbRecorderNative
+    return Get-MbWindowInfo -Handle ([MbRecorderNative]::GetForegroundWindow())
 }
 
 function Get-MbVirtualScreenBounds {
@@ -1203,12 +1508,26 @@ function Write-MbRecordingEvent {
     [IO.File]::AppendAllText($EventsPath, $line + [Environment]::NewLine, (New-Object Text.UTF8Encoding($false)))
 }
 
+# 確認画面用の events.jsonl は取消時に書き直されるため、監査用の証拠は
+# 別の追記専用台帳へ保存する。取り消した事実も新しい判断レコードとして追記する。
+function Write-MbRecordingLedgerRecord {
+    param(
+        [AllowEmptyString()][string]$LedgerPath = '',
+        [Parameter(Mandatory = $true)][System.Collections.IDictionary]$Record
+    )
+    if ([string]::IsNullOrWhiteSpace($LedgerPath)) { return }
+    $line = ([pscustomobject]$Record | ConvertTo-Json -Depth 10 -Compress)
+    [IO.File]::AppendAllText($LedgerPath, $line + [Environment]::NewLine, (New-Object Text.UTF8Encoding($false)))
+}
+
 # 記録ワーカー自身が安全なタイミングで直前の1件を取り消す。
 # events.jsonl と対応画像を同時に戻し、次の操作では同じ連番を再利用する。
 function Remove-MbLastRecordingEvent {
     param(
         [Parameter(Mandatory = $true)][string]$EventsPath,
-        [Parameter(Mandatory = $true)][string]$EventsDirectory
+        [Parameter(Mandatory = $true)][string]$EventsDirectory,
+        [AllowEmptyString()][string]$LedgerPath = '',
+        [AllowEmptyString()][string]$JobId = ''
     )
 
     if (-not (Test-Path -LiteralPath $EventsPath -PathType Leaf)) {
@@ -1218,6 +1537,7 @@ function Remove-MbLastRecordingEvent {
     if ($lines.Count -eq 0) { return [pscustomobject]@{ removed = $false; count = 0; lastTarget = '' } }
 
     $removedIndex = $lines.Count
+    $removedRecord = $null
     try {
         $removedRecord = $lines[$lines.Count - 1] | ConvertFrom-Json
         if ($removedRecord.PSObject.Properties.Name -contains 'index') { $removedIndex = [int]$removedRecord.index }
@@ -1233,6 +1553,18 @@ function Remove-MbLastRecordingEvent {
         $imagePath = Join-Path $EventsDirectory (('event-{0:d3}{1}' -f $removedIndex, $suffix))
         Remove-Item -LiteralPath $imagePath -Force -ErrorAction SilentlyContinue
     }
+    $removedEvidenceId = if ($null -ne $removedRecord -and
+        $removedRecord.PSObject.Properties.Name -contains 'evidenceId') { [string]$removedRecord.evidenceId } else { '' }
+    Write-MbRecordingLedgerRecord -LedgerPath $LedgerPath -Record ([ordered]@{
+        recordType = 'decision'
+        id = 'decision-' + [guid]::NewGuid().ToString('N')
+        sessionId = $JobId
+        action = 'undo'
+        evidenceIds = $(if ([string]::IsNullOrWhiteSpace($removedEvidenceId)) { @() } else { @($removedEvidenceId) })
+        workingEventIndex = $removedIndex
+        recordedAt = [DateTime]::UtcNow.ToString('o')
+        reason = '利用者が記録中に直前の操作を取り消しました。元の操作証拠は保持します。'
+    })
     $lastTarget = ''
     if ($remaining.Count -gt 0) {
         try { $lastTarget = [string](($remaining[$remaining.Count - 1] | ConvertFrom-Json).targetName) } catch { }
@@ -1274,11 +1606,23 @@ function Write-MbRecordingStatus {
         [Parameter(Mandatory = $true)][string]$State,
         [int]$Count = 0,
         [string]$Message = '',
-        [string]$LastTarget = ''
+        [string]$LastTarget = '',
+        [string]$UndoRequestId = '',
+        [string]$ResultRequestId = ''
     )
+    if (-not [string]::IsNullOrWhiteSpace($UndoRequestId)) {
+        $script:MbRecorderLastUndoRequestId = $UndoRequestId
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ResultRequestId)) {
+        $script:MbRecorderLastResultRequestId = $ResultRequestId
+    }
     $status = [pscustomobject]@{
         jobId = $JobId; state = $State; count = $Count; message = $Message
         lastTarget = $LastTarget; updatedAt = [DateTime]::UtcNow.ToString('o')
+        undoRequestId = [string]$script:MbRecorderLastUndoRequestId
+        resultRequestId = [string]$script:MbRecorderLastResultRequestId
+        captureCompleteness = [string]$script:MbRecorderCaptureCompleteness
+        captureWarning = [string]$script:MbRecorderCaptureWarning
     }
     $temporary = $StatusPath + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
     $backup = $StatusPath + '.' + [guid]::NewGuid().ToString('N') + '.bak'
@@ -1568,6 +1912,9 @@ function Save-MbRecordingEvent {
         [Parameter(Mandatory = $true)][string]$Kind,
         [Parameter(Mandatory = $true)][string]$EventsDirectory,
         [Parameter(Mandatory = $true)][string]$EventsPath,
+        [AllowEmptyString()][string]$EvidenceDirectory = '',
+        [AllowEmptyString()][string]$LedgerPath = '',
+        [AllowEmptyString()][string]$JobId = '',
         [AllowNull()]$Target,
         [AllowEmptyCollection()][object[]]$TargetCandidates = @(),
         [AllowNull()]$Window,
@@ -1593,11 +1940,14 @@ function Save-MbRecordingEvent {
         $targetType = [string]$Target.controlType
     }
     $record = @{
+        evidenceId  = 'evidence-' + [guid]::NewGuid().ToString('N')
         index       = $Index
         kind        = $Kind
         timeMs      = $ElapsedMs
         image       = $fileName
         windowTitle = $windowTitle
+        processName = $(if ($null -ne $Window -and $Window.PSObject.Properties.Name -contains 'processName') { [string]$Window.processName } else { '' })
+        windowClass = $(if ($null -ne $Window -and $Window.PSObject.Properties.Name -contains 'class') { [string]$Window.class } else { '' })
         targetName  = $targetName
         targetType  = $targetType
         rect        = $rect
@@ -1626,6 +1976,32 @@ function Save-MbRecordingEvent {
         $record.targetCandidateId = [string]$candidates[0].id
     }
     Write-MbRecordingEvent -EventsPath $EventsPath -Record $record
+    if (-not [string]::IsNullOrWhiteSpace($EvidenceDirectory)) {
+        if (-not (Test-Path -LiteralPath $EvidenceDirectory -PathType Container)) {
+            [void](New-Item -ItemType Directory -Path $EvidenceDirectory -Force)
+        }
+        $evidenceFileName = ([string]$record.evidenceId + '.jpg')
+        [IO.File]::Copy((Join-Path $EventsDirectory $fileName), (Join-Path $EvidenceDirectory $evidenceFileName), $false)
+        $record.evidenceImage = $evidenceFileName
+    }
+    Write-MbRecordingLedgerRecord -LedgerPath $LedgerPath -Record ([ordered]@{
+        recordType = 'operation'
+        id = [string]$record.evidenceId
+        sessionId = $JobId
+        workingEventIndex = $Index
+        kind = $Kind
+        timeMs = $ElapsedMs
+        recordedAt = [DateTime]::UtcNow.ToString('o')
+        image = $(if ($record.ContainsKey('evidenceImage')) { [string]$record.evidenceImage } else { '' })
+        windowTitle = $windowTitle
+        processName = [string]$record.processName
+        targetName = $targetName
+        targetType = $targetType
+        targetSource = $(if ($record.ContainsKey('targetSource')) { [string]$record.targetSource } else { '' })
+        confidence = $(if ($record.ContainsKey('confidence')) { [string]$record.confidence } else { '' })
+        clickPoint = $(if ($record.ContainsKey('clickPoint')) { $record.clickPoint } else { $null })
+        rect = $rect
+    })
     return $record
 }
 
@@ -1676,6 +2052,8 @@ function Save-MbRecordingTimelineFrame {
         timeMs = $ElapsedMs
         image = $fileName
         windowTitle = $(if ($null -ne $Window) { [string]$Window.title } else { '' })
+        processName = $(if ($null -ne $Window -and $Window.PSObject.Properties.Name -contains 'processName') { [string]$Window.processName } else { '' })
+        windowClass = $(if ($null -ne $Window -and $Window.PSObject.Properties.Name -contains 'class') { [string]$Window.class } else { '' })
     }
     if (-not [string]::IsNullOrWhiteSpace($Role)) { $record['role'] = $Role }
     if (-not [string]::IsNullOrWhiteSpace($EvidenceKind)) { $record['evidenceKind'] = $EvidenceKind }
@@ -1710,6 +2088,8 @@ function Save-MbRecordingTimelineEventFrame {
         timeMs = $ElapsedMs
         image = $fileName
         windowTitle = $(if ($null -ne $Window) { [string]$Window.title } else { '' })
+        processName = $(if ($null -ne $Window -and $Window.PSObject.Properties.Name -contains 'processName') { [string]$Window.processName } else { '' })
+        windowClass = $(if ($null -ne $Window -and $Window.PSObject.Properties.Name -contains 'class') { [string]$Window.class } else { '' })
         role = 'click-evidence'
         evidenceEventId = [int]$EventRecord.index
     }
@@ -1717,22 +2097,108 @@ function Save-MbRecordingTimelineEventFrame {
     return [pscustomobject]$record
 }
 
+function Resolve-MbTypingEventElapsedMs {
+    param(
+        [int]$CurrentElapsedMs,
+        [bool]$Clicked,
+        [int]$ClickElapsedMs
+    )
+    if ($Clicked -and $ClickElapsedMs -gt 0) { return [Math]::Max(0, $ClickElapsedMs - 1) }
+    return [Math]::Max(0, $CurrentElapsedMs)
+}
+
+function Test-MbQueuedKeyboardContinuation {
+    param(
+        [AllowNull()]$CurrentActivity,
+        [AllowNull()]$NextActivity,
+        [AllowNull()]$NextMouseClick,
+        [int]$TypingIdleMs,
+        [long]$TimestampFrequency
+    )
+    if ($null -eq $CurrentActivity -or $TimestampFrequency -le 0) {
+        return $false
+    }
+    if ([int]$CurrentActivity.Kind -ne 1) { return $false }
+    $nextTimestamp = [long]::MaxValue
+    if ($null -ne $NextActivity -and [long]$NextActivity.Timestamp -lt $nextTimestamp) {
+        $nextTimestamp = [long]$NextActivity.Timestamp
+    }
+    if ($null -ne $NextMouseClick -and [long]$NextMouseClick.Timestamp -lt $nextTimestamp) {
+        $nextTimestamp = [long]$NextMouseClick.Timestamp
+    }
+    if ($nextTimestamp -eq [long]::MaxValue) { return $false }
+    $gapTicks = $nextTimestamp - [long]$CurrentActivity.Timestamp
+    if ($gapTicks -lt 0) { return $false }
+    $gapMs = ($gapTicks * 1000.0) / [double]$TimestampFrequency
+    return $gapMs -le [double]$TypingIdleMs
+}
+
+function Invoke-MbManualResultRequest {
+    param(
+        [Parameter(Mandatory = $true)][string]$RequestPath,
+        [Parameter(Mandatory = $true)][int]$Index,
+        [Parameter(Mandatory = $true)][string]$EventsDirectory,
+        [string[]]$IgnoreTitlePatterns = @(),
+        [Parameter(Mandatory = $true)][hashtable]$ProcessedRequests
+    )
+
+    if (-not (Test-Path -LiteralPath $RequestPath -PathType Leaf)) { return $null }
+    $requestId = ''
+    $saved = $false
+    $capture = $null
+    try {
+        $request = Get-Content -Raw -LiteralPath $RequestPath -ErrorAction Stop | ConvertFrom-Json
+        $requestId = [string]$request.requestId
+        $windowHandle = [long]$request.windowHandle
+        if (-not [string]::IsNullOrWhiteSpace($requestId) -and $ProcessedRequests.ContainsKey($requestId)) {
+            $saved = [bool]$ProcessedRequests[$requestId]
+        } elseif ($Index -gt 0 -and $windowHandle -gt 0) {
+            $requestedWindow = Get-MbWindowInfo -Handle ([IntPtr]::new($windowHandle))
+            $foregroundWindow = Get-MbForegroundWindowInfo
+            $sameForegroundWindow = $null -ne $requestedWindow -and $null -ne $foregroundWindow -and
+                [long]$requestedWindow.handle -eq [long]$foregroundWindow.handle
+            if ($sameForegroundWindow -and
+                -not (Test-MbIgnoredWindow -Window $requestedWindow -IgnoreTitlePatterns $IgnoreTitlePatterns)) {
+                $capture = Copy-MbScreenBitmap
+                $windowAfterCapture = Get-MbForegroundWindowInfo
+                if ($null -ne $windowAfterCapture -and
+                    [long]$windowAfterCapture.handle -eq [long]$requestedWindow.handle) {
+                    [void](Save-MbRecordingResultImage -Capture $capture -Index $Index `
+                        -EventsDirectory $EventsDirectory -Window $requestedWindow)
+                    $saved = $true
+                }
+            }
+        }
+    } catch { }
+    finally {
+        if ($null -ne $capture) { try { $capture.bitmap.Dispose() } catch { } }
+        Remove-Item -LiteralPath $RequestPath -Force -ErrorAction SilentlyContinue
+    }
+    if ([string]::IsNullOrWhiteSpace($requestId)) { return $null }
+    if (-not $ProcessedRequests.ContainsKey($requestId)) { $ProcessedRequests[$requestId] = $saved }
+    return [pscustomobject]@{ requestId = $requestId; saved = $saved }
+}
+
 function Invoke-MbRecordingLoop {
     param(
         [Parameter(Mandatory = $true)][string]$EventsDirectory,
         [Parameter(Mandatory = $true)][string]$EventsPath,
+        [AllowEmptyString()][string]$EvidenceDirectory = '',
+        [AllowEmptyString()][string]$LedgerPath = '',
         [AllowEmptyString()][string]$FramesDirectory = '',
         [AllowEmptyString()][string]$FramesPath = '',
         [Parameter(Mandatory = $true)][string]$StatusPath,
         [Parameter(Mandatory = $true)][string]$StopPath,
         [AllowEmptyString()][string]$PausePath = '',
         [AllowEmptyString()][string]$UndoPath = '',
+        [AllowEmptyString()][string]$ManualResultPath = '',
         [Parameter(Mandatory = $true)][string]$JobId,
         [AllowEmptyString()][string]$DomTargetPath = '',
         [AllowEmptyString()][string]$UiaTargetPath = '',
         [string[]]$IgnoreTitlePatterns = @(),
         [int]$PollIntervalMs = 16,
         [int]$TypingIdleMs = 1200,
+        [ValidateRange(200, 3000)][int]$ResultCaptureDelayMs = 700,
         [int]$MaxEvents = 300,
         [int]$MaxMinutes = 60
     )
@@ -1744,6 +2210,38 @@ function Invoke-MbRecordingLoop {
     $typingKeys = Get-MbWatchedTypingKeys
     $typingCommitKeys = Get-MbWatchedCommitKeys
     $watch = [Diagnostics.Stopwatch]::StartNew()
+    $diagnosticPath = $StatusPath + '.diagnostic.log'
+    $recordingStartedTimestamp = [MbRecorderNative]::GetTimestamp()
+    # 画像取得や対象解析から独立した専用スレッドでクリックを受ける。
+    # 開始できない制限環境では、従来の GetAsyncKeyState へ自動的に戻る。
+    $mouseHookActive = $false
+    try { $mouseHookActive = [MbRecorderNative]::StartMouseHook() } catch { $mouseHookActive = $false }
+    $keyboardHookActive = $false
+    if ($mouseHookActive) {
+        try { $keyboardHookActive = [bool][MbRecorderNative]::KeyboardHookAvailable } catch { $keyboardHookActive = $false }
+    }
+    $captureCompleteness = if ($mouseHookActive -and $keyboardHookActive) { 'no-known-gaps' } else { 'known-gaps' }
+    $captureWarning = if (-not $mouseHookActive) {
+        'クリックを確実に受け取る機能を開始できませんでした。抜けた操作がないか確認してください。'
+    } elseif (-not $keyboardHookActive) {
+        '入力活動を確実に受け取る機能を開始できませんでした。入力手順に抜けがないか確認してください。'
+    } else { '' }
+    $script:MbRecorderCaptureCompleteness = $captureCompleteness
+    $script:MbRecorderCaptureWarning = $captureWarning
+    $lastDroppedMouseClicks = 0L
+    $lastDroppedKeyboardActivities = 0L
+    Write-MbRecordingLedgerRecord -LedgerPath $LedgerPath -Record ([ordered]@{
+        recordType = 'capture-start'; formatVersion = 2; sessionId = $JobId
+        recordedAt = [DateTime]::UtcNow.ToString('o')
+        mouseHook = [bool]$mouseHookActive; keyboardHook = [bool]$keyboardHookActive
+        completeness = $captureCompleteness; warning = $captureWarning
+    })
+    try {
+        [IO.File]::AppendAllText($diagnosticPath,
+            ([DateTime]::UtcNow.ToString('o') + ' mouse-hook=' + [string]$mouseHookActive +
+                ' keyboard-hook=' + [string]$keyboardHookActive + [Environment]::NewLine),
+            [Text.UTF8Encoding]::new($false))
+    } catch { }
     $index = 0
     $frameIndex = 0
     $lastFrameAtMs = -1000
@@ -1788,22 +2286,42 @@ function Invoke-MbRecordingLoop {
     $pendingResultIndex = 0
     $pendingResultWindowHandle = 0L
     $pendingResultDueAtMs = 0
-    $resultCaptureDelayMs = 700
     $suppressedTypingKeys = New-Object 'System.Collections.Generic.HashSet[int]'
     $paused = $false
+    # 常駐パネルは応答が遅いと同じIDを再送する。同一IDの破壊的操作は1回だけ実行する。
+    $processedUndoRequests = @{}
+    $processedResultRequests = @{}
 
     Write-MbRecordingStatus -StatusPath $StatusPath -JobId $JobId -State 'recording' -Count 0 -Message '操作を記録しています'
 
     while ($true) {
-        if (Test-Path -LiteralPath $StopPath -PathType Leaf) { break }
-        if ($index -ge $MaxEvents) { break }
-        if ($watch.Elapsed.TotalMinutes -ge $MaxMinutes) { break }
-
+        if ($mouseHookActive) {
+            $droppedMouseClicks = try { [long][MbRecorderNative]::DroppedMouseClicks } catch { 0L }
+            $droppedKeyboardActivities = try { [long][MbRecorderNative]::DroppedKeyboardActivities } catch { 0L }
+            if ($droppedMouseClicks -gt $lastDroppedMouseClicks -or
+                $droppedKeyboardActivities -gt $lastDroppedKeyboardActivities) {
+                $script:MbRecorderCaptureCompleteness = 'known-gaps'
+                $script:MbRecorderCaptureWarning = '操作が短時間に集中し、一部を記録できなかった可能性があります。手順の抜けを確認してください。'
+                Write-MbRecordingLedgerRecord -LedgerPath $LedgerPath -Record ([ordered]@{
+                    recordType = 'capture-gap'; formatVersion = 2; sessionId = $JobId
+                    recordedAt = [DateTime]::UtcNow.ToString('o')
+                    droppedMouseClicks = [Math]::Max(0L, $droppedMouseClicks - $lastDroppedMouseClicks)
+                    droppedKeyboardActivities = [Math]::Max(0L, $droppedKeyboardActivities - $lastDroppedKeyboardActivities)
+                    reason = 'capture-queue-overflow'
+                })
+                $lastDroppedMouseClicks = $droppedMouseClicks
+                $lastDroppedKeyboardActivities = $droppedKeyboardActivities
+            }
+        }
         $pauseRequested = -not [string]::IsNullOrWhiteSpace($PausePath) -and
             (Test-Path -LiteralPath $PausePath -PathType Leaf)
         if ($pauseRequested) {
             if (-not $paused) {
                 $paused = $true
+                if ($mouseHookActive) {
+                    [MbRecorderNative]::ClearMouseClicks()
+                    [MbRecorderNative]::ClearKeyboardActivities()
+                }
                 $pendingResultIndex = 0
                 $pendingResultWindowHandle = 0L
                 $typingActive = $false
@@ -1816,10 +2334,42 @@ function Invoke-MbRecordingLoop {
                 $preClickCapture = $null; $preClickWindow = $null; $preClickCaptureAtMs = -1000
             }
             if (-not [string]::IsNullOrWhiteSpace($UndoPath) -and (Test-Path -LiteralPath $UndoPath -PathType Leaf)) {
+                $undoRequestId = try { [string](Get-Content -Raw -LiteralPath $UndoPath -ErrorAction Stop) } catch { '' }
                 Remove-Item -LiteralPath $UndoPath -Force -ErrorAction SilentlyContinue
-                $undo = Remove-MbLastRecordingEvent -EventsPath $EventsPath -EventsDirectory $EventsDirectory
-                if ($undo.removed) { $index = [int]$undo.count; $lastTarget = [string]$undo.lastTarget }
+                if (-not [string]::IsNullOrWhiteSpace($undoRequestId)) {
+                    $undoRemoved = $false
+                    if ($processedUndoRequests.ContainsKey($undoRequestId)) {
+                        $undoRemoved = [bool]$processedUndoRequests[$undoRequestId]
+                    } else {
+                        $undo = Remove-MbLastRecordingEvent -EventsPath $EventsPath -EventsDirectory $EventsDirectory `
+                            -LedgerPath $LedgerPath -JobId $JobId
+                        $undoRemoved = [bool]$undo.removed
+                        $processedUndoRequests[$undoRequestId] = $undoRemoved
+                        if ($undoRemoved) {
+                            $index = [int]$undo.count; $lastTarget = [string]$undo.lastTarget
+                        }
+                    }
+                    Write-MbRecordingStatus -StatusPath $StatusPath -JobId $JobId -State 'paused' -Count $index `
+                        -Message $(if ($undoRemoved) { '直前の操作を取り消しました' } else { '取り消せる操作がありませんでした' }) `
+                        -LastTarget $lastTarget -UndoRequestId $undoRequestId
+                }
             }
+            if (-not [string]::IsNullOrWhiteSpace($ManualResultPath)) {
+                $manualResult = Invoke-MbManualResultRequest -RequestPath $ManualResultPath -Index $index `
+                    -EventsDirectory $EventsDirectory -IgnoreTitlePatterns $IgnoreTitlePatterns `
+                    -ProcessedRequests $processedResultRequests
+                if ($null -ne $manualResult) {
+                    if ([bool]$manualResult.saved -and $pendingResultIndex -eq $index) {
+                        $pendingResultIndex = 0; $pendingResultWindowHandle = 0L
+                    }
+                    Write-MbRecordingStatus -StatusPath $StatusPath -JobId $JobId -State 'paused' -Count $index `
+                        -Message $(if ([bool]$manualResult.saved) { '直前の手順へ結果画面を追加しました' } else { '結果画面を追加できませんでした' }) `
+                        -LastTarget $lastTarget -ResultRequestId ([string]$manualResult.requestId)
+                }
+            }
+            # 終了要求と取消が重なった場合も、取消を状態へ反映してから停止する。
+            if ((Test-Path -LiteralPath $StopPath -PathType Leaf) -or $index -ge $MaxEvents -or
+                $watch.Elapsed.TotalMinutes -ge $MaxMinutes) { break }
             if (([int]$watch.ElapsedMilliseconds - $lastStatusMs) -ge 400) {
                 $lastStatusMs = [int]$watch.ElapsedMilliseconds
                 Write-MbRecordingStatus -StatusPath $StatusPath -JobId $JobId -State 'paused' -Count $index `
@@ -1829,6 +2379,10 @@ function Invoke-MbRecordingLoop {
             continue
         } elseif ($paused) {
             # 休止中に押したボタンを再開直後の操作として拾わない。
+            if ($mouseHookActive) {
+                [MbRecorderNative]::ClearMouseClicks()
+                [MbRecorderNative]::ClearKeyboardActivities()
+            }
             $leftState = [int][MbRecorderNative]::GetAsyncKeyState($script:MbVkLeftButton)
             $rightState = [int][MbRecorderNative]::GetAsyncKeyState($script:MbVkRightButton)
             $leftWasDown = Test-MbAsyncKeyStateDown -State $leftState
@@ -1839,24 +2393,118 @@ function Invoke-MbRecordingLoop {
         }
 
         if (-not [string]::IsNullOrWhiteSpace($UndoPath) -and (Test-Path -LiteralPath $UndoPath -PathType Leaf)) {
+            $undoRequestId = try { [string](Get-Content -Raw -LiteralPath $UndoPath -ErrorAction Stop) } catch { '' }
             Remove-Item -LiteralPath $UndoPath -Force -ErrorAction SilentlyContinue
-            $undo = Remove-MbLastRecordingEvent -EventsPath $EventsPath -EventsDirectory $EventsDirectory
-            if ($undo.removed) {
-                $index = [int]$undo.count; $lastTarget = [string]$undo.lastTarget
-                $pendingResultIndex = 0
-                $pendingResultWindowHandle = 0L
+            if (-not [string]::IsNullOrWhiteSpace($undoRequestId)) {
+                $undoRemoved = $false
+                if ($processedUndoRequests.ContainsKey($undoRequestId)) {
+                    $undoRemoved = [bool]$processedUndoRequests[$undoRequestId]
+                } else {
+                    $undo = Remove-MbLastRecordingEvent -EventsPath $EventsPath -EventsDirectory $EventsDirectory `
+                        -LedgerPath $LedgerPath -JobId $JobId
+                    $undoRemoved = [bool]$undo.removed
+                    $processedUndoRequests[$undoRequestId] = $undoRemoved
+                    if ($undoRemoved) {
+                        $index = [int]$undo.count; $lastTarget = [string]$undo.lastTarget
+                        $pendingResultIndex = 0
+                        $pendingResultWindowHandle = 0L
+                    }
+                }
+                Write-MbRecordingStatus -StatusPath $StatusPath -JobId $JobId -State 'recording' -Count $index `
+                    -Message $(if ($undoRemoved) { '直前の操作を取り消しました' } else { '取り消せる操作がありませんでした' }) `
+                    -LastTarget $lastTarget -UndoRequestId $undoRequestId
             }
         }
 
+        # 常駐パネルの「結果画面を追加」は、対象アプリへフォーカスを戻してから
+        # ウィンドウハンドル付きで要求される。このパネル自体を結果画像へ混ぜず、
+        # 直前の操作へ利用者が見ている確定画面を関連付ける。
+        if (-not [string]::IsNullOrWhiteSpace($ManualResultPath)) {
+            $manualResult = Invoke-MbManualResultRequest -RequestPath $ManualResultPath -Index $index `
+                -EventsDirectory $EventsDirectory -IgnoreTitlePatterns $IgnoreTitlePatterns `
+                -ProcessedRequests $processedResultRequests
+            if ($null -ne $manualResult) {
+                if ([bool]$manualResult.saved -and $pendingResultIndex -eq $index) {
+                    $pendingResultIndex = 0; $pendingResultWindowHandle = 0L
+                }
+                Write-MbRecordingStatus -StatusPath $StatusPath -JobId $JobId -State 'recording' -Count $index `
+                    -Message $(if ([bool]$manualResult.saved) { '直前の手順へ結果画面を追加しました' } else { '結果画面を追加できませんでした' }) `
+                    -LastTarget $lastTarget -ResultRequestId ([string]$manualResult.requestId)
+            }
+        }
+
+        # 常駐パネルの未処理要求を先に取り込み、「終了と同時に押した削除・結果追加」を落とさない。
+        if ((Test-Path -LiteralPath $StopPath -PathType Leaf) -or $index -ge $MaxEvents -or
+            $watch.Elapsed.TotalMinutes -ge $MaxMinutes) { break }
+
+        $hookClick = $null
+        $hookTextActivity = $false
+        $hookCommitActivity = $false
+        $hookKeyboardWindowHandle = 0L
+        $hookKeyboardElapsedMs = -1
+        $hookKeyboardContinuationQueued = $false
+        $skipTypingPoll = $false
+        if ($mouseHookActive) {
+            # マウスとキーボードを別キューのまま真偽値へ潰すと、重い撮影中に
+            # A入力→Bクリック→B入力が溜まった際、2つの入力をBへ誤結合する。
+            # 先頭時刻を比較して1件ずつ処理し、記録時のHWNDも保持する。
+            $nextMouse = [MbRecorderNative]::PeekMouseClick()
+            $nextKeyboard = [MbRecorderNative]::PeekKeyboardActivity()
+            $keyboardIsNext = $null -ne $nextKeyboard -and
+                ($null -eq $nextMouse -or [long]$nextKeyboard.Timestamp -le [long]$nextMouse.Timestamp)
+            $keyboardWindowChanged = $keyboardIsNext -and $typingActive -and $null -ne $typingWindow -and
+                [int]$nextKeyboard.Kind -eq 1 -and [long]$nextKeyboard.WindowHandle -ne 0 -and
+                [long]$nextKeyboard.WindowHandle -ne [long]$typingWindow.handle
+            if ($keyboardWindowChanged) {
+                # 新しいウィンドウの入力は次巡回までキューに残し、現在の入力を先に確定する。
+                $hookCommitActivity = $true
+                $hookKeyboardWindowHandle = [long]$typingWindow.handle
+                $hookKeyboardElapsedMs = [int][Math]::Max(0, [Math]::Round(
+                    (([long]$nextKeyboard.Timestamp - $recordingStartedTimestamp) * 1000.0) /
+                    [double][MbRecorderNative]::TimestampFrequency) - 1)
+                $skipTypingPoll = $true
+            } elseif ($keyboardIsNext) {
+                $keyboardActivity = [MbRecorderNative]::DequeueKeyboardActivity()
+                $hookKeyboardWindowHandle = [long]$keyboardActivity.WindowHandle
+                $hookKeyboardElapsedMs = [int][Math]::Max(0, [Math]::Round(
+                    (([long]$keyboardActivity.Timestamp - $recordingStartedTimestamp) * 1000.0) /
+                    [double][MbRecorderNative]::TimestampFrequency))
+                if ([int]$keyboardActivity.Kind -eq 1) { $hookTextActivity = $true }
+                elseif ([int]$keyboardActivity.Kind -eq 2) { $hookCommitActivity = $true }
+                if ($hookTextActivity) {
+                    # 画面取得中に複数キーが滞留しても、古いhook時刻だけを見て
+                    # 1文字目を即idle確定しない。次の同一窓キー/確定操作が実時間で
+                    # 連続していれば、次巡回まで同じ入力として保持する。
+                    $hookKeyboardContinuationQueued = Test-MbQueuedKeyboardContinuation `
+                        -CurrentActivity $keyboardActivity `
+                        -NextActivity ([MbRecorderNative]::PeekKeyboardActivity()) `
+                        -NextMouseClick ([MbRecorderNative]::PeekMouseClick()) `
+                        -TypingIdleMs $TypingIdleMs `
+                        -TimestampFrequency ([long][MbRecorderNative]::TimestampFrequency)
+                }
+            } else {
+                $hookClick = [MbRecorderNative]::DequeueMouseClick()
+            }
+        }
         $leftState = [int][MbRecorderNative]::GetAsyncKeyState($script:MbVkLeftButton)
         $rightState = [int][MbRecorderNative]::GetAsyncKeyState($script:MbVkRightButton)
         $leftDown = Test-MbAsyncKeyStateDown -State $leftState
         $rightDown = Test-MbAsyncKeyStateDown -State $rightState
-        $leftClicked = $pendingLeftClick -or (Test-MbAsyncKeyStatePressed -State $leftState) -or ($leftDown -and -not $leftWasDown)
-        $rightClicked = $pendingRightClick -or (Test-MbAsyncKeyStatePressed -State $rightState) -or ($rightDown -and -not $rightWasDown)
+        if ($mouseHookActive) {
+            $leftClicked = $null -ne $hookClick -and [int]$hookClick.Message -eq 0x0201
+            $rightClicked = $null -ne $hookClick -and [int]$hookClick.Message -eq 0x0204
+        } else {
+            $leftClicked = $pendingLeftClick -or (Test-MbAsyncKeyStatePressed -State $leftState) -or ($leftDown -and -not $leftWasDown)
+            $rightClicked = $pendingRightClick -or (Test-MbAsyncKeyStatePressed -State $rightState) -or ($rightDown -and -not $rightWasDown)
+        }
         $pendingLeftClick = $false
         $pendingRightClick = $false
         $clicked = ($leftClicked -or $rightClicked)
+        $clickElapsedMs = if ($null -ne $hookClick) {
+            [int][Math]::Max(0, [Math]::Round(
+                (([long]$hookClick.Timestamp - $recordingStartedTimestamp) * 1000.0) /
+                [double][MbRecorderNative]::TimestampFrequency))
+        } else { [int]$watch.ElapsedMilliseconds }
         $leftWasDown = $leftDown
         $rightWasDown = $rightDown
 
@@ -1871,10 +2519,11 @@ function Invoke-MbRecordingLoop {
             }
         }
 
-        $typingNow = $false
-        $typingPressed = $false
+        $typingNow = $hookTextActivity
+        $typingPressed = $hookTextActivity
         $pastePressed = $false
         foreach ($vk in $typingKeys) {
+            if ($keyboardHookActive) { break }
             $keyState = [int][MbRecorderNative]::GetAsyncKeyState($vk)
             $keyPressed = Test-MbAsyncKeyStatePressed -State $keyState
             $keyDown = Test-MbAsyncKeyStateDown -State $keyState
@@ -1894,10 +2543,17 @@ function Invoke-MbRecordingLoop {
             }
             if ($keyPressed) { $typingPressed = $true }
         }
-        $typingCommitPressed = $false
+        if ($skipTypingPoll) { $typingNow = $false; $typingPressed = $false }
+        $typingCommitPressed = $hookCommitActivity
         foreach ($vk in $typingCommitKeys) {
+            if ($keyboardHookActive) { break }
             $commitState = [int][MbRecorderNative]::GetAsyncKeyState($vk)
             if (Test-MbAsyncKeyStatePressed -State $commitState) { $typingCommitPressed = $true }
+        }
+        if ($hookCommitActivity -and $typingActive -and $null -ne $typingWindow -and
+            $hookKeyboardWindowHandle -ne 0 -and
+            $hookKeyboardWindowHandle -ne [long]$typingWindow.handle) {
+            $typingCommitPressed = $false
         }
         if ($typingPressed -and $typingActive) {
             # 押下検出と同時に撮ると、アプリが最終文字を描画する直前になる。
@@ -1905,9 +2561,11 @@ function Invoke-MbRecordingLoop {
             # 押下中に撮るとExcelでは最終文字だけ反映前の画面になる。
             $typingCaptureDueAtMs = [int]$watch.ElapsedMilliseconds + 120
         }
+        $typingStartedThisIteration = $false
         if ($typingNow) {
             if (-not $typingActive) {
                 $typingActive = $true
+                $typingStartedThisIteration = $true
                 $typingEvidenceKind = ''
                 # クリック後画像の待機中に入力が始まった場合、その入力済み画面を
                 # 直前クリックの結果として結び付けない。結果なしの方が因果を捏造しない。
@@ -1918,7 +2576,9 @@ function Invoke-MbRecordingLoop {
                 # キーそのものは読まない。入力中の画面だけを保持し、表示された文字を
                 # 残すか隠すかは、取り込み後の画像編集（黒塗り）で利用者が決める。
                 try {
-                    $candidateWindow = Get-MbForegroundWindowInfo
+                    $candidateWindow = if ($hookTextActivity -and $hookKeyboardWindowHandle -ne 0) {
+                        Get-MbWindowInfo -Handle ([IntPtr]::new($hookKeyboardWindowHandle))
+                    } else { Get-MbForegroundWindowInfo }
                     if (-not (Test-MbIgnoredWindow -Window $candidateWindow -IgnoreTitlePatterns $IgnoreTitlePatterns)) {
                         $typingCapture = Copy-MbScreenBitmap
                         $typingCaptureAtMs = [int]$watch.ElapsedMilliseconds
@@ -1952,7 +2612,9 @@ function Invoke-MbRecordingLoop {
                 }
             }
             if ($pastePressed) { $typingEvidenceKind = 'paste' }
-            $lastTypingMs = [int]$watch.ElapsedMilliseconds
+            $lastTypingMs = if ($hookTextActivity -and $hookKeyboardElapsedMs -ge 0) {
+                [int]$hookKeyboardElapsedMs
+            } else { [int]$watch.ElapsedMilliseconds }
         }
 
         if ($typingActive -and $typingCaptureDueAtMs -gt 0 -and
@@ -1982,8 +2644,12 @@ function Invoke-MbRecordingLoop {
 
         # 入力が確定した、途切れた、または次のクリックが来たら、保持していた
         # 確定前の最新画面を1手順にする。Enter/Tab検出後には撮り直さない。
-        $typingFinished = $typingActive -and ($typingCommitPressed -or $clicked -or
-            (([int]$watch.ElapsedMilliseconds - $lastTypingMs) -ge $TypingIdleMs))
+        $typingFinishedByIdle = $typingActive -and -not $typingCommitPressed -and
+            -not ($clicked -and -not $typingStartedThisIteration) -and
+            (([int]$watch.ElapsedMilliseconds - $lastTypingMs) -ge $TypingIdleMs) -and
+            -not $hookKeyboardContinuationQueued
+        $typingFinished = $typingActive -and ($typingCommitPressed -or
+            ($clicked -and -not $typingStartedThisIteration) -or $typingFinishedByIdle)
         if ($typingFinished) {
             $typingActive = $false
             try {
@@ -2017,8 +2683,22 @@ function Invoke-MbRecordingLoop {
                 }
                 if ($null -ne $typingCapture -and $index -lt $MaxEvents) {
                     $index++
-                    $record = Save-MbRecordingEvent -Capture $typingCapture -Index $index -ElapsedMs ([int]$watch.ElapsedMilliseconds) `
-                        -Kind 'input' -EventsDirectory $EventsDirectory -EventsPath $EventsPath -Target $typingField `
+                    # 次のクリックが入力を確定した場合、対象解析や画像保存に時間が
+                    # かかっても入力をそのクリックより後へ並べない。後続ボタンのOCR名を
+                    # 入力欄へ誤って引き継ぐ原因になるため、実クリック時刻の直前に置く。
+                    $inputElapsedMs = if ($hookCommitActivity -and $hookKeyboardElapsedMs -ge 0 -and -not $clicked) {
+                        [int]$hookKeyboardElapsedMs
+                    } elseif ($typingFinishedByIdle) {
+                        # フックキューが滞留して現在時刻が先へ進んでいても、入力を
+                        # 後から処理するクリックより未来へ並べない。
+                        [int][Math]::Min([int]$watch.ElapsedMilliseconds, $lastTypingMs + $TypingIdleMs)
+                    } else {
+                        Resolve-MbTypingEventElapsedMs -CurrentElapsedMs ([int]$watch.ElapsedMilliseconds) `
+                            -Clicked $clicked -ClickElapsedMs $clickElapsedMs
+                    }
+                    $record = Save-MbRecordingEvent -Capture $typingCapture -Index $index -ElapsedMs $inputElapsedMs `
+                        -Kind 'input' -EventsDirectory $EventsDirectory -EventsPath $EventsPath `
+                        -EvidenceDirectory $EvidenceDirectory -LedgerPath $LedgerPath -JobId $JobId -Target $typingField `
                         -Window $typingWindow
                     $lastTarget = [string]$record.targetName
                 }
@@ -2100,9 +2780,19 @@ function Invoke-MbRecordingLoop {
             $capture = $null
             try {
                 $point = New-Object 'MbRecorderNative+POINT'
-                [void][MbRecorderNative]::GetCursorPos([ref]$point)
-                $window = Get-MbForegroundWindowInfo
-                $captureAgeMs = ([int]$watch.ElapsedMilliseconds - $preClickCaptureAtMs)
+                if ($null -ne $hookClick) {
+                    $point.X = [int]$hookClick.X
+                    $point.Y = [int]$hookClick.Y
+                } else {
+                    [void][MbRecorderNative]::GetCursorPos([ref]$point)
+                }
+                $window = if ($null -ne $hookClick -and [long]$hookClick.WindowHandle -ne 0) {
+                    Get-MbWindowInfo -Handle ([IntPtr]::new([long]$hookClick.WindowHandle))
+                } else { Get-MbForegroundWindowInfo }
+                if ($null -eq $window) { $window = Get-MbForegroundWindowInfo }
+                # キュー待ちの間に撮った画像をクリック前画像と誤認しない。
+                # フックが保持した実際の押下時刻を基準に、新しいバッファは除外する。
+                $captureAgeMs = ($clickElapsedMs - $preClickCaptureAtMs)
                 $sameBufferedWindow = $null -ne $preClickWindow -and $null -ne $window -and
                     [long]$preClickWindow.handle -eq [long]$window.handle
                 $bufferedDomTarget = $null
@@ -2114,8 +2804,10 @@ function Invoke-MbRecordingLoop {
                 if ($canUseBufferedCapture -and -not $bufferTitleMatches) {
                     # 通常のEdgeや標準ダイアログでも、クリック前UIAが同じウィンドウと
                     # クリック点を示すなら、タイトル変更前の画像を安全に採用できる。
-                    $bufferedCachedTarget = Get-MbUiaTargetFromCache -Path $UiaTargetPath `
-                        -X ([int]$point.X) -Y ([int]$point.Y) -Window $preClickWindow -MaxAgeMs 700
+                    if (-not [string]::IsNullOrWhiteSpace($UiaTargetPath)) {
+                        $bufferedCachedTarget = Get-MbUiaTargetFromCache -Path $UiaTargetPath `
+                            -X ([int]$point.X) -Y ([int]$point.Y) -Window $preClickWindow -MaxAgeMs 700
+                    }
                     if (-not [string]::IsNullOrWhiteSpace($DomTargetPath)) {
                         # 旧DOM監視を明示的に使う実験経路ではpointerdownも証拠にできる。
                         for ($domAttempt = 0; $domAttempt -lt 7 -and $null -eq $bufferedDomTarget; $domAttempt++) {
@@ -2157,7 +2849,7 @@ function Invoke-MbRecordingLoop {
                     # DOMが取れていてもUIAを代替候補として残す。以前はDOMが誤っていると
                     # UIAを一度も比較せず、その矩形だけがCopilotへ渡っていた。
                     $cachedTarget = $bufferedCachedTarget
-                    if ($null -eq $cachedTarget) {
+                    if ($null -eq $cachedTarget -and -not [string]::IsNullOrWhiteSpace($UiaTargetPath)) {
                         $cachedTarget = Get-MbUiaTargetFromCache -Path $UiaTargetPath `
                             -X ([int]$point.X) -Y ([int]$point.Y) -Window $window
                     }
@@ -2217,8 +2909,9 @@ function Invoke-MbRecordingLoop {
                     }
                     $index++
                     $clickKind = if ($rightClicked) { 'right-click' } else { 'click' }
-                    $record = Save-MbRecordingEvent -Capture $capture -Index $index -ElapsedMs ([int]$watch.ElapsedMilliseconds) `
-                        -Kind $clickKind -EventsDirectory $EventsDirectory -EventsPath $EventsPath -Target $target `
+                    $record = Save-MbRecordingEvent -Capture $capture -Index $index -ElapsedMs $clickElapsedMs `
+                        -Kind $clickKind -EventsDirectory $EventsDirectory -EventsPath $EventsPath `
+                        -EvidenceDirectory $EvidenceDirectory -LedgerPath $LedgerPath -JobId $JobId -Target $target `
                         -TargetCandidates $recordingTargetCandidates -Window $window `
                         -ScreenX ([int]$point.X) -ScreenY ([int]$point.Y)
                     if (-not [string]::IsNullOrWhiteSpace($FramesDirectory) -and
@@ -2226,7 +2919,7 @@ function Invoke-MbRecordingLoop {
                         try {
                             $frameIndex++
                             [void](Save-MbRecordingTimelineEventFrame -EventRecord $record -Index $frameIndex `
-                                -ElapsedMs ([int]$watch.ElapsedMilliseconds) -EventsDirectory $EventsDirectory `
+                                -ElapsedMs $clickElapsedMs -EventsDirectory $EventsDirectory `
                                 -FramesDirectory $FramesDirectory -FramesPath $FramesPath -Window $window)
                         } catch {
                             if ($frameIndex -gt 0) { $frameIndex-- }
@@ -2235,13 +2928,26 @@ function Invoke-MbRecordingLoop {
                     $lastTarget = [string]$record.targetName
                     $lastInteractionTarget = $target
                     $lastInteractionWindowHandle = [long]$window.handle
-                    $lastInteractionAtMs = [int]$watch.ElapsedMilliseconds
+                    $lastInteractionAtMs = $clickElapsedMs
+                    # フォーカス用クリックと最初のキーを同じ巡回で検出した場合、入力開始時には
+                    # まだ lastInteractionTarget がない。クリックの事実を入力イベントへ引き継ぎ、
+                    # 対象名が取れないアプリでもクリックと入力を別手順にしない。
+                    if ($typingActive -and $null -eq $typingField -and $null -ne $typingWindow -and
+                        [long]$typingWindow.handle -eq [long]$window.handle) {
+                        $typingField = $target
+                    }
                     $pendingResultIndex = $index
                     $pendingResultWindowHandle = [long]$window.handle
-                    $pendingResultDueAtMs = [int]$watch.ElapsedMilliseconds + $resultCaptureDelayMs
+                    $pendingResultDueAtMs = [int]$watch.ElapsedMilliseconds + $ResultCaptureDelayMs
                 }
             } catch {
                 # 応答しないアプリを押した場合など。記録は続ける。
+                try {
+                    $safeMessage = [regex]::Replace([string]$_.Exception.Message, '[\r\n]+', ' ')
+                    [IO.File]::AppendAllText($diagnosticPath,
+                        ([DateTime]::UtcNow.ToString('o') + ' click=' + $safeMessage + [Environment]::NewLine),
+                        [Text.UTF8Encoding]::new($false))
+                } catch { }
             } finally {
                 if ($null -ne $capture) { try { $capture.bitmap.Dispose() } catch { } }
             }
@@ -2266,8 +2972,10 @@ function Invoke-MbRecordingLoop {
                 $rightPressedDuringCapture = Test-MbAsyncKeyStatePressed -State $rightAfterCapture
                 $leftDownAfterCapture = Test-MbAsyncKeyStateDown -State $leftAfterCapture
                 $rightDownAfterCapture = Test-MbAsyncKeyStateDown -State $rightAfterCapture
-                $pendingLeftClick = $leftPressedDuringCapture -or $leftDownAfterCapture
-                $pendingRightClick = $rightPressedDuringCapture -or $rightDownAfterCapture
+                if (-not $mouseHookActive) {
+                    $pendingLeftClick = $leftPressedDuringCapture -or $leftDownAfterCapture
+                    $pendingRightClick = $rightPressedDuringCapture -or $rightDownAfterCapture
+                }
                 $sameStableWindow = $null -ne $windowBeforeCapture -and $null -ne $windowAfterCapture -and
                     [long]$windowBeforeCapture.handle -eq [long]$windowAfterCapture.handle -and
                     [string]$windowBeforeCapture.title -eq [string]$windowAfterCapture.title
@@ -2317,6 +3025,25 @@ function Invoke-MbRecordingLoop {
         Start-Sleep -Milliseconds $PollIntervalMs
     }
 
+    if ($mouseHookActive) {
+        $droppedMouseClicks = try { [long][MbRecorderNative]::DroppedMouseClicks } catch { 0L }
+        $droppedKeyboardActivities = try { [long][MbRecorderNative]::DroppedKeyboardActivities } catch { 0L }
+        if ($droppedMouseClicks -gt $lastDroppedMouseClicks -or
+            $droppedKeyboardActivities -gt $lastDroppedKeyboardActivities) {
+            $script:MbRecorderCaptureCompleteness = 'known-gaps'
+            $script:MbRecorderCaptureWarning = '操作が短時間に集中し、一部を記録できなかった可能性があります。手順の抜けを確認してください。'
+            Write-MbRecordingLedgerRecord -LedgerPath $LedgerPath -Record ([ordered]@{
+                recordType = 'capture-gap'; formatVersion = 2; sessionId = $JobId
+                recordedAt = [DateTime]::UtcNow.ToString('o')
+                droppedMouseClicks = [Math]::Max(0L, $droppedMouseClicks - $lastDroppedMouseClicks)
+                droppedKeyboardActivities = [Math]::Max(0L, $droppedKeyboardActivities - $lastDroppedKeyboardActivities)
+                reason = 'capture-queue-overflow'
+            })
+        }
+        try { [MbRecorderNative]::StopMouseHook() } catch { }
+        $mouseHookActive = $false
+    }
+
     # 終了ボタンへ戻る直前まで保持していた安定画面があれば、最後のクリック結果に使う。
     # これにより「詳細を表示」してすぐ記録を止めても、結果だけが欠けにくい。
     if ($pendingResultIndex -gt 0 -and $pendingResultWindowHandle -gt 0 -and
@@ -2336,7 +3063,8 @@ function Invoke-MbRecordingLoop {
         try {
             $index++
             $record = Save-MbRecordingEvent -Capture $typingCapture -Index $index -ElapsedMs ([int]$watch.ElapsedMilliseconds) `
-                -Kind 'input' -EventsDirectory $EventsDirectory -EventsPath $EventsPath -Target $typingField `
+                -Kind 'input' -EventsDirectory $EventsDirectory -EventsPath $EventsPath `
+                -EvidenceDirectory $EvidenceDirectory -LedgerPath $LedgerPath -JobId $JobId -Target $typingField `
                 -Window $typingWindow
             $lastTarget = [string]$record.targetName
         } catch {
@@ -2362,6 +3090,12 @@ function Invoke-MbRecordingLoop {
         'timeout' { "記録の上限（$MaxMinutes 分）に達したため終了しました" }
         default   { "$index 件の操作を記録しました" }
     }
+    Write-MbRecordingLedgerRecord -LedgerPath $LedgerPath -Record ([ordered]@{
+        recordType = 'capture-end'; formatVersion = 2; sessionId = $JobId
+        recordedAt = [DateTime]::UtcNow.ToString('o'); operationCount = $index
+        reason = $reason; completeness = [string]$script:MbRecorderCaptureCompleteness
+        warning = [string]$script:MbRecorderCaptureWarning
+    })
     Write-MbRecordingStatus -StatusPath $StatusPath -JobId $JobId -State 'completed' -Count $index -Message $message -LastTarget $lastTarget
     return $index
 }
@@ -2403,6 +3137,8 @@ Export-ModuleMember -Function @(
     'Test-MbAsyncKeyStateDown',
     'Test-MbAsyncKeyStatePressed',
     'Test-MbTextChangingShortcutKey',
+    'Resolve-MbTypingEventElapsedMs',
+    'Test-MbQueuedKeyboardContinuation',
     'Remove-MbLastRecordingEvent',
     'Invoke-MbRecordingLoop',
     'Write-MbRecordingStatus'

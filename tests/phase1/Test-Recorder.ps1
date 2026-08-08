@@ -18,9 +18,79 @@ function Add-Result {
 Import-Module (Join-Path $srcRoot 'ManualBuilder.Recorder.psm1') -Force
 Import-Module (Join-Path $srcRoot 'ManualBuilder.Project.psm1') -Force
 $recorderSourceText = [IO.File]::ReadAllText((Join-Path $srcRoot 'ManualBuilder.Recorder.psm1'), [Text.Encoding]::UTF8)
+$recorderServerSourceText = [IO.File]::ReadAllText((Join-Path $srcRoot 'ManualBuilder.RecorderServer.psm1'), [Text.Encoding]::UTF8)
+$recorderCompanionRoot = Join-Path $srcRoot 'RecorderCompanion'
+$recorderControllerSourceText = [IO.File]::ReadAllText((Join-Path $recorderCompanionRoot 'ManualBuilder.RecorderCompanion.cs'), [Text.Encoding]::UTF8)
+$recorderControllerHtmlText = [IO.File]::ReadAllText((Join-Path $recorderCompanionRoot 'web\index.html'), [Text.Encoding]::UTF8)
+$recorderControllerCssText = [IO.File]::ReadAllText((Join-Path $recorderCompanionRoot 'web\styles.css'), [Text.Encoding]::UTF8)
+$recorderControllerJsText = [IO.File]::ReadAllText((Join-Path $recorderCompanionRoot 'web\app.js'), [Text.Encoding]::UTF8)
 Add-Result (($recorderSourceText -match '\$pendingResultWindowHandle') -and
     ($recorderSourceText -match '別アプリへ移った画面を、直前操作の結果として結び付けない')) `
     '操作後画像を別アプリの画面へすり替えない'
+Add-Result (($recorderServerSourceText -match 'Invoke-RecorderCompanion\.ps1') -and
+    ($recorderServerSourceText -notmatch 'ManualBuilder\.RecorderCompanion\.exe') -and
+    ($recorderServerSourceText -match 'ControllerProcessIdentity') -and
+    ($recorderServerSourceText -match '\$controllerReadyTimeoutMs\s*=\s*15000') -and
+    ($recorderControllerSourceText -match 'Topmost = true') -and
+    ($recorderServerSourceText -match 'WebView2 Runtimeを確認')) `
+    '対象アプリ上へWebView2記録モニターだけを起動し、初回準備を十分待って失敗時は記録を開始しない'
+Add-Result (($recorderControllerHtmlText -match '直前の記録を削除') -and
+    ($recorderControllerHtmlText -match '結果画面を追加') -and
+    ($recorderControllerHtmlText -match '終了して確認')) `
+    'WebView2記録モニターから削除・結果追加・終了を操作できる'
+Add-Result (($recorderSourceText -match '\$ManualResultPath') -and
+    ($recorderSourceText -match 'ResultRequestId') -and
+    ($recorderControllerSourceText -match 'SetForegroundWindow') -and
+    ($recorderControllerSourceText -match 'SetWindowDisplayAffinity')) `
+    '記録モニターを画像へ混ぜず直前手順へ結果画面を追加する'
+Add-Result (($recorderControllerHtmlText -match '記録レシート') -and
+    ($recorderControllerHtmlText -match '最近記録した操作') -and
+    ($recorderControllerHtmlText -match '直前画像を確認') -and
+    ($recorderControllerHtmlText -match '画像確認を閉じる') -and
+    ($recorderControllerHtmlText -notmatch 'data-view="before"') -and
+    ($recorderControllerCssText -match 'grid-template-columns: repeat\(2') -and
+    ($recorderControllerSourceText -match 'Width = 760') -and
+    ($recorderControllerSourceText -match 'Height = 300') -and
+    ($recorderControllerSourceText -match 'Width = 980') -and
+    ($recorderControllerSourceText -match 'Height = 760')) `
+    '記録モニターが記録レシートと大きな画像確認を切り替えられる'
+Add-Result (($recorderControllerCssText -match '"BIZ UDPゴシック"') -and
+    ($recorderControllerCssText -match 'border-radius: 10px') -and
+    ($recorderControllerCssText -match 'display: grid') -and
+    ($recorderControllerSourceText -notmatch 'System\.Windows\.Forms\.Button')) `
+    'WebView2のCSSでフォント・角丸・配置を一元管理する'
+Add-Result (($recorderControllerCssText -match '\.preview-stage:not\(\.compare\) \.preview-card figcaption') -and
+    ($recorderControllerCssText -match '(?s)\.preview-card img.+padding:\s*6px.+object-fit:\s*contain')) `
+    '単独表示では画像を外枠いっぱいに広げ、比較時だけ前後ラベルを重ねる'
+Add-Result (($recorderControllerSourceText -match 'pendingResultAtUtc\.AddSeconds\(6\)') -and
+    ($recorderControllerSourceText -match 'pendingUndoAtUtc\.AddSeconds\(6\)') -and
+    ($recorderControllerSourceText -match 'closingRequested') -and
+    ($recorderControllerSourceText -match 'pendingUndoId')) `
+    '結果追加の応答欠落と終了・取消の競合から回復できる'
+Add-Result (($recorderSourceText -match 'processedUndoRequests\.ContainsKey') -and
+    ($recorderSourceText -match 'ProcessedRequests\.ContainsKey') -and
+    ($recorderSourceText -match 'Invoke-MbManualResultRequest') -and
+    ($recorderControllerSourceText -match 'pendingResultPayload')) `
+    '応答遅延時に同じ削除・結果画面追加を二重実行しない'
+Add-Result (($recorderSourceText -match 'DroppedMouseClicks') -and
+    ($recorderSourceText -match 'DroppedKeyboardActivities') -and
+    ($recorderSourceText -match "recordType = 'capture-gap'") -and
+    ($recorderSourceText -match "recordType = 'capture-start'") -and
+    ($recorderSourceText -match "recordType = 'capture-end'")) `
+    '記録機能の停止・キューあふれを黙って欠落させず証拠台帳へ残す'
+Add-Result (($recorderControllerSourceText -match '(?s)RequestUndo\(\).+pendingResultId') -and
+    ($recorderControllerSourceText -match '(?s)RequestResult\(\).+pendingUndoId')) `
+    '直前記録の削除と結果画面追加を同時に要求しない'
+Add-Result (($recorderSourceText -match '(?s)ManualResultPath.+常駐パネルの未処理要求を先に取り込み') -and
+    ($recorderSourceText -match '(?s)UndoPath.+終了要求と取消が重なった場合')) `
+    '終了と同時の削除・結果画面追加を先に反映してから停止する'
+Add-Result (($recorderControllerSourceText -match 'GetAwarenessFromDpiAwarenessContext') -and
+    ($recorderControllerSourceText -match 'dpiAwareness=')) `
+    '記録モニターのDPI設定を実状態で確認できる'
+Add-Result (($recorderControllerSourceText -match 'LastWriteTimeUtc\.Ticks') -and
+    ($recorderControllerJsText -match 'if \(image\.src !== url\)') -and
+    ($recorderControllerSourceText -match 'SetVirtualHostNameToFolderMapping')) `
+    '記録モニターが変更のない画像を短周期で読み直さない'
 
 # ---------------------------------------------------------------------
 # status.json の読み書き競合
@@ -85,20 +155,37 @@ try {
 $undoRoot = Join-Path $env:TEMP ('ManualBuilder-RecorderUndo-' + [guid]::NewGuid().ToString('N'))
 try {
     $undoEventsDirectory = Join-Path $undoRoot 'events'
+    $undoEvidenceDirectory = Join-Path $undoRoot 'evidence'
     [void](New-Item -ItemType Directory -Path $undoEventsDirectory -Force)
+    [void](New-Item -ItemType Directory -Path $undoEvidenceDirectory -Force)
     $undoEventsPath = Join-Path $undoRoot 'events.jsonl'
+    $undoLedgerPath = Join-Path $undoRoot 'evidence-ledger.jsonl'
+    $firstEvidenceId = 'evidence-' + [guid]::NewGuid().ToString('N')
+    $removedEvidenceId = 'evidence-' + [guid]::NewGuid().ToString('N')
     [IO.File]::WriteAllLines($undoEventsPath, @(
-        '{"index":1,"targetName":"最初"}',
-        '{"index":2,"targetName":"直前"}'
+        (@{ index=1; targetName='最初'; evidenceId=$firstEvidenceId } | ConvertTo-Json -Compress),
+        (@{ index=2; targetName='直前'; evidenceId=$removedEvidenceId } | ConvertTo-Json -Compress)
+    ), [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllLines($undoLedgerPath, @(
+        (@{ recordType='operation'; id=$firstEvidenceId; sessionId='record-test' } | ConvertTo-Json -Compress),
+        (@{ recordType='operation'; id=$removedEvidenceId; sessionId='record-test' } | ConvertTo-Json -Compress)
     ), [Text.UTF8Encoding]::new($false))
     [IO.File]::WriteAllText((Join-Path $undoEventsDirectory 'event-002.jpg'), 'before')
     [IO.File]::WriteAllText((Join-Path $undoEventsDirectory 'event-002-result.jpg'), 'after')
-    $undoResult = Remove-MbLastRecordingEvent -EventsPath $undoEventsPath -EventsDirectory $undoEventsDirectory
+    [IO.File]::WriteAllText((Join-Path $undoEvidenceDirectory ($removedEvidenceId + '.jpg')), 'original evidence')
+    $undoResult = Remove-MbLastRecordingEvent -EventsPath $undoEventsPath -EventsDirectory $undoEventsDirectory `
+        -LedgerPath $undoLedgerPath -JobId 'record-test'
     Add-Result ($undoResult.removed -and [int]$undoResult.count -eq 1) '記録中に直前の1操作を取り消せる'
     Add-Result ([string]$undoResult.lastTarget -eq '最初') '取消後の直前対象を戻す'
     Add-Result ([IO.File]::ReadAllLines($undoEventsPath).Count -eq 1) '取消後もそれ以前の操作ログを保つ'
     Add-Result (-not (Test-Path -LiteralPath (Join-Path $undoEventsDirectory 'event-002.jpg')) -and
         -not (Test-Path -LiteralPath (Join-Path $undoEventsDirectory 'event-002-result.jpg'))) '取消した操作前後の画像だけを除く'
+    Add-Result (Test-Path -LiteralPath (Join-Path $undoEvidenceDirectory ($removedEvidenceId + '.jpg'))) `
+        '直前取消後も元の操作証拠画像を残す'
+    $undoLedger = @([IO.File]::ReadAllLines($undoLedgerPath) | ForEach-Object { $_ | ConvertFrom-Json })
+    $undoDecision = @($undoLedger | Where-Object { $_.recordType -eq 'decision' -and $_.action -eq 'undo' })
+    Add-Result ($undoDecision.Count -eq 1 -and @($undoDecision[0].evidenceIds) -contains $removedEvidenceId) `
+        '取消を元操作の削除ではなく追記判断として記録する'
 } finally {
     Remove-Item -LiteralPath $undoRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
@@ -548,6 +635,34 @@ Add-Result (-not (Test-MbTextChangingShortcutKey -VirtualKey 0x4C)) 'Ctrl+Lの�
 Add-Result (-not (Test-MbTextChangingShortcutKey -VirtualKey 0x46)) 'Ctrl+Fの検索開始を入力内容の変更とみなさない'
 Add-Result (Test-MbTextChangingShortcutKey -VirtualKey 0x56) 'Ctrl+Vの貼り付けは入力内容の変更として残す'
 Add-Result (Test-MbTextChangingShortcutKey -VirtualKey 0x5A) 'Ctrl+ZのUndoは入力内容の変更として残す'
+Add-Result ((Resolve-MbTypingEventElapsedMs -CurrentElapsedMs 3100 -Clicked $true -ClickElapsedMs 3000) -eq 2999) `
+    'クリックで確定した入力を後続クリックの直前へ並べる'
+Add-Result ((Resolve-MbTypingEventElapsedMs -CurrentElapsedMs 3100 -Clicked $false -ClickElapsedMs 0) -eq 3100) `
+    '待機で確定した入力は現在時刻を保つ'
+$frequency = 10000000L
+$queuedKey1 = [pscustomobject]@{ Kind = 1; WindowHandle = 101L; Timestamp = 10000000L }
+$queuedKey2 = [pscustomobject]@{ Kind = 1; WindowHandle = 101L; Timestamp = 11000000L }
+$queuedEnter = [pscustomobject]@{ Kind = 2; WindowHandle = 101L; Timestamp = 12000000L }
+$queuedOtherWindow = [pscustomobject]@{ Kind = 1; WindowHandle = 202L; Timestamp = 11000000L }
+$queuedLateKey = [pscustomobject]@{ Kind = 1; WindowHandle = 101L; Timestamp = 26000000L }
+$queuedMouse = [pscustomobject]@{ Timestamp = 10500000L }
+Add-Result (Test-MbQueuedKeyboardContinuation -CurrentActivity $queuedKey1 -NextActivity $queuedKey2 `
+        -NextMouseClick $null -TypingIdleMs 1200 -TimestampFrequency $frequency) `
+    '処理停止中に溜まった同じウィンドウの連続キーを1入力として保持する'
+Add-Result (Test-MbQueuedKeyboardContinuation -CurrentActivity $queuedKey2 -NextActivity $queuedEnter `
+        -NextMouseClick $null -TypingIdleMs 1200 -TimestampFrequency $frequency) `
+    '連続キーの後に溜まったEnterまで入力確定を待つ'
+Add-Result (Test-MbQueuedKeyboardContinuation -CurrentActivity $queuedKey1 -NextActivity $queuedOtherWindow `
+        -NextMouseClick $null -TypingIdleMs 1200 -TimestampFrequency $frequency) `
+    '別ウィンドウの入力が続くとき先に現在入力の境界処理へ渡す'
+Add-Result (Test-MbQueuedKeyboardContinuation -CurrentActivity $queuedKey1 -NextActivity $null `
+        -NextMouseClick $queuedMouse -TypingIdleMs 1200 -TimestampFrequency $frequency) `
+    '入力直後のクリックが滞留してもidle確定で時系列を逆転させない'
+Add-Result (-not (Test-MbQueuedKeyboardContinuation -CurrentActivity $queuedKey1 -NextActivity $queuedLateKey `
+        -NextMouseClick $null -TypingIdleMs 1200 -TimestampFrequency $frequency)) `
+    '十分に間が空いたキーは別入力として扱う'
+Add-Result ($recorderSourceText -match '\$lastTypingMs \+ \$TypingIdleMs') `
+    '滞留後のidle確定時刻を現在時刻ではなく実入力時刻から決める'
 
 # タッチパッドの短いタップは次の巡回時には離されていることがある。
 # その場合も GetAsyncKeyState の下位ビットから押下を拾う。
@@ -555,6 +670,27 @@ Add-Result ((Test-MbAsyncKeyStateDown -State 0x8000) -eq $true) '押されてい
 Add-Result ((Test-MbAsyncKeyStatePressed -State 0x0001) -eq $true) '巡回の間に終わった短い押下を下位ビットで検出する'
 Add-Result ((Test-MbAsyncKeyStateDown -State 0x0001) -eq $false) '離された短い押下を押下中とは扱わない'
 Add-Result ((Test-MbAsyncKeyStatePressed -State 0x0000) -eq $false) '操作のない状態を押下とは扱わない'
+
+# スクリーンショットやUI解析中のクリックを失わないよう、押下の受け取りだけは
+# 独立スレッドの低レベルフックで行う。重い処理をコールバックへ入れないことも固定する。
+Add-Result ($recorderSourceText -match 'ConcurrentQueue<MouseClick>' -and
+    $recorderSourceText -match 'MouseClicks\.Enqueue' -and
+    $recorderSourceText -match 'DequeueMouseClick') 'クリックを独立キューへ蓄積する'
+Add-Result ($recorderSourceText -match 'Timestamp = Stopwatch\.GetTimestamp\(\)' -and
+    $recorderSourceText -match '\$clickElapsedMs - \$preClickCaptureAtMs') `
+    '実際のクリック時刻で画像バッファの前後関係を判定する'
+Add-Result ($recorderSourceText -match 'if \(\$mouseHookActive\)' -and
+    $recorderSourceText -match 'Test-MbAsyncKeyStatePressed -State \$leftState') `
+    'フックを開始できない環境では従来の押下検出へ戻る'
+Add-Result ($recorderSourceText -match 'ConcurrentQueue<KeyboardActivity>' -and
+    $recorderSourceText -match 'DequeueKeyboardActivity' -and
+    $recorderSourceText -match '\$hookTextActivity') `
+    '重い画面取得中の短い入力も内容を保存せず独立キューで検出する'
+Add-Result ($recorderSourceText -match 'public sealed class KeyboardActivity\s*\{\s*public int Kind;[\s\S]*?public long Timestamp;' -and
+    $recorderSourceText -notmatch 'public sealed class KeyboardActivity[\s\S]*?public (?:int|uint) VirtualKey') `
+    '入力検出キューへ実際のキー値を保存しない'
+Add-Result ($recorderSourceText -match 'if \(!MouseHookStarted\)[\s\S]*?UnhookWindowsHookEx\(KeyboardHookHandle\)[\s\S]*?KeyboardHookStarted = false;') `
+    'マウスフック開始失敗時にキーボードフックを残さない'
 
 # ---------------------------------------------------------------------
 # 実行環境で記録できるかどうか
@@ -569,12 +705,94 @@ if (-not $capability.available) {
     # DPI認識は座標系を揃えるために欠かせない。呼べること自体を確かめる。
     $dpi = Set-MbProcessDpiAware
     Add-Result ($dpi -in @('per-monitor', 'system', 'none')) "DPI認識の設定を行える（$dpi）"
+    $hookStarted = [MbRecorderNative]::StartMouseHook()
+    Add-Result $hookStarted '独立したマウス記録スレッドを開始できる'
+    [MbRecorderNative]::StopMouseHook()
 }
 
 # ---------------------------------------------------------------------
 # 話した内容を操作へ振り分ける
 # ---------------------------------------------------------------------
 Import-Module (Join-Path $srcRoot 'ManualBuilder.RecorderServer.psm1') -Force
+
+$ocrLabel = & (Get-Module ManualBuilder.RecorderServer) { ConvertTo-MbRecorderOcrLabel -Value '詳 細 を 表 示' }
+$ocrBackLabel = & (Get-Module ManualBuilder.RecorderServer) { ConvertTo-MbRecorderOcrLabel -Value '- 覧 へ 戻 る' }
+Add-Result ($ocrLabel -eq '詳細を表示' -and $ocrBackLabel -eq '一覧へ戻る') `
+    'Windows OCRが分割・誤認した日本語ボタン名を整える'
+$ocrConfidence = & (Get-Module ManualBuilder.RecorderServer) { Get-MbRecorderOcrLabelConfidence -Label '詳細を表示' }
+$mixedOcrConfidence = & (Get-Module ManualBuilder.RecorderServer) { Get-MbRecorderOcrLabelConfidence -Label '自 i 2 ロ n' }
+$acronymOcrConfidence = & (Get-Module ManualBuilder.RecorderServer) { Get-MbRecorderOcrLabelConfidence -Label 'CSVを出力' }
+Add-Result ($ocrConfidence -eq 'medium' -and $mixedOcrConfidence -eq 'low' -and $acronymOcrConfidence -eq 'medium') `
+    '日本語OCRの崩れた日英交互列だけを要確認へ下げる'
+$ocrInputValue = & (Get-Module ManualBuilder.RecorderServer) {
+    Test-MbRecorderUnreliableOcrLabel -Label '01042' -ActionKind 'input' -Source 'click-point+OCR'
+}
+$ocrExcelError = & (Get-Module ManualBuilder.RecorderServer) {
+    Test-MbRecorderUnreliableOcrLabel -Label '#CALC!' -ActionKind 'click' -Source 'click-point+OCR'
+}
+$ocrFragment = & (Get-Module ManualBuilder.RecorderServer) {
+    Test-MbRecorderUnreliableOcrLabel -Label '数' -ActionKind 'click' -Source 'click-point+OCR'
+}
+$ocrNormalButton = & (Get-Module ManualBuilder.RecorderServer) {
+    Test-MbRecorderUnreliableOcrLabel -Label '詳細を表示' -ActionKind 'click' -Source 'click-point+OCR'
+}
+Add-Result ($ocrInputValue -and $ocrExcelError -and $ocrFragment -and -not $ocrNormalButton) `
+    '入力値・Excelエラー・1文字断片をOCRの操作対象名として断定しない'
+$ocrInputSequence = @(
+    [pscustomobject]@{
+        index = 1; timeMs = 1000; kind = 'click'; targetName = '注文番号'; targetType = 'ControlType.OcrText'
+        targetSource = 'click-point+OCR'; confidence = 'medium'; windowTitle = '受注検索 - Edge'
+        rect = [pscustomobject]@{ x1 = 0.2; y1 = 0.2; x2 = 0.3; y2 = 0.25 }
+    },
+    [pscustomobject]@{ index = 2; timeMs = 2600; kind = 'input'; targetName = ''; targetType = ''; windowTitle = '受注検索 - Edge' }
+)
+$repairedOcrInput = @(& (Get-Module ManualBuilder.RecorderServer) {
+    param($Events) Repair-MbRecorderUnlabeledInputAnchors -Events $Events
+} $ocrInputSequence)
+Add-Result ([string]$repairedOcrInput[1].targetName -eq '注文番号' -and
+    [string]$repairedOcrInput[1].targetType -eq 'ControlType.Edit' -and
+    $repairedOcrInput[1].rect.x1 -eq 0.2) 'OCRクリック直後の入力へ対象名と赤枠を引き継ぐ'
+Add-Result (@(Merge-MbRecordedEditInteractions -Events $repairedOcrInput).Count -eq 1) `
+    'OCRで復元した入力欄クリックと入力を1手順へまとめる'
+$buttonThenInput = @(
+    [pscustomobject]@{ index = 1; timeMs = 1000; kind = 'click'; targetName = '検索'; targetType = 'ControlType.Button'; windowTitle = '検索 - Edge' },
+    [pscustomobject]@{ index = 2; timeMs = 1500; kind = 'input'; targetName = ''; targetType = ''; windowTitle = '検索 - Edge' }
+)
+$buttonInputResult = @(& (Get-Module ManualBuilder.RecorderServer) {
+    param($Events) Repair-MbRecorderUnlabeledInputAnchors -Events $Events
+} $buttonThenInput)
+Add-Result ([string]::IsNullOrWhiteSpace([string]$buttonInputResult[1].targetName)) `
+    '通常ボタンの名前を後続入力へ誤って引き継がない'
+
+$trustedUiaEvent = [pscustomobject]@{
+    kind = 'click'; targetName = '検索'; targetType = 'ControlType.Button'; targetSource = 'UIA'; confidence = 'medium'
+    rect = [pscustomobject]@{ x1 = 0.2; y1 = 0.3; x2 = 0.32; y2 = 0.38 }
+    clickPoint = [pscustomobject]@{ x = 0.25; y = 0.34 }
+}
+$trustedUia = & (Get-Module ManualBuilder.RecorderServer) {
+    param($Event) Test-MbRecorderTrustedLocalTarget -Event $Event -ActionKind 'click'
+} $trustedUiaEvent
+Add-Result ([bool]$trustedUia) 'クリック点と一致する小さなUIA対象だけを自動採用できる'
+$cachedUiaEvent = $trustedUiaEvent.PSObject.Copy(); $cachedUiaEvent.targetSource = 'UIA-CACHE'
+$trustedCachedUia = & (Get-Module ManualBuilder.RecorderServer) {
+    param($Event) Test-MbRecorderTrustedLocalTarget -Event $Event -ActionKind 'click'
+} $cachedUiaEvent
+Add-Result ([bool]$trustedCachedUia) '同じ画面・同じウィンドウで保持したクリック前UIAも座標一致時だけ自動採用できる'
+$outsideUiaEvent = $trustedUiaEvent.PSObject.Copy()
+$outsideUiaEvent.clickPoint = [pscustomobject]@{ x = 0.7; y = 0.7 }
+$outsideUia = & (Get-Module ManualBuilder.RecorderServer) {
+    param($Event) Test-MbRecorderTrustedLocalTarget -Event $Event -ActionKind 'click'
+} $outsideUiaEvent
+Add-Result (-not [bool]$outsideUia) 'クリック点を含まないUIA対象は自動採用しない'
+$domEvent = $trustedUiaEvent.PSObject.Copy(); $domEvent.targetSource = 'DOM'
+$trustedDom = & (Get-Module ManualBuilder.RecorderServer) {
+    param($Event) Test-MbRecorderTrustedLocalTarget -Event $Event -ActionKind 'click'
+} $domEvent
+Add-Result (-not [bool]$trustedDom) 'DOM候補を短い確認のために安易に自動採用しない'
+$trustedInput = & (Get-Module ManualBuilder.RecorderServer) {
+    param($Event) Test-MbRecorderTrustedLocalTarget -Event $Event -ActionKind 'input'
+} $trustedUiaEvent
+Add-Result (-not [bool]$trustedInput) '入力内容を記録しない入力手順は引き続き確認対象にする'
 
 # 記録一覧で操作前／操作後を関連付け、取り込み後も別画像として保持する。
 $importRoot = Join-Path $env:TEMP ('ManualBuilder-RecorderImport-' + [guid]::NewGuid().ToString('N'))
@@ -597,18 +815,56 @@ try {
         $beforeBitmap.Save($excelPath, [Drawing.Imaging.ImageFormat]::Jpeg)
     } finally { $beforeGraphics.Dispose(); $afterGraphics.Dispose() }
     $eventsPath = Join-Path $importRoot 'events.jsonl'
+    $edgeEvidenceId = 'evidence-' + [guid]::NewGuid().ToString('N')
+    $excelEvidenceId = 'evidence-' + [guid]::NewGuid().ToString('N')
     $edgeEventJson = [pscustomobject]@{
         index = 1; kind = 'click'; timeMs = 1000; image = 'event-001.jpg'
+        evidenceId = $edgeEvidenceId
         windowTitle = '申請画面 - Microsoft Edge'; targetName = '詳細を表示'; targetType = 'ControlType.Button'
         rect = [pscustomobject]@{ x1 = 0.1; y1 = 0.1; x2 = 0.3; y2 = 0.2 }
     } | ConvertTo-Json -Compress -Depth 5
     $excelEventJson = [pscustomobject]@{
         index = 2; kind = 'click'; timeMs = 2200; image = 'event-002.jpg'
+        evidenceId = $excelEvidenceId
         windowTitle = 'Book1 - Excel'; targetName = 'F8'; targetType = 'ControlType.Cell'
         rect = [pscustomobject]@{ x1 = 0.4; y1 = 0.4; x2 = 0.5; y2 = 0.5 }
     } | ConvertTo-Json -Compress -Depth 5
     [IO.File]::WriteAllLines($eventsPath, @($edgeEventJson, $excelEventJson), [Text.UTF8Encoding]::new($false))
-    $job = [pscustomobject]@{ EventsPath = $eventsPath; EventsDirectory = $eventDirectory; NarrationPath = (Join-Path $importRoot 'narration.jsonl') }
+    $recordingJobId = 'record-' + [guid]::NewGuid().ToString('N')
+    $evidenceDirectory = Join-Path $importRoot 'evidence-source'
+    [void](New-Item -ItemType Directory -Path $evidenceDirectory -Force)
+    Copy-Item -LiteralPath $beforePath -Destination (Join-Path $evidenceDirectory ($edgeEvidenceId + '.jpg'))
+    Copy-Item -LiteralPath $excelPath -Destination (Join-Path $evidenceDirectory ($excelEvidenceId + '.jpg'))
+    $ledgerPath = Join-Path $importRoot 'evidence-ledger.jsonl'
+    [IO.File]::WriteAllLines($ledgerPath, @(
+        ([ordered]@{ recordType='capture-start'; formatVersion=2; sessionId=$recordingJobId; mouseHook=$true; keyboardHook=$true; completeness='no-known-gaps' } | ConvertTo-Json -Compress),
+        ([ordered]@{ recordType='operation'; id=$edgeEvidenceId; sessionId=$recordingJobId; kind='click'; timeMs=1000; image=($edgeEvidenceId + '.jpg') } | ConvertTo-Json -Compress),
+        ([ordered]@{ recordType='operation'; id=$excelEvidenceId; sessionId=$recordingJobId; kind='click'; timeMs=2200; image=($excelEvidenceId + '.jpg') } | ConvertTo-Json -Compress),
+        ([ordered]@{ recordType='capture-end'; formatVersion=2; sessionId=$recordingJobId; operationCount=2; reason='stopped'; completeness='no-known-gaps'; warning='' } | ConvertTo-Json -Compress)
+    ), [Text.UTF8Encoding]::new($false))
+    $job = [pscustomobject]@{
+        JobId = $recordingJobId; EventsPath = $eventsPath; EventsDirectory = $eventDirectory
+        EvidenceDirectory = $evidenceDirectory; LedgerPath = $ledgerPath
+        NarrationPath = (Join-Path $importRoot 'narration.jsonl')
+    }
+    $oldLedgerPath = Join-Path $importRoot 'old-evidence-ledger.jsonl'
+    [IO.File]::WriteAllLines($oldLedgerPath, @(
+        ([ordered]@{ recordType='operation'; id=$edgeEvidenceId; sessionId=$recordingJobId; kind='click'; timeMs=1000; image=($edgeEvidenceId + '.jpg') } | ConvertTo-Json -Compress)
+    ), [Text.UTF8Encoding]::new($false))
+    $oldJob = [pscustomobject]@{
+        JobId = $recordingJobId; EventsPath = $eventsPath; EventsDirectory = $eventDirectory
+        EvidenceDirectory = $evidenceDirectory; LedgerPath = $oldLedgerPath
+        NarrationPath = (Join-Path $importRoot 'narration.jsonl')
+    }
+    & (Get-Module ManualBuilder.RecorderServer) { param($Job) $script:MbRecordingJob = $Job } $oldJob
+    $oldFormatRejected = $false
+    try {
+        $oldProject = New-MbProject
+        [void](Import-MbRecordedEvents -Project $oldProject -ProjectPath (Join-Path $importRoot 'old-project.json') -SheetId $oldProject.sheets[0].id)
+    } catch {
+        $oldFormatRejected = $_.Exception.Message -like '*現在の証拠形式ではありません*'
+    }
+    Add-Result $oldFormatRejected '旧録画形式を推測で取り込まず新形式での記録を求める'
     & (Get-Module ManualBuilder.RecorderServer) { param($Job) $script:MbRecordingJob = $Job } $job
     $listedEvents = @(Get-MbRecordedEvents)
     Add-Result ($listedEvents.Count -eq 2) 'EdgeからExcelへ移った操作をどちらも確認一覧へ残す'
@@ -627,10 +883,52 @@ try {
     Add-Result ([string]$importedSteps[0].capture.windowTitle -like '*Edge' -and [string]$importedSteps[1].capture.windowTitle -like '*Excel') '取り込み後もEdgeからExcelへの操作順を保持する'
     Add-Result (-not [string]::IsNullOrWhiteSpace([string]$importedStep.resultImageId)) '取り込み後も操作後画像を手順へ保持する'
     Add-Result ([string]$importedStep.imageId -ne [string]$importedStep.resultImageId) '操作前画像と操作後画像を混同しない'
-    Add-Result ([string]$importedStep.imageLayout -eq 'side-by-side') '操作後画像つきの記録を左右比較で取り込む'
+    Add-Result ([string]$importedStep.imageLayout -eq 'before') '操作後画像を保持しても初稿は案内画像1枚で取り込む'
     Add-Result ([string]$importedStep.title -eq '詳細を表示' -and [string]$importedStep.description -eq '［詳細を表示］をクリックします。') '操作対象名から編集可能な初稿を作る'
     Add-Result ([double]$importedStep.crop.x -eq 0 -and [double]$importedStep.crop.y -eq 0 -and
         [double]$importedStep.crop.width -eq 1 -and [double]$importedStep.crop.height -eq 1) '取り込み時は画面全体を残し自動拡大しない'
+    Add-Result (@($importProject.evidenceSessions).Count -eq 1 -and
+        [string]$importProject.evidenceSessions[0].id -eq $recordingJobId -and
+        [int]$importProject.evidenceSessions[0].operationCount -eq 2 -and
+        [string]$importProject.evidenceSessions[0].captureCompleteness -eq 'no-known-gaps') `
+        '取り込み元の操作証拠セッションと完全性状態をプロジェクトへ保存する'
+    Add-Result ([string]$importedStep.capture.sourceSessionId -eq $recordingJobId -and
+        @($importedStep.capture.evidenceIds) -contains $edgeEvidenceId -and
+        -not [string]::IsNullOrWhiteSpace([string]$importedStep.capture.transformationReason)) `
+        '完成手順から元操作と変換理由をたどれる'
+    $archiveRoot = Join-Path (Join-Path $importRoot 'evidence') $recordingJobId
+    Add-Result ((Test-Path -LiteralPath (Join-Path $archiveRoot 'evidence-ledger.jsonl') -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path (Join-Path $archiveRoot 'images') ($edgeEvidenceId + '.jpg')) -PathType Leaf)) `
+        '作業用記録を片付けても元台帳と証拠画像がプロジェクト側に残る'
+    $decisionsPath = Join-Path $archiveRoot 'transformations.jsonl'
+    $decisions = @([IO.File]::ReadAllLines($decisionsPath) | ForEach-Object { $_ | ConvertFrom-Json })
+    Add-Result ($decisions.Count -eq 2 -and @($decisions | Where-Object accepted).Count -eq 2 -and
+        @($decisions | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.reason) }).Count -eq 2) `
+        '各候補の採否と変換理由を追記履歴へ保存する'
+    $importProject = Save-MbProject -Project $importProject -Path $importProjectPath
+    Add-Result (@($importProject.evidenceSessions).Count -eq 1) '証拠参照を含むプロジェクトを検証して再保存できる'
+
+    $gapJobId = 'record-' + [guid]::NewGuid().ToString('N')
+    $gapLedgerPath = Join-Path $importRoot 'gap-evidence-ledger.jsonl'
+    [IO.File]::WriteAllLines($gapLedgerPath, @(
+        ([ordered]@{ recordType='capture-start'; formatVersion=2; sessionId=$gapJobId; mouseHook=$true; keyboardHook=$true; completeness='no-known-gaps' } | ConvertTo-Json -Compress),
+        ([ordered]@{ recordType='operation'; id=$edgeEvidenceId; sessionId=$gapJobId; kind='click'; timeMs=1000; image=($edgeEvidenceId + '.jpg') } | ConvertTo-Json -Compress),
+        ([ordered]@{ recordType='operation'; id=$excelEvidenceId; sessionId=$gapJobId; kind='click'; timeMs=2200; image=($excelEvidenceId + '.jpg') } | ConvertTo-Json -Compress),
+        ([ordered]@{ recordType='capture-gap'; formatVersion=2; sessionId=$gapJobId; droppedMouseClicks=1; droppedKeyboardActivities=0; reason='capture-queue-overflow' } | ConvertTo-Json -Compress),
+        ([ordered]@{ recordType='capture-end'; formatVersion=2; sessionId=$gapJobId; operationCount=2; reason='stopped'; completeness='known-gaps'; warning='操作が短時間に集中しました。' } | ConvertTo-Json -Compress)
+    ), [Text.UTF8Encoding]::new($false))
+    $gapJob = [pscustomobject]@{
+        JobId = $gapJobId; EventsPath = $eventsPath; EventsDirectory = $eventDirectory
+        EvidenceDirectory = $evidenceDirectory; LedgerPath = $gapLedgerPath
+        NarrationPath = (Join-Path $importRoot 'narration.jsonl')
+    }
+    & (Get-Module ManualBuilder.RecorderServer) { param($Job) $script:MbRecordingJob = $Job } $gapJob
+    $gapProject = New-MbProject
+    $gapProjectPath = Join-Path $importRoot 'gap-project.json'
+    [void](Import-MbRecordedEvents -Project $gapProject -ProjectPath $gapProjectPath -SheetId $gapProject.sheets[0].id)
+    Add-Result ([string]$gapProject.evidenceSessions[0].captureCompleteness -eq 'known-gaps' -and
+        [string]$gapProject.evidenceSessions[0].captureWarning -eq '操作が短時間に集中しました。') `
+        '既知の取りこぼしを証拠セッションへ保存して確認対象にできる'
 } finally {
     & (Get-Module ManualBuilder.RecorderServer) { $script:MbRecordingJob = $null }
     if ($beforeBitmap) { $beforeBitmap.Dispose() }
@@ -666,6 +964,15 @@ $sameNameDifferentFields = @(
     [pscustomobject]@{ index = 2; timeMs = 2000; kind = 'input'; targetType = 'ControlType.Edit'; targetName = '値'; windowTitle = '設定'; rect = [pscustomobject]@{ x1 = 0.1; y1 = 0.6; x2 = 0.3; y2 = 0.7 } }
 )
 Add-Result (@(Merge-MbRecordedEditInteractions -Events $sameNameDifferentFields).Count -eq 2) '同じ名前でも位置が違う入力欄を誤ってまとめない'
+
+$unknownFieldRect = [pscustomobject]@{ x1 = 0.20; y1 = 0.20; x2 = 0.24; y2 = 0.24 }
+$unknownFieldEvents = @(
+    [pscustomobject]@{ index = 1; timeMs = 1000; kind = 'click'; targetType = 'ControlType.ClickPoint'; targetName = ''; windowTitle = '業務アプリ'; rect = $unknownFieldRect },
+    [pscustomobject]@{ index = 2; timeMs = 2300; kind = 'input'; targetType = 'ControlType.ClickPoint'; targetName = ''; windowTitle = '業務アプリ'; rect = $unknownFieldRect }
+)
+$mergedUnknownFieldEvents = @(Merge-MbRecordedEditInteractions -Events $unknownFieldEvents)
+Add-Result ($mergedUnknownFieldEvents.Count -eq 1 -and [string]$mergedUnknownFieldEvents[0].kind -eq 'input') `
+    '対象名を取得できない入力欄も同じクリック位置なら1手順へまとめる'
 
 $repeatedClicks = @(
     [pscustomobject]@{ index = 1; timeMs = 1000; kind = 'click'; windowTitle = 'Book1 - Excel'; targetName = 'F8'; targetType = 'ControlType.DataItem' },
