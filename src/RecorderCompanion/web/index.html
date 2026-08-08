@@ -59,8 +59,8 @@
         <p class="help-text" id="help-text" role="status" aria-live="polite">対象アプリでいつもどおり操作してください。クリックや入力は自動で記録されます。</p>
         <div class="command-actions">
           <button class="secondary-button" id="pause-button" type="button">一時停止</button>
-          <button class="secondary-button" id="undo-button" type="button" disabled>直前の記録を削除</button>
-          <button class="secondary-button" id="result-button" type="button" disabled>結果画面を追加</button>
+          <button class="secondary-button" id="undo-button" type="button" disabled>直前の操作を取り消す</button>
+          <button class="secondary-button" id="result-button" type="button" disabled>結果画像を追加</button>
           <button class="primary-button" id="finish-button" type="button" disabled>終了して確認</button>
         </div>
       </footer>
@@ -78,15 +78,15 @@
       </div>
       <div class="compact-actions" aria-label="記録の操作">
         <button class="icon-text-button" id="compact-pause-button" type="button">一時停止</button>
-        <button class="icon-text-button" id="compact-undo-button" type="button" disabled>直前を削除</button>
+        <button class="icon-text-button" id="compact-undo-button" type="button" disabled>直前を取り消す</button>
         <button class="primary-button" id="compact-finish-button" type="button" disabled>終了して確認</button>
         <button class="quiet-button" id="expand-button" type="button">直前画像を確認</button>
       </div>
     </section>
-  </div>
+  </dialog>
 
-  <div class="modal-backdrop" id="close-confirm" hidden>
-    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="close-title" aria-describedby="close-description">
+  <dialog class="modal" id="close-confirm" aria-labelledby="close-title" aria-describedby="close-description">
+    <section>
       <div class="modal-icon" aria-hidden="true">?</div>
       <h2 id="close-title">記録を終了しますか？</h2>
       <p id="close-description">終了すると、ManualBuilderで記録した操作を確認できます。</p>

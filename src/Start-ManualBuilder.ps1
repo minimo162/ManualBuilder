@@ -766,6 +766,49 @@ function Open-MbWordExportResult {
     return $status
 }
 
+# 保存の失敗を、利用者が次の一手を選べる日本語へ丸める。
+#
+# 例外の原文（英語のIOException等）は画面へ出さない。読み手は部内の非エンジニアで、
+# 原文からは「待てば直る」のか「担当者に言うべき」のかが判断できない。
+# 原因追跡用の原文はサーバーのログへ残す。
+function Get-MbSaveFailureMessage {
+    param([Parameter(Mandatory = $true)][System.Management.Automation.ErrorRecord]$ErrorRecord)
+
+    $exception = $ErrorRecord.Exception
+    $detail = [string]$exception.Message
+    $tail = ' 入力内容はこの画面に残っています。'
+
+    # ディスク・権限・ロックはこちらの都合ではないので、待つ／担当者に言う、を選べるようにする。
+    if ($exception -is [UnauthorizedAccessException]) {
+        Write-MbLog ('保存に失敗しました: ' + $detail) 'WARN'
+        return [pscustomobject]@{ StatusCode = 409; Message = ('保存先に書き込む権限がありません。' + $tail + ' 保存先の設定を担当者へご確認ください。') }
+    }
+    if ($exception -is [IO.IOException]) {
+        Write-MbLog ('保存に失敗しました: ' + $detail) 'WARN'
+        if ($detail -match 'space|容量|full') {
+            return [pscustomobject]@{ StatusCode = 409; Message = ('保存先の空き容量が足りません。' + $tail + ' 不要なファイルを削除してから、もう一度入力してください。') }
+        }
+        return [pscustomobject]@{ StatusCode = 409; Message = ('保存できません。ほかのアプリがファイルを使っています。' + $tail + ' 少し待ってから、もう一度入力してください。') }
+    }
+
+    # 入力の検証エラー（上限超過・対象なし等）は、モジュール側が日本語で理由を返している。
+    # これは利用者が直せる内容なので、丸めずそのまま伝える。
+    if (-not [string]::IsNullOrWhiteSpace($detail) -and $detail -notmatch '^[\x20-\x7E]+$') {
+        return [pscustomobject]@{ StatusCode = 400; Message = ($detail + $tail) }
+    }
+    Write-MbLog ('保存に失敗しました: ' + $detail) 'WARN'
+    return [pscustomobject]@{ StatusCode = 400; Message = ('保存できません。' + $tail + ' もう一度入力すると保存されます。') }
+}
+
+function Write-MbSaveFailureResponse {
+    param(
+        [Parameter(Mandatory = $true)][System.Net.HttpListenerContext]$Context,
+        [Parameter(Mandatory = $true)][System.Management.Automation.ErrorRecord]$ErrorRecord
+    )
+    $failure = Get-MbSaveFailureMessage -ErrorRecord $ErrorRecord
+    Write-MbResponse $Context ([string]$failure.Message) ([int]$failure.StatusCode) 'text/plain; charset=utf-8'
+}
+
 function Write-MbResponse {
     param(
         [Parameter(Mandatory = $true)][System.Net.HttpListenerContext]$Context,
@@ -799,7 +842,7 @@ function Write-MbFile {
     )
 
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        Write-MbResponse -Context $Context -Body 'not found' -StatusCode 404 -ContentType 'text/plain; charset=utf-8'
+        Write-MbResponse -Context $Context -Body 'この操作は見つかりませんでした。ブラウザーを再読み込みしてください。' -StatusCode 404 -ContentType 'text/plain; charset=utf-8'
         return
     }
     $bytes = [IO.File]::ReadAllBytes($Path)
@@ -1161,7 +1204,7 @@ function Invoke-MbRoute {
             $image = @($project.images | Where-Object { $_.id -eq $imageId }) | Select-Object -First 1
             $imagePath = Get-MbImageFilePath -Project $project -ProjectPath $ProjectPath -ImageId $imageId
             if (-not $image -or -not $imagePath -or -not (Test-Path -LiteralPath $imagePath -PathType Leaf)) {
-                Write-MbResponse $Context 'not found' 404 'text/plain; charset=utf-8'
+                Write-MbResponse $Context 'この操作は見つかりませんでした。ブラウザーを再読み込みしてください。' 404 'text/plain; charset=utf-8'
                 return
             }
             Write-MbFile -Context $Context -Path $imagePath -ContentType ([string]$image.mimeType)
@@ -1172,7 +1215,7 @@ function Invoke-MbRoute {
         if ($path -match '^/images/recording/(?<name>event-\d{3}(?:-result)?\.jpg)$') {
             $recordedPath = Get-MbRecordedEventImagePath -FileName ([string]$Matches['name'])
             if ([string]::IsNullOrWhiteSpace($recordedPath)) {
-                Write-MbResponse $Context 'not found' 404 'text/plain; charset=utf-8'
+                Write-MbResponse $Context 'この操作は見つかりませんでした。ブラウザーを再読み込みしてください。' 404 'text/plain; charset=utf-8'
                 return
             }
             Write-MbFile -Context $Context -Path $recordedPath -ContentType 'image/jpeg'
@@ -1181,7 +1224,7 @@ function Invoke-MbRoute {
         if ($path -match '^/images/recording/(?<name>frame-\d{5}\.jpg)$') {
             $recordedPath = Get-MbRecordedFrameImagePath -FileName ([string]$Matches['name'])
             if ([string]::IsNullOrWhiteSpace($recordedPath)) {
-                Write-MbResponse $Context 'not found' 404 'text/plain; charset=utf-8'
+                Write-MbResponse $Context 'この操作は見つかりませんでした。ブラウザーを再読み込みしてください。' 404 'text/plain; charset=utf-8'
                 return
             }
             Write-MbFile -Context $Context -Path $recordedPath -ContentType 'image/jpeg'
@@ -1260,12 +1303,12 @@ function Invoke-MbRoute {
                 Write-MbResponse $Context ($capability | ConvertTo-Json -Depth 4 -Compress) 200 'application/json; charset=utf-8'
                 return
             }
-            default { Write-MbResponse $Context 'not found' 404 'text/plain; charset=utf-8'; return }
+            default { Write-MbResponse $Context 'この操作は見つかりませんでした。ブラウザーを再読み込みしてください。' 404 'text/plain; charset=utf-8'; return }
         }
     }
 
     if ($request.HttpMethod -ne 'POST') {
-        Write-MbResponse $Context 'method not allowed' 405 'text/plain; charset=utf-8'
+        Write-MbResponse $Context 'この操作は実行できません。ブラウザーを再読み込みしてください。' 405 'text/plain; charset=utf-8'
         return
     }
 
@@ -1845,7 +1888,7 @@ function Invoke-MbRoute {
                 [void](Save-MbProject -Project $project -Path $ProjectPath)
                 Write-MbResponse $Context (ConvertTo-MbSaveStatusHtml)
             } catch {
-                Write-MbResponse $Context (ConvertTo-MbSaveStatusHtml -Message $_.Exception.Message -State error)
+                Write-MbSaveFailureResponse -Context $Context -ErrorRecord $_
             }
             return
         }
@@ -1875,7 +1918,7 @@ function Invoke-MbRoute {
                 [void](Save-MbProject -Project $project -Path $ProjectPath)
                 Write-MbResponse $Context (ConvertTo-MbSaveStatusHtml)
             } catch {
-                Write-MbResponse $Context (ConvertTo-MbSaveStatusHtml -Message $_.Exception.Message -State error) 400
+                Write-MbSaveFailureResponse -Context $Context -ErrorRecord $_
             }
             return
         }
@@ -1885,7 +1928,7 @@ function Invoke-MbRoute {
                 [void](Save-MbProject -Project $project -Path $ProjectPath)
                 Write-MbResponse $Context (ConvertTo-MbSaveStatusHtml)
             } catch {
-                Write-MbResponse $Context (ConvertTo-MbSaveStatusHtml -Message $_.Exception.Message -State error)
+                Write-MbSaveFailureResponse -Context $Context -ErrorRecord $_
             }
             return
         }
@@ -1922,7 +1965,7 @@ function Invoke-MbRoute {
                 [void](Save-MbProject -Project $project -Path $ProjectPath)
                 Write-MbResponse $Context (ConvertTo-MbSaveStatusHtml)
             } catch {
-                Write-MbResponse $Context (ConvertTo-MbSaveStatusHtml -Message $_.Exception.Message -State error)
+                Write-MbSaveFailureResponse -Context $Context -ErrorRecord $_
             }
             return
         }
@@ -1942,7 +1985,7 @@ function Invoke-MbRoute {
                 [void](Save-MbProject -Project $project -Path $ProjectPath)
                 Write-MbResponse $Context (ConvertTo-MbSaveStatusHtml)
             } catch {
-                Write-MbResponse $Context (ConvertTo-MbSaveStatusHtml -Message $_.Exception.Message -State error) 400
+                Write-MbSaveFailureResponse -Context $Context -ErrorRecord $_
             }
             return
         }
@@ -1974,7 +2017,7 @@ function Invoke-MbRoute {
                 [void](Save-MbProject -Project $project -Path $ProjectPath)
                 Write-MbResponse $Context (ConvertTo-MbSaveStatusHtml)
             } catch {
-                Write-MbResponse $Context (ConvertTo-MbSaveStatusHtml -Message $_.Exception.Message -State error) 400
+                Write-MbSaveFailureResponse -Context $Context -ErrorRecord $_
             }
             return
         }
@@ -2048,7 +2091,7 @@ function Invoke-MbRoute {
                 $script:CaptureVersion++
                 Write-MbResponse $Context (ConvertTo-MbSaveStatusHtml)
             } catch {
-                Write-MbResponse $Context (ConvertTo-MbSaveStatusHtml -Message $_.Exception.Message -State error) 400
+                Write-MbSaveFailureResponse -Context $Context -ErrorRecord $_
             }
             return
         }
@@ -2084,7 +2127,7 @@ function Invoke-MbRoute {
             }
             return
         }
-        default { Write-MbResponse $Context 'not found' 404 'text/plain; charset=utf-8'; return }
+        default { Write-MbResponse $Context 'この操作は見つかりませんでした。ブラウザーを再読み込みしてください。' 404 'text/plain; charset=utf-8'; return }
     }
 }
 
@@ -2158,12 +2201,13 @@ try {
 
     Write-Host ''
     Write-Host '======================================================================' -ForegroundColor Cyan
-    Write-Host '  ManualBuilder Phase 1 foundation' -ForegroundColor Cyan
+    Write-Host '  ManualBuilder' -ForegroundColor Cyan
     Write-Host '======================================================================' -ForegroundColor Cyan
     Write-MbLog "起動しました: $url" 'OK'
     Write-MbLog "ユーザーデータ: $DataRoot" 'INFO'
     Write-MbLog "プロジェクト: $ProjectPath" 'INFO'
-    Write-Host '  停止するには画面の「終了」または Ctrl+C を使用してください。' -ForegroundColor Yellow
+    Write-Host '  この黒い画面はManualBuilder本体です。閉じるとブラウザーの画面が使えなくなります。' -ForegroundColor Yellow
+    Write-Host '  終了するときは、ブラウザー画面の［…］→［ManualBuilderを終了］を使ってください。' -ForegroundColor Yellow
     Write-Host ''
 
     if (-not $NoBrowser) {
@@ -2186,12 +2230,13 @@ try {
         } catch [System.UnauthorizedAccessException] {
             # 応答の送信途中で失敗した場合、再送信も失敗する。ここで握り潰さないとサーバー全体が停止する。
             if ($context) {
-                try { Write-MbResponse $context $_.Exception.Message 403 'text/plain; charset=utf-8' } catch { }
+                # 内部の識別文（トークン・Origin・Host）は画面へ出さない。利用者にできるのは再読み込みだけ。
+                try { Write-MbResponse $context '画面の情報が古くなっています。ブラウザーを再読み込みしてから、もう一度お試しください。入力内容は保存されています。' 403 'text/plain; charset=utf-8' } catch { }
             }
             Write-MbLog $_.Exception.Message 'WARN'
         } catch {
             if ($context) {
-                try { Write-MbResponse $context '処理中にエラーが発生しました。入力内容はプロジェクトファイルを確認してください。' 500 'text/plain; charset=utf-8' } catch { }
+                try { Write-MbResponse $context 'ManualBuilderの内部で問題が起きました。入力内容は保存されています。アプリを再起動してから、もう一度お試しください。' 500 'text/plain; charset=utf-8' } catch { }
             }
             Write-MbLog $_.Exception.Message 'ERROR'
         } finally {

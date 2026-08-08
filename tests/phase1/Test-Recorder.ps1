@@ -32,12 +32,14 @@ Add-Result (($recorderServerSourceText -match 'Invoke-RecorderCompanion\.ps1') -
     ($recorderServerSourceText -match 'ControllerProcessIdentity') -and
     ($recorderServerSourceText -match '\$controllerReadyTimeoutMs\s*=\s*15000') -and
     ($recorderControllerSourceText -match 'Topmost = true') -and
-    ($recorderServerSourceText -match 'WebView2 Runtimeを確認')) `
+    ($recorderServerSourceText -match '記録レシートを開けませんでした')) `
     '対象アプリ上へWebView2記録モニターだけを起動し、初回準備を十分待って失敗時は記録を開始しない'
-Add-Result (($recorderControllerHtmlText -match '直前の記録を削除') -and
-    ($recorderControllerHtmlText -match '結果画面を追加') -and
+# 呼称は本体画面と揃える。このアプリの「削除」は元に戻せる操作なので、戻せない取り消しには使わない。
+Add-Result (($recorderControllerHtmlText -match '直前の操作を取り消す') -and
+    ($recorderControllerHtmlText -match '結果画像を追加') -and
+    ($recorderControllerHtmlText -notmatch '直前の記録を削除') -and
     ($recorderControllerHtmlText -match '終了して確認')) `
-    'WebView2記録モニターから削除・結果追加・終了を操作できる'
+    'WebView2記録レシートから取り消し・結果画像追加・終了を操作できる'
 Add-Result (($recorderSourceText -match '\$ManualResultPath') -and
     ($recorderSourceText -match 'ResultRequestId') -and
     ($recorderControllerSourceText -match 'SetForegroundWindow') -and

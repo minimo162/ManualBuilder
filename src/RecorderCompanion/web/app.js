@@ -124,11 +124,11 @@
     elements.helpText.setAttribute('aria-label', state.help || '');
 
     setButton(elements.pauseButton, state.pauseLabel || '一時停止', state.canPause);
-    setButton(elements.undoButton, state.undoLabel || '直前の記録を削除', state.canUndo);
-    setButton(elements.resultButton, state.resultLabel || '結果画面を追加', state.canResult);
+    setButton(elements.undoButton, state.undoLabel || '直前の操作を取り消す', state.canUndo);
+    setButton(elements.resultButton, state.resultLabel || '結果画像を追加', state.canResult);
     setButton(elements.finishButton, state.finishLabel || '終了して確認', state.canFinish);
     setButton(elements.compactPauseButton, state.pauseLabel || '一時停止', state.canPause);
-    setButton(elements.compactUndoButton, state.undoLabel === '削除中…' ? '削除中…' : '直前を削除', state.canUndo);
+    setButton(elements.compactUndoButton, state.undoLabel === '取り消しています…' ? '取り消し中…' : '直前を取り消す', state.canUndo);
     setButton(elements.compactFinishButton, state.finishLabel || '終了して確認', state.canFinish);
     renderReceipts();
     renderPreview();
@@ -161,14 +161,16 @@
     const message = event.data || {};
     if (message.type === 'state') renderState(message);
     if (message.type === 'show-close-confirm') {
-      elements.closeConfirm.hidden = false;
+      if (!elements.closeConfirm.open) elements.closeConfirm.showModal();
       elements.cancelCloseButton.focus();
     }
-    if (message.type === 'hide-close-confirm') elements.closeConfirm.hidden = true;
+    if (message.type === 'hide-close-confirm' && elements.closeConfirm.open) elements.closeConfirm.close();
   });
 
-  window.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && !elements.closeConfirm.hidden) send({ type: 'cancel-close' });
+  // Escは <dialog> が拾う。閉じるのはホスト側の hide-close-confirm を待つ。
+  elements.closeConfirm.addEventListener('cancel', (event) => {
+    event.preventDefault();
+    send({ type: 'cancel-close' });
   });
 
   send({ type: 'ready' });

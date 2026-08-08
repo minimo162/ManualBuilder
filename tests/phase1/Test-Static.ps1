@@ -296,7 +296,8 @@ Add-Result ($cssText -match 'step-nav__item:nth-last-child\(-n \+ 3\) \.step-nav
 Add-Result (($webModuleText -notmatch 'data-step-card-delete') -and ($webModuleText -notmatch 'data-step-move=')) '編集カードから重複する整理操作を外す'
 Add-Result (($webModuleText -match 'data-add-step-end[^>]*>＋ 手順を追加') -and ($jsText -match 'addStepAtEnd')) '通常の追加は一覧末尾へ統一する'
 Add-Result (($webModuleText -notmatch 'data-step-select-mode|data-step-select"') -and ($cssText -notmatch '\.step-nav__select|\.step-nav__drag')) '専用の選択ボタン・チェックボックス・取っ手を使わない'
-Add-Result (($jsText -notmatch '⠿で並べ替え') -and ($jsText -match 'カードをつかんで並べ替え')) 'ドラッグ後も専用取っ手の古い案内へ戻さない'
+Add-Result (($jsText -notmatch '⠿で並べ替え') -and ($jsText -match '手順をつかんで並べ替え') -and
+    ($webModuleText -match '手順をつかんで並べ替え')) 'ドラッグ前後で並べ替え案内の文言を変えない'
 Add-Result (($jsText -match 'selectStepFromPointer') -and ($jsText -match 'event\.ctrlKey \|\| event\.metaKey') -and ($jsText -match 'event\.shiftKey')) 'Ctrl・Command追加選択とShift範囲選択を実装する'
 Add-Result (($webModuleText -match 'editor-shortcut') -and ($jsText -match "event\.key === 'Enter'") -and
     ($jsText -match 'setActiveStep\(nextCard\.dataset\.stepId\)')) 'Ctrl+Enterで同じ入力欄のまま次の手順へ進める'
@@ -388,6 +389,8 @@ Add-Result ($projectModuleText -match 'Add-MbPropertyIfMissing \$step ''capture'
 $recorderModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.Recorder.psm1'), [Text.Encoding]::UTF8)
 $recorderServerText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.RecorderServer.psm1'), [Text.Encoding]::UTF8)
 $recorderCopilotText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.RecorderCopilot.psm1'), [Text.Encoding]::UTF8)
+$controllerHtmlText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\RecorderCompanion\web\index.html'), [Text.Encoding]::UTF8)
+$wordModuleText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.Word.psm1'), [Text.Encoding]::UTF8)
 $localDraftText = [IO.File]::ReadAllText((Join-Path $repoRoot 'src\ManualBuilder.LocalDraft.psm1'), [Text.Encoding]::UTF8)
 Add-Result ($recorderServerText -notmatch '(?m)^Import-Module .+ -Force$') '入れ子のモジュールが共有コマンドを強制再読込しない'
 Add-Result ($recorderModuleText -match 'AutomationElement\]::FromPoint') '押した位置のコントロールをUI Automationから取る'
@@ -454,8 +457,8 @@ Add-Result (($serverText -match 'localProposals = \$localProposals') -and
     ($recorderServerText -match 'Get-MbRecordedLocalProposals') -and
     ($jsText -match 'renderRecordedProposals\(recorder\.localProposals\)')) `
     '安定フレームのローカル候補を確認する'
-Add-Result (($jsText -match 'まだ取り込んでいない記録を破棄しますか') -and
-    ($jsText -match "dialog\.addEventListener\('cancel'")) '記録中・確認中の誤操作で結果を即破棄しない'
+Add-Result (($jsText -match '取り込んでいない記録があります。捨てて閉じますか') -and
+    ($jsText -match "dialog\.addEventListener\('cancel'")) '記録中の誤操作で結果を即破棄しない'
 Add-Result (($jsText -match 'recorder-proposal__shot') -and
     ($recorderServerText -match 'Test-MbRecordedSelectionAnchorContext') -and
     ($recorderServerText -match 'Set-MbStepAnnotations')) 'ローカル候補の操作前後と赤枠候補を確認できる'
@@ -488,8 +491,9 @@ Add-Result (($jsText -match 'data-recorder-filter') -and
     ($jsText -match 'recorder-shot-preview') -and
     ($cssText -match '\.recorder-review-tools\s*\{[\s\S]*?position: sticky')) '長い記録を絞り込み、一括解除し、画像を拡大確認できる'
 Add-Result (($webModuleText -match 'data-step-edit') -and
-    ($jsText -match "control\.tabIndex = -1") -and
-    ($jsText -match "applyStepView\('focus'\)")) '一覧確認では操作数を絞り、選んだ1件を集中編集できる'
+# 既定表示のこのモードで入力欄も画像編集も見えたまま操作できるため、Tab順から外さない。
+    ($jsText -notmatch "control\.tabIndex = -1") -and
+    ($jsText -match "applyStepView\('focus'\)")) '一覧確認の入力欄をキーボードから操作でき、選んだ1件を集中編集もできる'
 Add-Result (($jsText -match '普段どおり操作すると') -and
     ($jsText -match '手順候補を作成') -and
     ($jsText -notmatch '録画全体から必要な場面')) '操作記録と既存録画を混同しない案内にする'
@@ -538,6 +542,30 @@ Add-Result ($serverText -notmatch '/api/narration/transcribe') '録画からの�
 Add-Result ($sceneText2 -notmatch 'extractNarration') '録画から音声を取り出さない'
 Add-Result (($webModuleText -notmatch '文章をまとめて整える') -and
     ($serverText -notmatch '/api/copilot/draft')) '文章整形を外部AIへ依頼する機能を持たない'
+# --- 失敗時に利用者が次の一手を選べること ---
+# 例外の原文・HTTPステータス・内部識別子を画面へ出さない。読み手は部内の非エンジニアで、
+# 英語のHRESULTや「HTTP 500」からは待てば直るのか担当者に言うべきかを判断できない。
+Add-Result ($jsText -notmatch 'HTTP \$\{') '通信失敗をHTTPステータスのまま表示しない'
+Add-Result ($jsText -match 'const describeHttpFailure') '通信失敗を日本語の次の一手へ言い換える'
+Add-Result (($wordModuleText -notmatch 'Wordファイルを作成できませんでした: ') -and
+    ($excelModuleText -notmatch 'Excelファイルを作成できませんでした: ')) 'Office出力の失敗にCOMの例外文をそのまま出さない'
+Add-Result (($serverText -match 'function Get-MbSaveFailureMessage') -and
+    ($serverText -notmatch 'ConvertTo-MbSaveStatusHtml -Message')) '保存失敗に例外の原文を渡さない'
+Add-Result (($serverText -notmatch "'not found'") -and ($serverText -notmatch "'method not allowed'")) '英語のままの応答を画面へ返さない'
+Add-Result (($jsText -match 'data-export-retry') -and ($jsText -match 'data-word-export-retry')) '出力に失敗したその場で作り直せる'
+
+# 記録レシートの×は「終了して確認」へ進むのに、本体の×は破棄だった。
+Add-Result (($jsText -match '記録中です。') -and ($jsText -match '記録レシートの')) '記録中の誤った出口で記録を捨てない'
+
+# --- 呼称の統一 ---
+Add-Result (($jsText -notmatch '操作後画像を追加') -and ($webModuleText -notmatch '比較画像を追加') -and
+    ($controllerHtmlText -notmatch '結果画面を追加')) '操作後の画像を「結果画像」で統一する'
+# このアプリの「削除」は必ず元に戻せる操作。戻せない直前取り消しには使わない。
+Add-Result (($controllerHtmlText -notmatch '直前の記録を削除') -and
+    ($controllerHtmlText -match '直前の操作を取り消す')) '戻せない直前取り消しに「削除」を使わない'
+Add-Result (($jsText -notmatch '確認待ち') -and ($webModuleText -notmatch '確認待ち')) '要確認の状態を1つの呼称で示す'
+Add-Result ($jsText -notmatch '差し替えできません') '可能形の誤りを画面へ出さない'
+
 Add-Result ($serverText -notmatch 'PowerPoint') 'PowerPoint出力を持たない'
 Add-Result ($jsText -notmatch '(?i)powerpoint') '画面にPowerPoint出力が残っていない'
 

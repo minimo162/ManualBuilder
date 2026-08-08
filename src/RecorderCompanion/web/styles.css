@@ -285,3 +285,19 @@ body.is-compact .window-button { min-height: 34px; width: 36px; }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }
+
+/* 終了確認はネイティブの <dialog>。背景の無効化とフォーカスの閉じ込めをブラウザーに任せる。 */
+dialog.modal {
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  padding: 26px;
+  border: 1px solid rgba(205, 214, 227, .9);
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 24px 70px rgba(18, 29, 49, .24);
+}
+
+dialog.modal::backdrop {
+  background: rgba(18, 29, 49, .38);
+}

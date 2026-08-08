@@ -372,7 +372,7 @@ function Start-MbRecordingJob {
             Start-Sleep -Milliseconds $controllerReadyIntervalMs
         }
         if (-not (Test-Path -LiteralPath $controllerReadyPath -PathType Leaf)) {
-            throw '記録モニターの画面を準備できませんでした。WebView2 Runtimeを確認してください。'
+            throw '記録レシートを開けませんでした。ManualBuilderを再起動してから、もう一度お試しください。'
         }
     } catch {
         try { [IO.File]::WriteAllText($stopPath, 'stop', (New-Object Text.UTF8Encoding($false))) } catch { }

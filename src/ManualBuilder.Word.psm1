@@ -556,7 +556,9 @@ function Invoke-MbWordExport {
                 'MB_CONNECTED_TO_EXISTING_WORD' { '既存のWordへ接続したため、安全のため作成を中止しました。Wordを閉じて再実行してください。' }
                 'MB_WORD_OWNERSHIP_UNRESOLVED' { '作成用Wordの安全確認ができませんでした。' }
                 'MB_WORD_OWNERSHIP_API_UNAVAILABLE' { 'Wordの所有確認に必要なWindows機能を利用できません。' }
-                default { 'Wordファイルを作成できませんでした: ' + $message }
+                # COMの例外文（"Exception from HRESULT: 0x800A03EC" など）をそのまま画面へ出さない。
+                # Excel側(ManualBuilder.Excel.psm1)と同じ扱いに揃える。原文は errorCode に残る。
+                default { 'Wordファイルを作成できませんでした。Wordをすべて閉じてから、もう一度お試しください。マニュアルの入力内容は変わっていません。解決しない場合はExcelでの作成もお試しください。' }
             }
         }
     } finally {
