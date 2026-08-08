@@ -35,8 +35,12 @@ try {
 
     $dataRoot = Join-Path $localApplicationData 'ManualBuilder\data'
     $layout = Get-MbStorageLayout -AppRoot $appRoot -DataRoot $dataRoot
-    Assert-Mb ([string]$layout.RuntimePath -eq (Join-Path $dataRoot 'runtime.json')) 'runtime情報をユーザーデータ配下にする'
-    Assert-Mb ([string]$layout.ExportJobsRoot -eq (Join-Path $dataRoot 'export-jobs')) 'Office一時ジョブをユーザーデータ配下にする'
+    # Get-MbStorageLayout は GetFullPath で正規化して返すため、期待値も同じ形にそろえる。
+    # 生の Join-Path と比べると、TEMP の綴りが環境で変わったときだけ落ちる。
+    $expectedRuntimePath = [IO.Path]::GetFullPath((Join-Path $dataRoot 'runtime.json'))
+    $expectedExportJobsRoot = [IO.Path]::GetFullPath((Join-Path $dataRoot 'export-jobs'))
+    Assert-Mb ([string]$layout.RuntimePath -eq $expectedRuntimePath) ('runtime情報をユーザーデータ配下にする (実際: ' + [string]$layout.RuntimePath + ' / 期待: ' + $expectedRuntimePath + ')')
+    Assert-Mb ([string]$layout.ExportJobsRoot -eq $expectedExportJobsRoot) ('Office一時ジョブをユーザーデータ配下にする (実際: ' + [string]$layout.ExportJobsRoot + ' / 期待: ' + $expectedExportJobsRoot + ')')
 
     $migration = Initialize-MbUserStorage -Layout $layout -MigrateLegacy
     Assert-Mb $migration.Migrated '既存のdefaultプロジェクトを初回だけ移行する'
