@@ -83,6 +83,4 @@ python tools/evals/evaluate_recorder_copilot_runs.py `
 - 読み込み中タイトルのフレーム、架空のアプリ切替、記録開始・停止の混入
 - worker未完了、packet failure、status/resultのjob不一致
 
-生成した `machine.json` と独立エージェント2名のレビューを
-`aggregate_copilot_reviews.py` へ渡します。機械評価またはどちらかの文章評価が
-不合格なら、最終結果も不合格です。
+機械評価が不合格なら、最終結果も不合格です。

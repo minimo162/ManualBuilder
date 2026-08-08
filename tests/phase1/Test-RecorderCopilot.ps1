@@ -31,57 +31,8 @@ try {
         '録画workerはPIDだけでなく名前・開始時刻・実行ファイルが一致する所有プロセスだけを扱う'
 } finally { $currentRecorderProcess.Dispose() }
 
-$workerSource = Get-Content -LiteralPath (Join-Path $srcRoot 'Invoke-ManualBuilderRecorderCopilot.ps1') -Raw -Encoding UTF8
-$copilotSource = Get-Content -LiteralPath (Join-Path $srcRoot 'ManualBuilder.Copilot.psm1') -Raw -Encoding UTF8
 $copilotModuleSource = Get-Content -LiteralPath (Join-Path $srcRoot 'ManualBuilder.RecorderCopilot.psm1') -Raw -Encoding UTF8
 $recorderServerSource = Get-Content -LiteralPath (Join-Path $srcRoot 'ManualBuilder.RecorderServer.psm1') -Raw -Encoding UTF8
-$waitResponseSource = [regex]::Match($copilotSource, '(?s)function Wait-MbCopilotResponse.*?(?=function Invoke-MbCopilotRequest)').Value
-$showWindowSource = [regex]::Match($copilotSource, '(?s)function Show-MbCopilotWindow.*?(?=function Get-MbCopilotPromptTailAnchor)').Value
-Add-Result ($workerSource -match "copilot_model\s*=\s*'自動,Automatic,Auto'") '場面選定は高速で安定した自動モデルを使う'
-Add-Result ($workerSource -match '\$maximumAttempts\s*=\s*2' -and $workerSource -match '回答を読み取れませんでした（\{1\}/\{2\}）') `
-    'Copilotの一時的な通信エラーだけ1回再試行できる'
-Add-Result ($workerSource -match "completedBy\s*-eq\s*'service-error'" -and
-    $workerSource -match "ErrorCode 'COPILOT_SERVICE_UNAVAILABLE'" -and
-    $workerSource -match "Properties.Name -contains 'errorCode'") `
-    'M365の確定的なサービスエラーでは同じ画像を再送せずローカル候補へ移る'
-Add-Result ($workerSource -match 'Select-MbRecorderCopilotSourceFrames\s+-Frames \$allFrames\s+-Events \$events\s+-Maximum 20' -and
-    $workerSource -notmatch 'New-MbRecorderLocalFrameCandidates\s+-Frames \$eventWindowFrames' -and
-    $workerSource -notmatch 'Select-MbRecorderCandidateFrames\s+-Frames \$eventWindowFrames' -and
-    $workerSource -match '\$perPacket\s*=\s*1' -and $workerSource -match 'request_timeout\s*=\s*150' -and
-    $workerSource -match '応答を生成しています\|お待ちください\|generating') `
-    'ローカル候補で先に決めず、変化前後を含む最大20コマを読みやすい一覧画像で処理し、生成中の回答へ重ねて再送しない'
-Add-Result ($workerSource -match 'paste証拠がある数式だけ一覧＋原本の2枚' -and
-    $workerSource -match "evidenceKind\s*-eq\s*'paste'" -and
-    $workerSource -match '-AttachPaths @\(\$attachPaths\)') `
-    '通常は一覧1枚、確定後に消える貼り付け数式だけ原寸を加えてM365の過負荷を避ける'
-Add-Result ($workerSource -match 'Test-MbRecorderFrameSetHasMeaningfulChange' -and
-    $workerSource -match '\$incompletePackets\.Count\s*-gt\s*0' -and
-    $workerSource -match '前半だけを採用せず') `
-    '後半の一覧処理に失敗したとき前半だけを完了扱いにしない'
-Add-Result ($workerSource -match 'Repair-MbRecorderExcelInputEventAnchors\s+-Events\s+\$events' -and
-    $recorderServerSource -match 'Repair-MbRecorderExcelInputEventAnchors\s+-Events\s+@\(\$events\)') `
-    '一意に復元したExcelアンカーをAI選定時だけでなく実際の赤枠取り込み時にも使う'
-Add-Result ($workerSource -match 'Add-MbRecorderTitleTransitionProposals\s+-Frames\s+\$frames' -and
-    $workerSource -match 'Merge-MbRecorderDuplicateTransitionProposals\s+-Frames\s+\$frames' -and
-    $copilotModuleSource -match 'function Add-MbRecorderTitleTransitionProposals' -and
-    $copilotModuleSource -match '\$afterChange\s*-lt\s*0\.02') `
-    'Copilotが落とした同一ブラウザー内の明確なページ遷移を補完する'
-Add-Result ($copilotSource -match 'Test-MbCopilotGenerating\s+-WsUrl \$wsUrl' -and
-    $copilotSource -match 'Invoke-MbClickStop\s+-WsUrl \$wsUrl' -and
-    $copilotSource -match '前回の回答生成が残っているため停止') `
-    'タイムアウト後に残った回答生成を停止してから新しい画像を送る'
-Add-Result ($copilotSource -match 'function Invoke-MbClickRetry' -and
-    $copilotSource -match "M365のサービスエラーに対して画面の［再試行］を1回実行") `
-    'M365自身の再試行ボタンで添付を上げ直さず一度だけ回復を試す'
-Add-Result ($waitResponseSource -match "completedBy = 'service-error'" -and
-    $showWindowSource -notmatch 'Test-MbCopilotServiceErrorText\s+-Text\s+\$region') `
-    'サービスエラーを回答待機中に即時検出し画面表示関数で未定義変数を参照しない'
-Add-Result ($copilotSource -match '\$sendWaitSeconds\s*=\s*if\s*\(@\(\$AttachPaths\)\.Count\s*-gt\s*1\)\s*\{\s*60\s*\}' -and
-    $copilotSource -match 'Get-Date\)\.AddSeconds\(\$sendWaitSeconds\)') `
-    '複数画像の添付処理が終わるまで送信を最大60秒待つ'
-Add-Result ($copilotSource -match '\$attachmentSettleSeconds\s*=\s*if\s*\(@\(\$AttachPaths\)\.Count\s*-gt\s*1\)\s*\{\s*8\s*\}\s*else\s*\{\s*3\s*\}' -and
-    $copilotSource -match '添付画像の内部処理を待ちます') `
-    '添付カード表示後もM365の画像処理を待ってから送信する'
 $recorderSource = Get-Content -LiteralPath (Join-Path $srcRoot 'ManualBuilder.Recorder.psm1') -Raw -Encoding UTF8
 Add-Result ($recorderSource -match 'GetWindowThreadProcessId' -and
     $recorderSource -match 'processName\s*=\s*\$\(if' -and $recorderSource -match 'windowClass\s*=\s*\$\(if') `
@@ -527,7 +478,6 @@ try {
         FramesDirectory = $framesDirectory; FramesPath = $framesPath
         EventsDirectory = $framesDirectory; EventsPath = $eventsPath
         EvidenceDirectory = $evidenceDirectory; LedgerPath = $ledgerPath
-        NarrationPath = (Join-Path $testRoot 'narration.jsonl')
     }
     & (Get-Module ManualBuilder.RecorderServer) { param($Value) $script:MbRecordingJob = $Value } $job
     $directSafetyProject = New-MbProject

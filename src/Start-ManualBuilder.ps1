@@ -35,6 +35,7 @@ Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Web.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Excel.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.Ocr.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.RecorderServer.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'ManualBuilder.VideoScene.psm1') -Force
 
 $storageLayout = Get-MbStorageLayout -AppRoot $appRoot -DataRoot $DataRoot -ProjectPath $ProjectPath -LegacyAppRoot $LegacyAppRoot
 $DataRoot = [string]$storageLayout.DataRoot
@@ -82,98 +83,14 @@ function Write-MbLog {
     Write-Host ((Get-Date).ToString('HH:mm:ss') + " [$Level] " + $Message) -ForegroundColor $color
 }
 
-# 動画ファイルから選ばれた1コマを、外部AIへ送らず編集可能な手順として取り込む。
-function Import-MbVideoScene {
-    param(
-        [Parameter(Mandatory = $true)][object]$Project,
-        [Parameter(Mandatory = $true)][string]$ProjectPath,
-        [Parameter(Mandatory = $true)][string]$SheetId,
-        [Parameter(Mandatory = $true)][byte[]]$Bytes,
-        [int]$TimeMs = 0,
-        [AllowEmptyString()][string]$RectJson = '',
-        [AllowEmptyString()][string]$CandidatesJson = '',
-        [switch]$SkipOcr
-    )
-
-    $sha = [Security.Cryptography.SHA256]::Create()
-    try { $sceneHash = [BitConverter]::ToString($sha.ComputeHash($Bytes)).Replace('-', '') }
-    finally { $sha.Dispose() }
-    $existingImage = @($Project.images | Where-Object { [string]$_.sha256 -eq $sceneHash }) | Select-Object -First 1
-    if ($null -ne $existingImage) {
-        $targetSheet = @($Project.sheets | Where-Object { [string]$_.id -eq $SheetId }) | Select-Object -First 1
-        if ($null -ne $targetSheet) {
-            foreach ($existingStep in @($targetSheet.steps | Where-Object { [string]$_.imageId -eq [string]$existingImage.id })) {
-                if ($existingStep.PSObject.Properties.Name -contains 'capture' -and $null -ne $existingStep.capture -and
-                    [string]$existingStep.capture.kind -eq 'video-scene' -and [int]$existingStep.capture.videoTimeMs -eq $TimeMs) {
-                    return [pscustomobject]@{ status = 'duplicate'; stepId = [string]$existingStep.id; clickLabel = ''; ocrAvailable = $false }
-                }
-            }
-        }
+# 前回が異常終了していると、取り込まれなかった記録フレームがジョブ配下に残る。
+# 撮影した業務画面をディスクへ置き続けないよう、記録が始まる前に片付ける。
+try {
+    $orphanedRecordingJobs = Remove-MbOrphanedRecordingJobs
+    if ($orphanedRecordingJobs -gt 0) {
+        Write-MbLog "前回終了時に残っていた記録データ $orphanedRecordingJobs 件を削除しました。"
     }
-
-    $added = Add-MbImageStep -Project $Project -ProjectPath $ProjectPath -SheetId $SheetId -Bytes $Bytes `
-        -Source 'video' -AllowDuplicateStep
-    if ([string]$added.Status -ne 'added') {
-        return [pscustomobject]@{ status = [string]$added.Status; stepId = ''; clickLabel = ''; ocrAvailable = $false }
-    }
-    $stepId = [string]$added.Step.id
-
-    $rect = $null
-    if (-not [string]::IsNullOrWhiteSpace($RectJson)) {
-        try { $rect = $RectJson | ConvertFrom-Json } catch { $rect = $null }
-        if (-not (Test-MbNormalizedRect -Rect $rect)) { $rect = $null }
-    }
-    $candidates = New-Object System.Collections.ArrayList
-    if (-not [string]::IsNullOrWhiteSpace($CandidatesJson)) {
-        $parsed = $null
-        try { $parsed = $CandidatesJson | ConvertFrom-Json } catch { $parsed = $null }
-        foreach ($candidate in @(@($parsed) | Select-Object -First 4)) {
-            if ($null -eq $candidate -or $candidate.PSObject.Properties.Name -notcontains 'rect' -or
-                -not (Test-MbNormalizedRect -Rect $candidate.rect)) { continue }
-            [void]$candidates.Add([pscustomobject]@{
-                id = 'video-diff-' + ($candidates.Count + 1)
-                source = 'video-diff'; confidence = 'low'; label = ''; targetType = ''; rect = $candidate.rect
-            })
-        }
-    }
-    if ($candidates.Count -eq 0 -and $null -ne $rect) {
-        [void]$candidates.Add([pscustomobject]@{
-            id = 'video-diff-1'; source = 'video-diff'; confidence = 'low'; label = ''; targetType = ''; rect = $rect
-        })
-    }
-
-    $screenText = ''; $ocrAvailable = $false
-    $imagePath = Get-MbImageFilePath -Project $Project -ProjectPath $ProjectPath -ImageId ([string]$added.Step.imageId)
-    if (-not $SkipOcr -and -not [string]::IsNullOrWhiteSpace($imagePath)) {
-        try {
-            $snapshot = Get-MbOcrSnapshot -Path $imagePath
-            $ocrAvailable = [bool]$snapshot.available
-            if ($ocrAvailable) { $screenText = [string]$snapshot.text }
-            if ($ocrAvailable) {
-                foreach ($candidate in @($candidates)) {
-                    $resolved = Resolve-MbOperationRect -Rect $candidate.rect -Snapshot $snapshot
-                    $candidate.rect = $resolved.rect
-                    $candidate.label = [string]$resolved.label
-                }
-            }
-        } catch { $ocrAvailable = $false }
-    }
-
-    $captured = Set-MbStepCapture -Project $Project -StepId $stepId -Kind 'video-scene' -VideoTimeMs $TimeMs `
-        -ClickLabel '' -ScreenText $screenText -TargetSource 'video-diff' `
-        -TargetConfidence $(if ($candidates.Count -gt 0) { [string]$candidates[0].confidence } else { '' }) `
-        -TargetCandidateId '' `
-        -TargetCandidatesJson $(if ($candidates.Count -gt 0) { ConvertTo-Json -InputObject @($candidates) -Depth 8 -Compress } else { '' })
-    # 動画差分だけでは正しい操作箇所を確定できないため、候補は保存しても赤枠は付けない。
-    $captured.capture.targetCandidateId = ''
-    [void](Set-MbStepDraft -Project $Project -StepId $stepId -Title '録画の場面を確認' `
-        -Description '画面の内容を確認し、必要な操作を説明します。' -Note '')
-    [void](Set-MbStepReview -Project $Project -StepId $stepId -Action 'review' `
-        -Reason '録画の画面変化から作成した手順です。必要な場面か、文章と操作箇所を確認してください。')
-    return [pscustomobject]@{
-        status = 'added'; stepId = $stepId; clickLabel = ''; hasRect = $false; ocrAvailable = $ocrAvailable
-    }
-}
+} catch { }
 
 function Get-MbMutex {
     param([AllowEmptyString()][string]$Scope = '')
@@ -207,8 +124,10 @@ function Show-MbExistingInstanceNotice {
     if (-not (Test-Path -LiteralPath $runtimePath)) { return $false }
     try {
         $runtime = [IO.File]::ReadAllText($runtimePath, [Text.Encoding]::UTF8) | ConvertFrom-Json
-        $existingUrl = [string]$runtime.url
-        if (($existingUrl -match '^http://localhost:\d+/$') -and
+        # 2回目の run.cmd も、起動済みプロセスが書いた入口URL(トークン付き)で開く。
+        $existingUrl = if ($runtime.PSObject.Properties.Name -contains 'entryUrl' -and
+            -not [string]::IsNullOrWhiteSpace([string]$runtime.entryUrl)) { [string]$runtime.entryUrl } else { [string]$runtime.url }
+        if (($existingUrl -match '^http://localhost:\d+/(\?token=[a-f0-9]{32})?$') -and
             (Get-Process -Id ([int]$runtime.pid) -ErrorAction SilentlyContinue)) {
             Start-Process $existingUrl
             return $true
@@ -456,7 +375,10 @@ function Stop-MbExcelExportWorkerSafely {
         if ($excelProcess -and $excelProcess.ProcessName -eq 'EXCEL') {
             $expectedStart = [DateTime]::Parse([string]$Status.ownedExcelStartTimeUtc).ToUniversalTime()
             $actualStart = $excelProcess.StartTime.ToUniversalTime()
-            if ([Math]::Abs(($actualStart - $expectedStart).TotalSeconds) -lt 2) {
+            # ワーカー側(ManualBuilder.Excel.psm1)と同じ条件で守る。PID差分での所有判定は
+            # 「起動直後に利用者がExcelを開いた」場合に他人のプロセスを指し得るため、
+            # Hwndで所有を証明できたときだけ強制終了する。Word側も同じ条件。
+            if ([Math]::Abs(($actualStart - $expectedStart).TotalSeconds) -lt 2 -and [string]$Status.ownershipMode -eq 'Hwnd') {
                 Stop-Process -Id $excelProcess.Id -Force -ErrorAction SilentlyContinue
             }
         }
@@ -958,17 +880,24 @@ function Test-MbRequestSecurity {
     )
 
     $expectedHosts = @("localhost:$BoundPort", "127.0.0.1:$BoundPort")
+    # Hostヘッダーが無い要求も拒否する。DNSリバインディング対策は「一致を確認できた場合だけ通す」
+    # 形でなければ、ヘッダーを送らないだけで迂回できる。
     $hostHeader = [string]$Request.Headers['Host']
-    if ($hostHeader -and ($expectedHosts -notcontains $hostHeader)) {
+    if ((-not $hostHeader) -or ($expectedHosts -notcontains $hostHeader)) {
         throw [System.UnauthorizedAccessException]::new('Hostヘッダーが不正です。')
     }
 
     $isImage = $Path.StartsWith('/images/', [StringComparison]::OrdinalIgnoreCase)
+    # 画面本体もトークンで守る。ここを無認証にすると、127.0.0.1へ繋げるだけの
+    # ローカルプロセスが GET / を1回投げるだけでトークンを入手でき、
+    # 以降は記録開始・画像取得・マニュアル削除まで自由に呼べてしまう。
+    # ブラウザーのアドレス入力はヘッダーを送れないため、画像と同じくクエリを許す。
+    $isShell = ($Path -eq '/')
     $isProtected = $Path.StartsWith('/api/', [StringComparison]::OrdinalIgnoreCase) -or
-        $Path.StartsWith('/ui/', [StringComparison]::OrdinalIgnoreCase) -or $isImage
+        $Path.StartsWith('/ui/', [StringComparison]::OrdinalIgnoreCase) -or $isImage -or $isShell
     if ($isProtected -and $Path -ne '/api/health') {
         $providedToken = [string]$Request.Headers['X-Manual-Token']
-        if ($isImage -and -not $providedToken) { $providedToken = [string]$Request.QueryString['token'] }
+        if (($isImage -or $isShell) -and -not $providedToken) { $providedToken = [string]$Request.QueryString['token'] }
         if ($providedToken -ne $Token) {
             throw [System.UnauthorizedAccessException]::new('セッショントークンが一致しません。')
         }
@@ -2219,9 +2148,12 @@ try {
     if (-not $started) { throw '利用可能なlocalhostポートが見つかりません。' }
 
     $url = "http://localhost:$boundPort/"
+    # 画面を開く入口URL。トークンはHTTPで配らず、利用者データ配下の runtime.json 経由で
+    # 自分自身と2回目の run.cmd だけに渡す。
+    $entryUrl = $url + '?token=' + $token
     $runtimeDirectory = Split-Path -Parent $runtimePath
     if (-not (Test-Path -LiteralPath $runtimeDirectory)) { [void](New-Item -ItemType Directory -Path $runtimeDirectory -Force) }
-    $runtime = [pscustomobject]@{ pid = $PID; url = $url; startedAt = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json
+    $runtime = [pscustomobject]@{ pid = $PID; url = $url; entryUrl = $entryUrl; startedAt = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json
     [IO.File]::WriteAllText($runtimePath, $runtime, (New-Object Text.UTF8Encoding($false)))
 
     Write-Host ''
@@ -2235,7 +2167,7 @@ try {
     Write-Host ''
 
     if (-not $NoBrowser) {
-        Start-Process $url
+        Start-Process $entryUrl
     }
 
     while ($script:Running -and $listener.IsListening) {
@@ -2273,6 +2205,10 @@ try {
     Write-MbLog $_.Exception.Message 'ERROR'
     exit 1
 } finally {
+    # 記録中に終了しても、画面を撮り続けるワーカーと記録レシートを必ず止める。
+    # これを呼ばないと、記録ワーカーは上限(60分)まで撮影を続け、UIA監視ワーカーは
+    # stop.requested を誰も書かないため無期限に残る。
+    try { Remove-MbRecordingJob } catch { }
     if ($script:ExcelExportJob) {
         try { [void](Request-MbExcelExportCancel) } catch { }
     }

@@ -845,7 +845,6 @@ try {
     $job = [pscustomobject]@{
         JobId = $recordingJobId; EventsPath = $eventsPath; EventsDirectory = $eventDirectory
         EvidenceDirectory = $evidenceDirectory; LedgerPath = $ledgerPath
-        NarrationPath = (Join-Path $importRoot 'narration.jsonl')
     }
     $oldLedgerPath = Join-Path $importRoot 'old-evidence-ledger.jsonl'
     [IO.File]::WriteAllLines($oldLedgerPath, @(
@@ -854,7 +853,6 @@ try {
     $oldJob = [pscustomobject]@{
         JobId = $recordingJobId; EventsPath = $eventsPath; EventsDirectory = $eventDirectory
         EvidenceDirectory = $evidenceDirectory; LedgerPath = $oldLedgerPath
-        NarrationPath = (Join-Path $importRoot 'narration.jsonl')
     }
     & (Get-Module ManualBuilder.RecorderServer) { param($Job) $script:MbRecordingJob = $Job } $oldJob
     $oldFormatRejected = $false
@@ -920,7 +918,6 @@ try {
     $gapJob = [pscustomobject]@{
         JobId = $gapJobId; EventsPath = $eventsPath; EventsDirectory = $eventDirectory
         EvidenceDirectory = $evidenceDirectory; LedgerPath = $gapLedgerPath
-        NarrationPath = (Join-Path $importRoot 'narration.jsonl')
     }
     & (Get-Module ManualBuilder.RecorderServer) { param($Job) $script:MbRecordingJob = $Job } $gapJob
     $gapProject = New-MbProject
@@ -1003,81 +1000,6 @@ Add-Result (@($sourceSheet.steps).Count -eq 0 -and @($targetSheet.steps).Count -
 Add-Result ([string]$targetSheet.steps[0].id -eq [string]$bulkStep1.id -and [string]$targetSheet.steps[1].id -eq [string]$bulkStep2.id) '複数手順の順序を保って移動する'
 Remove-MbSteps -Project $bulkProject -StepIds @($bulkStep1.id, $bulkStep2.id)
 Add-Result (@($targetSheet.steps).Count -eq 0) '複数手順をまとめて削除する'
-
-$events = @(
-    [pscustomobject]@{ index = 1; timeMs = 5000 },
-    [pscustomobject]@{ index = 2; timeMs = 12000 },
-    [pscustomobject]@{ index = 3; timeMs = 20000 }
-)
-
-# 「ここで申請ボタンを押します」と言ってから押す。次に来る操作の説明になる。
-$before = @([pscustomobject]@{ startMs = 2000; endMs = 4000; text = 'ここで申請ボタンを押します' })
-$mapped = Merge-MbNarrationIntoEvents -Events $events -Phrases $before
-Add-Result ($mapped.ContainsKey(1)) '操作の前に話した内容はその操作へ付く'
-Add-Result ([string]$mapped[1] -eq 'ここで申請ボタンを押します') '発話がそのまま入る'
-Add-Result (-not $mapped.ContainsKey(2)) '別の操作には付かない'
-
-# 押してからすぐ「これで一覧に出ました」と言う。直前の操作への補足になる。
-$after = @([pscustomobject]@{ startMs = 5800; endMs = 7500; text = 'これで一覧に出ました' })
-$mapped = Merge-MbNarrationIntoEvents -Events $events -Phrases $after
-Add-Result ($mapped.ContainsKey(1)) '操作の直後に話した内容は直前の操作へ付く'
-Add-Result (-not $mapped.ContainsKey(2)) '直後の発話が次の操作へ流れない'
-
-# どの操作からも遠い独り言は捨てる。
-$stray = @([pscustomobject]@{ startMs = 30000; endMs = 31000; text = 'ええと' })
-$mapped = Merge-MbNarrationIntoEvents -Events $events -Phrases $stray
-Add-Result ($mapped.Count -eq 0) 'どの操作からも離れた発話は捨てる'
-
-# 1つの操作について複数回話した場合はつなげる。
-$multiple = @(
-    [pscustomobject]@{ startMs = 9000; endMs = 10000; text = '次に金額を入れます' },
-    [pscustomobject]@{ startMs = 10200; endMs = 11500; text = '税込で入力します' }
-)
-$mapped = Merge-MbNarrationIntoEvents -Events $events -Phrases $multiple
-Add-Result ($mapped.ContainsKey(2)) '複数の発話が同じ操作へ付く'
-Add-Result ([string]$mapped[2] -eq '次に金額を入れます 税込で入力します') '発話を話した順につなげる'
-
-# 同じ発話が複数の手順に出ると読みにくい。1つの操作にだけ付ける。
-$single = @([pscustomobject]@{ startMs = 4000; endMs = 4500; text = '押します' })
-$mapped = Merge-MbNarrationIntoEvents -Events $events -Phrases $single
-Add-Result ($mapped.Count -eq 1) '1つの発話は1つの操作にしか付かない'
-
-# 空の入力で落ちないこと。
-Add-Result ((Merge-MbNarrationIntoEvents -Events @() -Phrases $before).Count -eq 0) '操作が無ければ何も返さない'
-Add-Result ((Merge-MbNarrationIntoEvents -Events $events -Phrases @()).Count -eq 0) '発話が無ければ何も返さない'
-
-# ---------------------------------------------------------------------
-# 音声入力が使えるかどうか
-# ---------------------------------------------------------------------
-Import-Module (Join-Path $srcRoot 'ManualBuilder.Dictation.psm1') -Force
-$dictation = Get-MbDictationCapability
-Add-Result ($dictation.PSObject.Properties.Name -contains 'available') '音声入力の可否を判定できる'
-if ($dictation.available) {
-    Add-Result ([string]$dictation.language -like 'ja*') '日本語の音声入力を使う'
-} else {
-    Add-Result (-not [string]::IsNullOrWhiteSpace([string]$dictation.reason)) '使えない場合は対処が分かる理由を返す'
-    Write-Host ("     この環境では音声入力を使えません: " + [string]$dictation.reason) -ForegroundColor Yellow
-}
-
-# 認識結果から記録を作る部分。PhraseStartTime が取れない場合の代用も見る。
-$startedAt = [DateTime]::UtcNow
-$fake = [pscustomobject]@{
-    Text = '申請ボタンを押します'
-    Status = 'Success'
-    Confidence = 'Medium'
-    PhraseStartTime = [DateTimeOffset]::new($startedAt.AddSeconds(3))
-    PhraseDuration = [TimeSpan]::FromMilliseconds(1500)
-}
-$record = ConvertTo-MbDictationRecord -Result $fake -StartedAtUtc $startedAt -ReceivedAtMs 6000
-Add-Result ($null -ne $record) '認識結果から記録を作れる'
-Add-Result ([Math]::Abs([int]$record.startMs - 3000) -le 50) '発話の開始時刻を使う（受信時刻ではない）'
-Add-Result ([int]$record.endMs -eq ([int]$record.startMs + 1500)) '発話の長さから終了時刻を出す'
-
-$empty = [pscustomobject]@{
-    Text = '   '; Status = 'Success'; Confidence = 'High'
-    PhraseStartTime = [DateTimeOffset]::new($startedAt); PhraseDuration = [TimeSpan]::FromSeconds(1)
-}
-Add-Result ($null -eq (ConvertTo-MbDictationRecord -Result $empty -StartedAtUtc $startedAt -ReceivedAtMs 1000)) '空の発話は記録しない'
 
 # ---------------------------------------------------------------------
 Write-Host ''

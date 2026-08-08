@@ -310,12 +310,28 @@ function Invoke-MbWordExport {
         $fontName = Resolve-MbWordBodyFont
 
         Set-MbWordStatusProgress $status $StatusPath 'starting-word' '安全確認のためWordを起動しています' 0 $totalSteps 3
+        # $pidsBefore を採ってからここへ来るまでに時間が空く。その隙に利用者がWordを
+        # 開くと、COMはROT経由でそのWordへ接続するのに、PID差分では「自分のもの」と
+        # 見えてしまう。Wordは文書生成前のためHwndによる所有証明もまだ使えない。
+        # COM生成の直前の時刻を残し、所有プロセスがそれ以降に開始したことを確かめる。
+        $comCreateAtUtc = [DateTime]::UtcNow
         $word = New-Object -ComObject Word.Application
         $canQuitCom = $true
         $resolved = Resolve-MbOwnedWordProcess -Application $word -PidsBefore $pidsBefore
         $ownPid = [int]$resolved.Pid; $ownershipMode = [string]$resolved.Mode
         if ([bool]$resolved.ExistingConnection) { throw 'MB_CONNECTED_TO_EXISTING_WORD' }
         if ($ownPid -le 0) { throw 'MB_WORD_OWNERSHIP_UNRESOLVED' }
+        # 自分で起動したWordはCOM生成より後に始まる。それより前に始まっていたなら、
+        # 隙に開かれた利用者のWordなので、設定を変える前に中止する。
+        $ownedStartTimeUtc = $null
+        try { $ownedStartTimeUtc = (Get-Process -Id $ownPid -ErrorAction Stop).StartTime.ToUniversalTime() } catch { }
+        if ($null -eq $ownedStartTimeUtc -or $ownedStartTimeUtc -lt $comCreateAtUtc.AddSeconds(-1)) {
+            throw 'MB_CONNECTED_TO_EXISTING_WORD'
+        }
+        # 起動直後のWordは文書を持たない。開いていれば利用者のインスタンス。
+        $openDocumentCount = -1
+        try { $openDocumentCount = [int]$word.Documents.Count } catch { $openDocumentCount = -1 }
+        if ($openDocumentCount -gt 0) { throw 'MB_CONNECTED_TO_EXISTING_WORD' }
         $ownershipProven = $true
         $status.ownedWordPid = $ownPid; $status.ownershipMode = $ownershipMode; $status.ownershipProven = $true
         try { $status.ownedWordStartTimeUtc = (Get-Process -Id $ownPid -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o') } catch { }
@@ -427,7 +443,7 @@ function Invoke-MbWordExport {
                     if (-not $resultPath -or -not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
                         throw "操作後の結果画像が見つかりません: $($step.resultImageId)"
                     }
-                    $resultRenderedPath = Join-Path $renderDirectory ("word-result-{0:d4}.png" -f $globalStep)
+                    $resultRenderedPath = Join-Path $renderDirectory ("word-result-{0:d4}.jpg" -f $globalStep)
                     $resultAnnotations = if ($step.PSObject.Properties.Name -contains 'resultAnnotations') { @($step.resultAnnotations) } else { @() }
                     $resultCrop = if ($step.PSObject.Properties.Name -contains 'resultCrop') { $step.resultCrop } else { $null }
                     $resultPath = New-MbAnnotatedImage -SourcePath $resultPath -Annotations $resultAnnotations -Crop $resultCrop `
@@ -437,14 +453,14 @@ function Invoke-MbWordExport {
                 if (-not [string]::IsNullOrWhiteSpace([string]$step.imageId)) {
                     $sourcePath = Get-MbImageFilePath -Project $Project -ProjectPath $ProjectPath -ImageId ([string]$step.imageId)
                     if (-not $sourcePath -or -not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) { throw "画像が見つかりません: $($step.imageId)" }
-                    $renderedPath = Join-Path $renderDirectory ("word-image-{0:d4}.png" -f $globalStep)
+                    $renderedPath = Join-Path $renderDirectory ("word-image-{0:d4}.jpg" -f $globalStep)
                     $imagePath = New-MbAnnotatedImage -SourcePath $sourcePath -Annotations @($step.annotations) -Crop $step.crop `
                         -DestinationPath $renderedPath -TargetDisplayWidth 600 -TargetDisplayHeight 680 -NumberFontName $fontName
                     if ($imagePath -eq $renderedPath) { [void]$generatedImages.Add($renderedPath) }
                     if ($hasResultImage -and $imageLayout -eq 'after') {
                         $imagePath = $resultPath
                     } elseif ($hasResultImage -and $imageLayout -in @('side-by-side', 'stacked')) {
-                        $comparisonPath = Join-Path $renderDirectory ("word-comparison-{0:d4}.png" -f $globalStep)
+                        $comparisonPath = Join-Path $renderDirectory ("word-comparison-{0:d4}.jpg" -f $globalStep)
                         $orientation = if ($imageLayout -eq 'side-by-side') { 'horizontal' } else { 'vertical' }
                         $imagePath = New-MbBeforeAfterImage -BeforePath $imagePath -AfterPath $resultPath `
                             -DestinationPath $comparisonPath -FontName $fontName -Orientation $orientation -Order $imageOrder

@@ -1544,10 +1544,33 @@ function Remove-MbLastRecordingEvent {
     } catch { }
     [string[]]$remaining = if ($lines.Count -gt 1) { @($lines[0..($lines.Count - 2)]) } else { @() }
     $temporary = $EventsPath + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
-    [IO.File]::WriteAllLines($temporary, $remaining, (New-Object Text.UTF8Encoding($false)))
     $backup = $EventsPath + '.' + [guid]::NewGuid().ToString('N') + '.bak'
-    [IO.File]::Replace($temporary, $EventsPath, $backup, $true)
-    Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+    try {
+        [IO.File]::WriteAllLines($temporary, $remaining, (New-Object Text.UTF8Encoding($false)))
+
+        # ここで例外が記録ループまで抜けると capture-end が書かれず、取り込み側は
+        # 「証拠が揃っていない」として記録セッションを丸ごと捨てる。ウイルス対策ソフトが
+        # 一瞬 events.jsonl を開いただけで全損しないよう、Write-MbRecordingStatus と
+        # 同じ再試行で差し替える。
+        $delaysMs = @(0, 25, 50, 100, 200, 400, 800)
+        for ($attempt = 0; $attempt -lt $delaysMs.Count; $attempt++) {
+            if ([int]$delaysMs[$attempt] -gt 0) {
+                Start-Sleep -Milliseconds ([int]$delaysMs[$attempt])
+            }
+            try {
+                [IO.File]::Replace($temporary, $EventsPath, $backup, $true)
+                break
+            } catch [IO.IOException] {
+                if ($attempt -eq ($delaysMs.Count - 1)) { throw }
+            } catch [UnauthorizedAccessException] {
+                if ($attempt -eq ($delaysMs.Count - 1)) { throw }
+            }
+        }
+    } finally {
+        foreach ($temporaryFile in @($temporary, $backup)) {
+            Remove-Item -LiteralPath $temporaryFile -Force -ErrorAction SilentlyContinue
+        }
+    }
 
     foreach ($suffix in @('.jpg', '-result.jpg')) {
         $imagePath = Join-Path $EventsDirectory (('event-{0:d3}{1}' -f $removedIndex, $suffix))

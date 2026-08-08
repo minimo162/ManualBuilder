@@ -164,7 +164,7 @@ Assert-Mb ($filledWorkspaceHtml -match 'topbar__main-action[^>]*data-record-oper
 Assert-Mb (([regex]::Matches($filledWorkspaceHtml, 'button button--primary[^>]*data-record-operations')).Count -eq 1) '編集中も操作記録の主ボタンを重複させない'
 Assert-Mb ($filledWorkspaceHtml -match 'menu-command[^>]*data-open-video-picker[^>]*>録画ファイルを取り込む') '既存録画の取り込みをその他の作り方へ整理する'
 Assert-Mb ($filledWorkspaceHtml -match 'class="workspace step-view--review"') '手順の確認は一覧表示から始める'
-Assert-Mb ($filledWorkspaceHtml -match 'class="skip-link"[^>]*href="#editor-main"' -and $filledWorkspaceHtml -match '<main id="editor-main"') 'キーボードで章と手順一覧を飛ばして編集画面へ移動できる'
+Assert-Mb ($filledWorkspaceHtml -match 'class="skip-link"[^>]*href="#editor-main"' -and $filledWorkspaceHtml -match '<main id="editor-main"') 'キーボードでシートと手順一覧を飛ばして編集画面へ移動できる'
 Assert-Mb ($filledWorkspaceHtml -match '手順を確認・修正' -and $filledWorkspaceHtml -notmatch '分割結果を確認') '作成方法に依存しない見出しで手順確認を案内する'
 Assert-Mb ($filledWorkspaceHtml -match 'data-step-view="review"[^>]*aria-pressed="true"' -and $filledWorkspaceHtml -match 'data-step-view="focus"') '一覧確認と1件編集を切り替えられる'
 Assert-Mb ($filledWorkspaceHtml -match 'data-step-previous' -and $filledWorkspaceHtml -match 'data-step-next' -and $filledWorkspaceHtml -match 'data-step-position') '手順を前後へ連続移動できる'
@@ -204,7 +204,7 @@ $secondSheet.name = '未完成シート'
 $multiSheetProject.sheets = @($multiSheetProject.sheets[0], $secondSheet)
 $multiSheetHtml = ConvertTo-MbWorkspaceHtml -Project $multiSheetProject -Token 'testtoken'
 Assert-Mb (([regex]::Matches($multiSheetHtml, 'data-sheet-delete')).Count -eq 1) '選択シートの削除を取り消し対応の操作として表示する'
-Assert-Mb ($multiSheetHtml -match 'data-sheet-duplicate[^>]*>章を複製') '選択中の章を再利用できる複製操作を表示する'
+Assert-Mb ($multiSheetHtml -match 'data-sheet-duplicate[^>]*>シートを複製') '選択中のシートを再利用できる複製操作を表示する'
 $finishMatch = [regex]::Match($multiSheetHtml, '<textarea hidden data-project-finish-data>(.*?)</textarea>')
 Assert-Mb $finishMatch.Success '全シートの仕上げ情報を画面へ埋め込む'
 $finishItems = ([Net.WebUtility]::HtmlDecode($finishMatch.Groups[1].Value) | ConvertFrom-Json)

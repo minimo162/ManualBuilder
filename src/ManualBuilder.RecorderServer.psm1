@@ -74,6 +74,25 @@ function Initialize-MbRecorderServer {
     $script:MbRecordingScriptRoot = $ScriptRoot
 }
 
+function Remove-MbOrphanedRecordingJobs {
+    # 記録ジョブは Remove-MbRecordingJob でしか消えず、それはメモリ上のジョブが
+    # ある場合にしか動かない。取り込む前にアプリが落ちる・再起動されると、
+    # 500msごとの全画面フレームを含むフォルダーがそのまま残り続ける。
+    # 起動時点で動いている記録は存在しないため、残っているものはすべて取り残し。
+    if ([string]::IsNullOrWhiteSpace($script:MbRecordingJobsRoot)) { return 0 }
+    if (-not (Test-Path -LiteralPath $script:MbRecordingJobsRoot -PathType Container)) { return 0 }
+    $removed = 0
+    foreach ($directory in @(Get-ChildItem -LiteralPath $script:MbRecordingJobsRoot -Directory -ErrorAction SilentlyContinue)) {
+        # 想定した命名のものだけを消す。利用者が置いた別のフォルダーには触れない。
+        if ($directory.Name -notmatch '^record-[a-f0-9]{32}$') { continue }
+        try {
+            Remove-Item -LiteralPath $directory.FullName -Recurse -Force -ErrorAction Stop
+            $removed++
+        } catch { }
+    }
+    return $removed
+}
+
 function Get-MbRecordingIdleStatus {
     return [pscustomobject]@{
         jobId = ''; state = 'idle'; count = 0; message = ''; lastTarget = ''; updatedAt = ''
@@ -932,74 +951,6 @@ function Test-MbRecordedSelectionAnchorContext {
     return $true
 }
 
-function Get-MbRecordedNarration {
-    if ($null -eq $script:MbRecordingJob) { return @() }
-    $path = [string]$script:MbRecordingJob.NarrationPath
-    if ([string]::IsNullOrWhiteSpace($path) -or -not (Test-Path -LiteralPath $path -PathType Leaf)) { return @() }
-
-    $phrases = New-Object System.Collections.ArrayList
-    foreach ($line in [IO.File]::ReadAllLines($path, [Text.Encoding]::UTF8)) {
-        if ([string]::IsNullOrWhiteSpace($line)) { continue }
-        $record = $null
-        try { $record = $line | ConvertFrom-Json } catch { continue }
-        if ($null -eq $record) { continue }
-        if ([string]::IsNullOrWhiteSpace([string]$record.text)) { continue }
-        [void]$phrases.Add($record)
-    }
-    return @($phrases)
-}
-
-# 話した内容を、どの操作の説明かで振り分ける。
-#
-# 人の喋り方は2通りある。
-#   「ここで申請ボタンを押します」→ 操作する    … 発話のあとに操作が来る
-#   操作する →「これで一覧に出ました」          … 操作のあとに発話が来る
-#
-# 直前の操作からすぐ喋り始めた場合はその操作への補足とみなし、
-# そうでなければ次に来る操作の説明とみなす。
-# 1つの発話は1つの操作にしか付けない。同じ文が複数の手順に出ると読みにくいため。
-function Merge-MbNarrationIntoEvents {
-    param(
-        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Events,
-        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Phrases,
-        [int]$TrailMs = 2000,
-        [int]$LeadMs = 3000
-    )
-
-    $assigned = @{}
-    if (@($Events).Count -eq 0 -or @($Phrases).Count -eq 0) { return $assigned }
-
-    $ordered = @($Events | Sort-Object @{ Expression = { [int]$_.timeMs } })
-    foreach ($phrase in (@($Phrases) | Sort-Object @{ Expression = { [int]$_.startMs } })) {
-        $startMs = [int]$phrase.startMs
-        $endMs = [int]$phrase.endMs
-        $target = $null
-
-        # 直後の補足。操作してからすぐに喋り始めたもの。
-        foreach ($item in $ordered) {
-            $gap = $startMs - [int]$item.timeMs
-            if ($gap -ge 0 -and $gap -le $TrailMs) { $target = $item }
-        }
-        # そうでなければ、これから行う操作の説明とみなす。
-        if ($null -eq $target) {
-            foreach ($item in $ordered) {
-                $time = [int]$item.timeMs
-                if ($time -ge $startMs -and $time -le ($endMs + $LeadMs)) { $target = $item; break }
-            }
-        }
-        if ($null -eq $target) { continue }
-
-        $index = [int]$target.index
-        $text = ([string]$phrase.text).Trim()
-        if ($assigned.ContainsKey($index)) {
-            $assigned[$index] = [string]$assigned[$index] + ' ' + $text
-        } else {
-            $assigned[$index] = $text
-        }
-    }
-    return $assigned
-}
-
 # 記録した操作を手順にする。
 #
 # 録画からの取り込みと違い、赤枠はUI Automationの矩形、またはUIA非対応画面の
@@ -1585,7 +1536,7 @@ function Remove-MbRecordingJob {
     $job = $script:MbRecordingJob
     $directory = [string]$job.JobDirectory
     $processIdentities = New-Object System.Collections.ArrayList
-    foreach ($property in @('ProcessIdentity', 'DictationProcessIdentity', 'UiaWorkerProcessIdentity', 'ControllerProcessIdentity')) {
+    foreach ($property in @('ProcessIdentity', 'UiaWorkerProcessIdentity', 'ControllerProcessIdentity')) {
         if ($job.PSObject.Properties.Name -contains $property -and $null -ne $job.$property) {
             [void]$processIdentities.Add($job.$property)
         }
@@ -1616,6 +1567,7 @@ function Get-MbRecordingCapability {
 # 本体へ読み込んだときに後勝ちで上書きされる。
 Export-ModuleMember -Function @(
     'Initialize-MbRecorderServer',
+    'Remove-MbOrphanedRecordingJobs',
     'Start-MbRecordingJob',
     'Read-MbRecordingStatus',
     'Stop-MbRecordingJob',
@@ -1631,8 +1583,6 @@ Export-ModuleMember -Function @(
     'Get-MbRecordingSourceInfo',
     'Import-MbRecordedEvents',
     'Import-MbRecordedLocalSelections',
-    'Get-MbRecordedNarration',
-    'Merge-MbNarrationIntoEvents',
     'Remove-MbRecordingJob',
     'Get-MbRecordingCapability'
 )

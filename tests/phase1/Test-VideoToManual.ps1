@@ -1,5 +1,6 @@
-﻿# 録画から切り出した場面が、Copilotの下書きを経て保存済み手順になるまでを検査する。
-# 実際の動画・HttpListener・Microsoft 365 Copilotは使わず、JPEGと固定JSONで主経路を通す。
+﻿# 録画から切り出した場面が、保存済みの手順になるまでを検査する。
+# 実際の動画・HttpListenerは使わず、JPEGと固定JSONで主経路を通す。
+# 文章づくりは外部AIへ渡さず、このPC内の仮手順名・要確認状態として残す。
 
 [CmdletBinding()]
 param()
@@ -14,9 +15,9 @@ $projectPath = Join-Path $testRoot 'project.json'
 $errors = New-Object 'System.Collections.Generic.List[string]'
 
 Import-Module (Join-Path $srcRoot 'ManualBuilder.Project.psm1') -Force
-Import-Module (Join-Path $srcRoot 'ManualBuilder.CopilotServer.psm1') -Force
-Import-Module (Join-Path $srcRoot 'ManualBuilder.Copilot.psm1') -Force
-Import-Module (Join-Path $srcRoot 'ManualBuilder.CopilotJob.psm1') -Force
+# 実行時に使われる実装を検査する。以前はここで CopilotServer.psm1 を読み込んでおり、
+# Start-ManualBuilder.ps1 が実際に呼ぶ側とは別の同名関数を検証していた。
+Import-Module (Join-Path $srcRoot 'ManualBuilder.VideoScene.psm1') -Force
 
 function Add-Result {
     param([bool]$Ok, [string]$Message)
@@ -87,7 +88,7 @@ try {
             [int]$steps[1].capture.videoTimeMs -eq 2500 -and
             [int]$steps[2].capture.videoTimeMs -eq 4000) '録画内の時刻を手順ごとに保存する'
         Add-Result (@($steps | Where-Object { @($_.annotations).Count -eq 0 }).Count -eq 3) '未精査の動画差分を赤枠として確定しない'
-        Add-Result (@($steps | Where-Object { @($_.capture.targetCandidates).Count -eq 1 -and [string]::IsNullOrWhiteSpace([string]$_.capture.targetCandidateId) }).Count -eq 3) '動画差分はCopilotが選べる未確定候補として保存する'
+        Add-Result (@($steps | Where-Object { @($_.capture.targetCandidates).Count -eq 1 -and [string]::IsNullOrWhiteSpace([string]$_.capture.targetCandidateId) }).Count -eq 3) '動画差分は人が選ぶ未確定候補として保存する'
         Add-Result (@($steps | Where-Object { [string]$_.capture.kind -eq 'video-scene' }).Count -eq 3) '録画由来の手順として識別できる'
     }
 

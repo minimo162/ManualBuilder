@@ -41,8 +41,6 @@ python tools/evals/evaluate_video_candidates.py --split development --output out
 
 製品のJavaScriptをブラウザーで直接確認するときは、リポジトリをローカルHTTPで配信し、
 `tools/evals/video-pipeline-harness.html`を開いて録画を選択します。
-出力フレームからCopilot用の評価プロジェクトを作る場合は、
-`tools/evals/New-MbCopilotEvalProject.ps1`を使います。
 
 製品UIで取り込んだプロジェクトは、300ms走査の許容と粗い候補の中心包含を含む
 候補再現率を次で採点できます。厳密なIoU合格数も別に残ります。
@@ -52,21 +50,6 @@ python tools/evals/evaluate_product_project.py --project <project.json> `
   --scenario request-search-workflow --output out/machine.json
 ```
 
-架空画像だけを使用し、画像送信への同意とサインインが済んだ評価PCでは、実M365 Copilotを
-反復実行できます。結果は各runへ保存され、既存結果を上書きしません。
-
-```powershell
-powershell -ExecutionPolicy Bypass -File tools/evals/Invoke-MbCopilotBenchmarkRuns.ps1 `
-  -ProjectPath <project.json> -OutputRoot out/copilot -Runs 3
-```
-
-独立レビュアー2名のJSONは次で検証・集約します。合否、文章点、重大誤認の判定が割れた場合は
-`needs-arbitration`となり、3人目の裁定が必要です。
-
-```powershell
-python tools/evals/aggregate_copilot_reviews.py --machine out/machine.json `
-  --reviewer-a out/reviewer-a.json --reviewer-b out/reviewer-b.json --output out/aggregate.json
-```
 
 ## 再生成
 

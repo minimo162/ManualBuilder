@@ -2639,18 +2639,33 @@
     const dialog = ensureExcelExportDialog();
     const state = status.state || 'failed';
     const percent = Math.max(0, Math.min(100, Number(status.percent) || 0));
+    // Excelが開いていて安全に中止した場合は、Word側と同じ扱いにする。
+    // 記録の対象がExcel操作であることが多く、この中止は日常的に起きる。
+    const safeStop = state === 'failed' && [
+      'MB_CONNECTED_TO_EXISTING_EXCEL',
+      'MB_EXCEL_OWNERSHIP_UNRESOLVED_WITH_EXISTING',
+    ].includes(status.errorCode || '');
     excelExport.state = state;
     dialog.dataset.state = state;
-    dialog.querySelector('[data-export-message]').textContent = status.message || 'Excel出力の状態を確認できません';
+    dialog.querySelector('[data-export-message]').textContent = safeStop
+      ? 'Excelが開いているため、作成を開始しませんでした'
+      : (status.message || 'Excel出力の状態を確認できません');
     const detail = dialog.querySelector('[data-export-detail]');
     if (state === 'running' || state === 'queued' || state === 'finalizing') {
       detail.textContent = status.totalSteps > 0
         ? `${status.currentStep || 0} / ${status.totalSteps} 手順 · ${percent}%`
         : `${percent}%`;
     } else if (state === 'completed') {
-      detail.textContent = '注釈を含む全シートの作成が完了しました';
+      // 極端に縦長・横長の画像は、カード幅では読める大きさにならない。
+      // 黙って細い帯のまま渡さず、どの手順を切り抜けばよいかを名指しで伝える。
+      const narrow = Array.isArray(status.narrowImageSteps) ? status.narrowImageSteps : [];
+      detail.textContent = narrow.length > 0
+        ? `注釈を含む全シートの作成が完了しました。手順 ${narrow.join('、')} は画像が細く表示されています。読みにくい場合は「画像を編集」の切り抜きで必要な範囲だけにしてください`
+        : '注釈を含む全シートの作成が完了しました';
     } else if (state === 'cancelled') {
       detail.textContent = 'プロジェクトの編集内容はそのまま残っています';
+    } else if (safeStop) {
+      detail.textContent = '開いているExcelブックとManualBuilderの入力内容には影響していません。Excelをすべて閉じてから、もう一度作成してください';
     } else {
       detail.textContent = '入力内容は変更されていません。内容を確認して再実行できます';
     }
@@ -4379,7 +4394,9 @@
     const button = row.querySelector('[data-recorder-toggle]');
     if (button) {
       button.setAttribute('aria-pressed', selected ? 'true' : 'false');
-      button.textContent = selected ? 'この手順を使う' : '除外しました';
+      // ボタン名は「今の状態」ではなく「押すと起きること」を示す。
+      // 採用中に「この手順を使う」と出すと、使いたい人が押して除外してしまう。
+      button.textContent = selected ? 'この手順を除外' : 'この手順を使う';
     }
   };
 
@@ -4455,7 +4472,7 @@
         : '';
       return `<article class="recorder-proposal${reviewClass}${selected ? '' : ' is-excluded'}" data-recorder-event data-proposal-index="${index}" data-review-required="${reviewRequired ? 'true' : 'false'}" data-selected="${selected ? 'true' : 'false'}">
 ${shots}
-<div class="recorder-proposal__body"><span class="recorder-proposal__status">${reviewRequired ? '確認が必要' : 'そのまま使えます'}</span><strong>手順 ${index + 1}　${escapeRecorderHtml(item.title || '')}</strong><span>${escapeRecorderHtml(item.description || '')}</span>${reviewRequired ? `<p class="recorder-proposal__reason">${escapeRecorderHtml(reviewReason)}</p>` : ''}${reviewEditor}<div class="recorder-proposal__actions"><button type="button" class="button button--secondary button--small" data-recorder-toggle aria-pressed="${selected ? 'true' : 'false'}">${selected ? 'この手順を使う' : '除外しました'}</button></div><details class="recorder-source-evidence"><summary>元の操作を見る</summary><p>${escapeRecorderHtml(transformationReason)}</p><p>${operationCount} 件の元操作は、除外してもこのプロジェクト内に残ります。</p></details></div>
+<div class="recorder-proposal__body"><span class="recorder-proposal__status">${reviewRequired ? '確認が必要' : 'そのまま使えます'}</span><strong>手順 ${index + 1}　${escapeRecorderHtml(item.title || '')}</strong><span>${escapeRecorderHtml(item.description || '')}</span>${reviewRequired ? `<p class="recorder-proposal__reason">${escapeRecorderHtml(reviewReason)}</p>` : ''}${reviewEditor}<div class="recorder-proposal__actions"><button type="button" class="button button--secondary button--small" data-recorder-toggle aria-pressed="${selected ? 'true' : 'false'}">${selected ? 'この手順を除外' : 'この手順を使う'}</button></div><details class="recorder-source-evidence"><summary>元の操作を見る</summary><p>${escapeRecorderHtml(transformationReason)}</p><p>${operationCount} 件の元操作は、除外してもこのプロジェクト内に残ります。</p></details></div>
 </article>`;
     }).join('');
     bindRecorderRowControls(list);
@@ -4509,7 +4526,7 @@ ${shots}
       const reviewRequired = fallback || !item.targetName || !selected;
       return `<article class="recorder-event${selected ? '' : ' is-excluded'}" data-recorder-event data-index="${item.index}" data-review-required="${reviewRequired ? 'true' : 'false'}" data-selected="${selected ? 'true' : 'false'}">
 ${shots}
-<span class="recorder-event__body"><strong>操作 ${item.index}　${escapeRecorderHtml(label)}</strong><span>${escapeRecorderHtml(detail)}</span>${reviewReason}<button type="button" class="button button--secondary button--small" data-recorder-toggle aria-pressed="${selected ? 'true' : 'false'}">${selected ? 'この手順を使う' : '除外しました'}</button></span>
+<span class="recorder-event__body"><strong>操作 ${item.index}　${escapeRecorderHtml(label)}</strong><span>${escapeRecorderHtml(detail)}</span>${reviewReason}<button type="button" class="button button--secondary button--small" data-recorder-toggle aria-pressed="${selected ? 'true' : 'false'}">${selected ? 'この手順を除外' : 'この手順を使う'}</button></span>
 <span class="recorder-event__index">${item.index}</span>
 </article>`;
     }).join('');
@@ -4881,7 +4898,7 @@ ${shots}
       + '<section data-recorder-view="review" hidden>'
       + '<div class="copilot-dialog__state"><strong data-recorder-message></strong><span data-recorder-detail></span></div>'
       + '<p class="recorder-capture-warning" data-recorder-capture-warning role="alert" hidden></p>'
-      + '<p class="copilot-note" data-recorder-review-note>確認が必要な手順だけを表示しています。大きな画像と理由を確認し、不要なら［この手順を使う］を押して除外してください。</p>'
+      + '<p class="copilot-note" data-recorder-review-note>確認が必要な手順だけを表示しています。大きな画像と理由を確認し、不要な手順は［この手順を除外］を押してください。</p>'
       + '<div class="recorder-review-tools"><strong data-recorder-selection-summary></strong><details class="recorder-review-adjustments"><summary>すべての候補を見る・調整</summary><div><label class="recorder-review-filter">表示<select data-recorder-filter><option value="review">要確認のみ</option><option value="all">すべて</option><option value="selected">使う手順のみ</option></select></label><button type="button" class="button button--ghost button--small" data-recorder-select-all>表示中を使う</button><button type="button" class="button button--ghost button--small" data-recorder-select-none>表示中を除外</button><button type="button" class="button button--ghost button--small" data-recorder-exclude-finishing>保存・終了を除外</button></div></details></div>'
       + '<div class="recorder-list" data-recorder-list></div>'
       + '</section>'

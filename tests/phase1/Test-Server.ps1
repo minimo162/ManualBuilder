@@ -45,12 +45,23 @@ try {
     Assert-Mb $ready 'localhostサーバーが起動する'
     Assert-Mb (Test-Path -LiteralPath (Join-Path $testRoot 'runtime.json') -PathType Leaf) '明示プロジェクトの実行時情報をテスト領域へ分離する'
 
-    $shell = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/" -TimeoutSec 5
+    # 画面本体もトークンで守るため、無認証の `/` からは取れない。
+    # 起動側と同じく runtime.json の入口URLを使う。
+    $runtimeInfo = [IO.File]::ReadAllText((Join-Path $testRoot 'runtime.json'), [Text.Encoding]::UTF8) | ConvertFrom-Json
+    $entryUrl = [string]$runtimeInfo.entryUrl
+    Assert-Mb ($entryUrl -match '\?token=(?<token>[a-f0-9]{32})$') '入口URLへセッショントークンを載せる'
+    $sessionToken = $Matches['token']
+
+    $shellDenied = $false
+    try { [void](Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/" -TimeoutSec 5) }
+    catch { if ($_.Exception.Response.StatusCode.value__ -eq 403) { $shellDenied = $true } }
+    Assert-Mb $shellDenied 'トークンなしの画面要求を拒否する'
+
+    $shell = Invoke-WebRequest -UseBasicParsing -Uri $entryUrl -TimeoutSec 5
     Assert-Mb ($shell.Content -match 'ManualBuilder') 'アプリシェルを取得できる'
-    $tokenMatch = [regex]::Match($shell.Content, 'X-Manual-Token":"(?<token>[a-f0-9]{32})')
-    Assert-Mb $tokenMatch.Success '画面へセッショントークンが埋め込まれる'
+    Assert-Mb ($shell.Content -match ('X-Manual-Token":"' + $sessionToken)) '画面へセッショントークンが埋め込まれる'
     $headers = @{
-        'X-Manual-Token' = $tokenMatch.Groups['token'].Value
+        'X-Manual-Token' = $sessionToken
         'X-Tab-Id' = 'phase1-server-test-tab'
     }
 
