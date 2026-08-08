@@ -14,6 +14,10 @@ jobs:
     runs-on: windows-latest
     env:
       CI: '1'
+      # 検査の出力は日本語。ランナーのPythonは既定でcp1252へ書き出そうとして
+      # UnicodeEncodeErrorで落ちるため、標準出力をUTF-8に固定する。
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: 'utf-8'
     steps:
       - uses: actions/checkout@v4
 
