@@ -4366,6 +4366,12 @@ kbd {
   cursor: pointer;
 }
 
+.image-import-progress [data-image-import-count] {
+  margin-left: 6px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
 @media (max-width: 700px) {
   .recorder-complete-bar {
     align-items: stretch;
@@ -4609,6 +4615,43 @@ kbd {
   color: #633c00;
   font-weight: 700;
   line-height: 1.55;
+}
+
+.recorder-screen-confirmation {
+  display: grid;
+  grid-template-columns: minmax(220px, 42%) 1fr;
+  gap: 14px;
+  margin: 0 0 14px;
+  padding: 14px;
+  border: 2px solid #d97706;
+  border-radius: 12px;
+  background: #fff8df;
+  color: #633c00;
+}
+
+.recorder-screen-confirmation[hidden] { display: none; }
+
+.recorder-screen-confirmation__preview img {
+  display: block;
+  width: 100%;
+  max-height: 220px;
+  object-fit: contain;
+  background: #20242b;
+  border: 1px solid #d6a23d;
+  border-radius: 8px;
+}
+
+.recorder-screen-confirmation p { margin: 6px 0 12px; }
+
+.recorder-screen-confirmation label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 800;
+}
+
+@media (max-width: 700px) {
+  .recorder-screen-confirmation { grid-template-columns: 1fr; }
 }
 
 .recorder-proposal__editor {

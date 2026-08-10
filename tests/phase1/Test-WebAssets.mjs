@@ -335,6 +335,23 @@ if (indexHtmlText) {
   check('通知は増えた1件だけを読み上げる', indexHtmlText.includes('aria-atomic="false"'));
 }
 
+if (appJs) {
+  check('プロジェクト切替時に前の記録結果UIを破棄する',
+    appJs.includes('clearProjectScopedTransientUi') &&
+    appJs.includes("path.startsWith('/api/projects/')") &&
+    appJs.includes("document.getElementById('recorder-complete-bar')?.remove()"));
+  check('複数画像を直列で取り込み進捗表示後に一度だけ画面更新する',
+    appJs.includes('showImageImportProgress') &&
+    appJs.includes('for (const file of supported)') &&
+    appJs.includes('importImage(file, source, sheetId, false)') &&
+    appJs.includes('await refreshWorkspace()'));
+  check('画面差分だけの候補は記録対象画面の確認完了まで取り込めない',
+    appJs.includes('data-recorder-screen-confirmed') &&
+    appJs.includes('data-visual-only=') &&
+    appJs.includes('記録された画面を確認してください') &&
+    appJs.includes('screenConfirmed:'));
+}
+
 // ---------------------------------------------------------------
 console.log('取り除いた機能が戻っていないこと');
 if (appJs) {
