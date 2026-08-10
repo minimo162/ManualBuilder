@@ -108,7 +108,7 @@ Add-Result ($serverText -match '\$storageLayout\.RuntimePath') '二重起動情�
 Add-Result (($serverText -match 'AllowParallelTestInstance') -and ($serverText -match '\$ProjectPath\|\$Port') -and ($serverText -match 'ManualBuilder-\$sid') -and ($serverText -match '-Test-\$scopeHash')) '通常起動の単一起動制御を保ったまま隔離E2Eを並行起動できる'
 Add-Result ($serverText -match '\$storageLayout\.ExportJobsRoot') 'Office一時ジョブをユーザーデータ配下へ置く'
 Add-Result (($runCommandText -match '%~dp0src\\Start-ManualBuilderLauncher\.ps1') -and ($runCommandText -notmatch '(?im)^cd /d')) 'UNC共有フォルダーから更新ランチャーを起動できる'
-Add-Result ([string]$appVersionManifest.appVersion -eq '0.53.2') '配布用アプリバージョンを0.53.2へ更新する'
+Add-Result ([string]$appVersionManifest.appVersion -eq '0.53.3') '配布用アプリバージョンを0.53.3へ更新する'
 Add-Result ($workspaceModuleText -notmatch "ManualBuilder\.Project\.psm1'\) -Force") 'WorkspaceがProjectコマンドを強制再読込しない'
 Add-Result ($launcherModuleText -match "'ManualBuilder\\app'") 'アプリ実行コードをLocalApplicationDataへキャッシュする'
 Add-Result ($launcherModuleText -match "@\('src', 'web', 'run\.cmd', 'app-version\.json'\)") 'キャッシュ対象からプロジェクトデータを除外する'
@@ -644,6 +644,17 @@ foreach ($match in [regex]::Matches($callSites, '\b([A-Za-z]+-Mb[A-Za-z0-9]*)\b'
         [void]$unresolved.Add($name)
     }
 }
+Add-Result (($jsText -match 'clearProjectScopedTransientUi') -and
+    ($jsText -match "path\.startsWith\('/api/projects/'\)") -and
+    ($jsText -match "recorder-complete-bar")) 'プロジェクト切替で前の記録完了案内を消す'
+Add-Result (($jsText -match 'showImageImportProgress') -and
+    ($jsText -match 'for \(const file of supported\)') -and
+    ($jsText -match 'importImage\(file, source, sheetId, false\)') -and
+    ($jsText -match 'await refreshWorkspace\(\)')) '複数画像を直列処理し最後に完成画面を一度だけ更新する'
+Add-Result (($recorderServerText -match 'screenConfirmed') -and
+    ($recorderServerText -match 'recordedWindowTitle') -and
+    ($jsText -match 'data-recorder-screen-confirmed')) '画面差分候補は記録対象を表示して明示確認を必須にする'
+
 $unresolvedMessage = '本体が呼ぶ関数がすべて解決する'
 if ($unresolved.Count -gt 0) { $unresolvedMessage += '（未解決: ' + ($unresolved -join ', ') + '）' }
 Add-Result ($unresolved.Count -eq 0) $unresolvedMessage

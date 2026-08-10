@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const appVersion = '0.53.2';
+  const appVersion = '0.53.3';
   // 番号注釈はSVG属性で指定するためCSS変数を参照できない。
   // 編集画面とExcel・Word出力（New-MbAnnotatedImage）で同じ見た目にするため、基準フォントを揃える。
   const ANNOTATION_NUMBER_FONT = '"BIZ UDPGothic", "BIZ UDPゴシック", "BIZ UDGothic", "BIZ UDゴシック", Meiryo, "Yu Gothic UI", "MS Pゴシック", sans-serif';
@@ -277,9 +277,17 @@
     void runVisibleUndo();
   });
 
+  let projectContextVersion = 0;
+  const clearProjectScopedTransientUi = () => {
+    document.getElementById('recorder-complete-bar')?.remove();
+    document.getElementById('image-import-progress')?.remove();
+  };
+
   const replaceProjectLibrary = (html) => {
     const current = document.getElementById('workspace');
     if (!current) throw new Error('マニュアル一覧を更新できませんでした。');
+    clearProjectScopedTransientUi();
+    projectContextVersion += 1;
     current.outerHTML = html;
     const next = document.getElementById('workspace');
     if (next) window.htmx?.process(next);
@@ -1957,7 +1965,7 @@
     return /\.(png|jpe?g|bmp)$/i.test(file.name || '');
   };
 
-  const importImage = async (file, source) => {
+  const importImage = async (file, source, sheetId = selectedSheetId(), sync = true) => {
     if (!isSupportedImage(file)) {
       showToast('PNG、JPEG、BMP画像を選択してください。');
       return;
@@ -1966,7 +1974,6 @@
       showToast('画像は20MB以下にしてください。');
       return;
     }
-    const sheetId = selectedSheetId();
     if (!sheetId) return;
     const response = await fetch('/api/images/import', {
       method: 'POST',
@@ -1977,23 +1984,103 @@
       }),
       body: file
     });
-    if (!response.ok) throw new Error(await response.text() || describeHttpFailure(response.status));
-    syncCaptureSnapshot(await response.text(), true);
+    const html = await response.text();
+    if (!response.ok) throw new Error(html || describeHttpFailure(response.status));
+    if (sync) syncCaptureSnapshot(html, true);
+    const parsed = new DOMParser().parseFromString(html, 'text/html');
+    return {
+      status: parsed.querySelector('.capture-snapshot')?.dataset.importStatus || 'added',
+      html
+    };
   };
 
   let importQueue = Promise.resolve();
   let replacementStepId = '';
   let resultImageStepId = '';
+  const showImageImportProgress = (total) => {
+    document.getElementById('image-import-progress')?.remove();
+    const bar = document.createElement('div');
+    bar.id = 'image-import-progress';
+    bar.className = 'recorder-complete-bar image-import-progress';
+    bar.setAttribute('role', 'status');
+    bar.setAttribute('aria-live', 'polite');
+    bar.setAttribute('aria-atomic', 'true');
+    bar.innerHTML = '<span><strong>画像を取り込み中</strong><span data-image-import-count></span></span>';
+    document.body.appendChild(bar);
+    const update = ({ processed = 0, added = 0, failed = 0, message = '' } = {}) => {
+      if (!bar.isConnected) return;
+      const count = bar.querySelector('[data-image-import-count]');
+      if (count) count.textContent = message || `・${processed} / ${total}・成功 ${added}・失敗 ${failed}`;
+    };
+    update();
+    return { bar, update };
+  };
+
   const enqueueImages = (files, source) => {
     const received = [...files];
-    const supported = received.filter(isSupportedImage);
-    if (received.length && !supported.length) {
-      showToast('PNG、JPEG、BMP画像を選択してください。');
+    const supported = received.filter((file) => isSupportedImage(file) && file.size <= 20 * 1024 * 1024);
+    const rejected = received.filter((file) => !isSupportedImage(file) || file.size > 20 * 1024 * 1024);
+    if (!received.length) return;
+    if (!supported.length) {
+      showToast(rejected.some(isSupportedImage)
+        ? '画像は20MB以下にしてください。'
+        : 'PNG、JPEG、BMP画像を選択してください。');
+      return;
     }
-    supported.forEach((file) => {
-      importQueue = importQueue
-        .then(() => importImage(file, source))
-        .catch((error) => showToast(error.message || '画像を取り込めませんでした。'));
+    const sheetId = selectedSheetId();
+    const contextVersion = projectContextVersion;
+    const existingStepIds = new Set(stepCards().map((card) => card.dataset.stepId || ''));
+    const progress = showImageImportProgress(received.length);
+    importQueue = importQueue.then(async () => {
+      let processed = rejected.length;
+      let added = 0;
+      let duplicates = 0;
+      const failures = rejected.map((file) => file.name || '不明なファイル');
+      progress.update({ processed, added, failed: failures.length });
+      for (const file of supported) {
+        if (contextVersion !== projectContextVersion) {
+          failures.push(file.name || '不明なファイル');
+          processed += 1;
+          progress.update({ processed, added, failed: failures.length });
+          continue;
+        }
+        try {
+          const result = await importImage(file, source, sheetId, false);
+          if (result?.status === 'duplicate') duplicates += 1;
+          else added += 1;
+        } catch (error) {
+          failures.push(file.name || '不明なファイル');
+        }
+        processed += 1;
+        progress.update({ processed, added, failed: failures.length });
+      }
+      if (contextVersion !== projectContextVersion) {
+        progress.bar.remove();
+        showToast('マニュアルを切り替えたため、残りの画像取込みを中止しました。', 'info');
+        return;
+      }
+      try {
+        await refreshWorkspace();
+        const latest = stepCards().filter((card) => !existingStepIds.has(card.dataset.stepId || '')).at(-1);
+        if (latest?.dataset.stepId) setActiveStep(latest.dataset.stepId, { focusDescription: true });
+      } catch {
+        progress.update({ message: `・${processed} / ${received.length}・画像は保存済み、画面更新のみ失敗` });
+        showToast('画像は取り込みましたが画面を更新できませんでした。ブラウザーを再読み込みしてください。');
+        return;
+      }
+      progress.bar.remove();
+      if (failures.length > 0) {
+        const shown = failures.slice(0, 3).join('、');
+        const rest = failures.length > 3 ? ` ほか${failures.length - 3}件` : '';
+        showToast(`${added}件を追加しました。取り込めなかった画像: ${shown}${rest}`, 'info');
+      } else if (duplicates > 0) {
+        showToast(`${added}件を追加しました。${duplicates}件は同じ画像のため追加しませんでした。`, 'info');
+      } else {
+        showToast(`${added}件の画像を手順に追加しました。`, 'success');
+      }
+    }).catch((error) => {
+      progress.bar.remove();
+      showToast(error.message || '画像を取り込めませんでした。');
     });
   };
 
@@ -4253,6 +4340,10 @@
   document.body.addEventListener('htmx:afterSwap', (event) => {
     const path = requestPath(event);
     if (path === '/ui/workspace' || path === '/api/sheets/select' || path.startsWith('/api/projects/')) {
+      if (path.startsWith('/api/projects/')) {
+        clearProjectScopedTransientUi();
+        projectContextVersion += 1;
+      }
       if (!ensureCurrentAssets()) return;
       window.requestAnimationFrame(() => {
         initializeWorkspaceView();
@@ -4428,6 +4519,7 @@
 
   const showRecorderContinueBar = (result) => {
     document.getElementById('recorder-complete-bar')?.remove();
+    if (!selectedSheetId()) return;
     const bar = document.createElement('div');
     bar.id = 'recorder-complete-bar';
     bar.className = 'recorder-complete-bar';
@@ -4439,6 +4531,10 @@
       + '<button type="button" class="recorder-complete-bar__close" aria-label="記録結果の案内を閉じる">×</button></span>';
     bar.querySelector('[data-recorder-continue]')?.addEventListener('click', () => {
       bar.remove();
+      if (!selectedSheetId()) {
+        showToast('作業するマニュアルを開いてから記録してください。', 'info');
+        return;
+      }
       void openRecorderDialog();
     });
     bar.querySelector('[data-recorder-review-attention]')?.addEventListener('click', () => {
@@ -4535,13 +4631,17 @@
     const reviewCount = rows.filter((row) => row.dataset.reviewRequired === 'true').length;
     const readyCount = rows.length - reviewCount;
     const excludedCount = rows.length - selectedCount;
+    const visualOnlySelected = rows.some((row) => isRecorderRowSelected(row) && row.dataset.visualOnly === 'true');
+    const screenConfirmed = recorder.dialog.querySelector('[data-recorder-screen-confirmed]')?.checked === true;
     summary.textContent = reviewCount > 0
       ? `${readyCount} 件はそのまま作成・${reviewCount} 件を確認${excludedCount > 0 ? `・${excludedCount} 件を除外` : ''}`
       : `${selectedCount} 件の手順をそのまま作成できます`;
     const importButton = recorder.dialog.querySelector('[data-recorder-import]');
     if (importButton) {
-      importButton.disabled = selectedCount === 0;
-      importButton.textContent = reviewCount > 0 ? '確認した内容で手順を作成' : '手順を作成';
+      importButton.disabled = selectedCount === 0 || (visualOnlySelected && !screenConfirmed);
+      importButton.textContent = visualOnlySelected && !screenConfirmed
+        ? '記録された画面を確認してください'
+        : (reviewCount > 0 ? '確認した内容で手順を作成' : '手順を作成');
     }
     applyRecorderReviewFilter();
   };
@@ -4549,11 +4649,26 @@
   // このPCが時系列フレームから選んだ「操作前／操作後」を、大きな画像で確認する。
   const renderRecordedProposals = (proposals) => {
     const list = recorder.dialog.querySelector('[data-recorder-list]');
+    const token = encodeURIComponent(sessionHeaders()['X-Manual-Token'] || '');
+    const screenConfirmation = recorder.dialog.querySelector('[data-recorder-screen-confirmation]');
+    const firstVisualOnly = proposals.find((item) =>
+      String(item.actionKind || '') === 'visual-change' && Math.max(0, Number(item.sourceOperationCount || 0)) === 0);
+    if (screenConfirmation && firstVisualOnly) {
+      const beforeSrc = `/images/recording/${encodeURIComponent(firstVisualOnly.beforeImage || '')}?token=${token}`;
+      const recordedScreen = [firstVisualOnly.processName, firstVisualOnly.windowTitle].filter(Boolean).join('・') || 'アプリ名を取得できませんでした';
+      screenConfirmation.hidden = false;
+      screenConfirmation.innerHTML = `<div class="recorder-screen-confirmation__preview"><img src="${beforeSrc}" alt="記録された最初の画面"></div>`
+        + `<div><strong>記録された画面: ${escapeRecorderHtml(recordedScreen)}</strong><p>操作イベントがないため、対象アプリの画面で合っているか確認してください。</p>`
+        + '<label><input type="checkbox" data-recorder-screen-confirmed> このアプリの画面で合っています</label></div>';
+      screenConfirmation.querySelector('[data-recorder-screen-confirmed]')?.addEventListener('change', updateRecorderSelectionSummary);
+    } else if (screenConfirmation) {
+      screenConfirmation.hidden = true;
+      screenConfirmation.replaceChildren();
+    }
     if (proposals.length === 0) {
       list.innerHTML = '<p class="copilot-empty">操作を記録できませんでした。対象アプリで操作して、もう一度お試しください。</p>';
       return;
     }
-    const token = encodeURIComponent(sessionHeaders()['X-Manual-Token'] || '');
     list.innerHTML = proposals.map((item, index) => {
       const beforeSrc = `/images/recording/${encodeURIComponent(item.beforeImage)}?token=${token}`;
       const afterSrc = item.afterImage
@@ -4574,6 +4689,7 @@
       const operationCount = Number.isFinite(reportedOperationCount)
         ? Math.max(0, reportedOperationCount)
         : Math.max(0, Number(item.eventIds?.length || 0));
+      const visualOnly = String(item.actionKind || '') === 'visual-change' && operationCount === 0;
       const reviewReason = captureNeedsReview
         ? (recorder.captureWarning || '記録の完全性を確認できません。前後の手順に抜けがないか確認してください。')
         : (item.reason || '操作対象または画面の変化を自動で確定できませんでした。');
@@ -4585,7 +4701,7 @@
       const proposalContent = reviewRequired
         ? `<h3 id="${titleId}">手順 ${index + 1}（要確認）</h3>`
         : `<h3 id="${titleId}">手順 ${index + 1}　${escapeRecorderHtml(item.title || '')}</h3><p>${escapeRecorderHtml(item.description || '')}</p>`;
-      return `<article class="recorder-proposal${reviewClass}${selected ? '' : ' is-excluded'}" aria-labelledby="${titleId}" data-recorder-event data-proposal-index="${index}" data-review-required="${reviewRequired ? 'true' : 'false'}" data-selected="${selected ? 'true' : 'false'}">
+      return `<article class="recorder-proposal${reviewClass}${selected ? '' : ' is-excluded'}" aria-labelledby="${titleId}" data-recorder-event data-proposal-index="${index}" data-review-required="${reviewRequired ? 'true' : 'false'}" data-visual-only="${visualOnly ? 'true' : 'false'}" data-selected="${selected ? 'true' : 'false'}">
 ${shots}
 <div class="recorder-proposal__body"><span class="recorder-proposal__status">${reviewRequired ? '要確認' : 'そのまま使えます'}</span>${proposalContent}${reviewRequired ? `<p class="recorder-proposal__reason">${escapeRecorderHtml(reviewReason)}</p>` : ''}${reviewEditor}<div class="recorder-proposal__actions"><button type="button" class="button button--secondary button--small" data-recorder-toggle aria-pressed="${selected ? 'true' : 'false'}">${selected ? 'この手順を除外' : 'この手順を使う'}</button></div><details class="recorder-source-evidence"><summary>元の操作を見る</summary><p>${escapeRecorderHtml(transformationReason)}</p><p>${operationCount} 件の元操作は、除外してもこのマニュアル内に残ります。</p></details></div>
 </article>`;
@@ -4946,7 +5062,8 @@ ${shots}
                 ...proposal,
                 title: row.querySelector('[data-recorder-title]')?.value?.trim() || proposal.title,
                 description: row.querySelector('[data-recorder-description]')?.value?.trim() || proposal.description,
-                reviewed: row.dataset.reviewRequired === 'true'
+                reviewed: row.dataset.reviewRequired === 'true',
+                screenConfirmed: recorder.dialog.querySelector('[data-recorder-screen-confirmed]')?.checked === true
               };
             })
             .filter(Boolean)
@@ -4960,6 +5077,7 @@ ${shots}
         id: proposal.id,
         accepted: isRecorderRowSelected(row),
         reviewed: row.dataset.reviewRequired === 'true',
+        screenConfirmed: recorder.dialog.querySelector('[data-recorder-screen-confirmed]')?.checked === true,
         title: row.querySelector('[data-recorder-title]')?.value?.trim() || proposal.title,
         description: row.querySelector('[data-recorder-description]')?.value?.trim() || proposal.description
       };
@@ -5063,6 +5181,7 @@ ${shots}
       + '<div class="copilot-dialog__state" role="status" aria-live="polite"><strong data-recorder-message></strong><span data-recorder-detail></span></div>'
       + '<p class="recorder-capture-warning" data-recorder-capture-warning role="alert" hidden></p>'
       + '<p class="copilot-note" data-recorder-review-note>要確認の手順だけを表示しています。大きな画像と理由を確認し、不要な手順は［この手順を除外］を押してください。</p>'
+      + '<section class="recorder-screen-confirmation" data-recorder-screen-confirmation hidden></section>'
       + '<div class="recorder-review-tools"><strong data-recorder-selection-summary aria-live="polite"></strong><details class="recorder-review-adjustments"><summary>すべての候補を見る・調整</summary><div><label class="recorder-review-filter">表示<select data-recorder-filter><option value="review">要確認のみ</option><option value="all">すべて</option><option value="selected">使う手順のみ</option></select></label><button type="button" class="button button--ghost button--small" data-recorder-select-all>表示中を使う</button><button type="button" class="button button--ghost button--small" data-recorder-select-none>表示中を除外</button><button type="button" class="button button--ghost button--small" data-recorder-exclude-finishing>保存・終了を除外</button></div></details></div>'
       + '<div class="recorder-list" data-recorder-list></div>'
       + '</section>'

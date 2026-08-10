@@ -848,6 +848,8 @@ function Get-MbRecordedLocalProposals {
     if ($candidates.Count -lt 1) { return @() }
     $eventMap = @{}
     foreach ($event in $events) { $eventMap[[int]$event.index] = $event }
+    $frameMap = @{}
+    foreach ($frame in $frames) { $frameMap[[string]$frame.id] = $frame }
     $result = New-Object System.Collections.ArrayList
     foreach ($candidate in $candidates) {
         $groupEvents = @($candidate.eventIds | ForEach-Object {
@@ -899,6 +901,9 @@ function Get-MbRecordedLocalProposals {
         } | Where-Object { $_ } | Select-Object -Unique)
         $transformationReason = Get-MbRecorderTransformationReason -Events $groupEvents `
             -ActionKind ([string]$candidate.actionKind) -HasAfterImage (-not [string]::IsNullOrWhiteSpace([string]$candidate.afterImage))
+        $beforeFrame = if ($frameMap.ContainsKey([string]$candidate.beforeFrame)) { $frameMap[[string]$candidate.beforeFrame] } else { $null }
+        $recordedWindowTitle = if ($null -ne $beforeFrame -and $beforeFrame.PSObject.Properties.Name -contains 'windowTitle') { [string]$beforeFrame.windowTitle } else { $windowTitle }
+        $recordedProcessName = if ($null -ne $beforeFrame -and $beforeFrame.PSObject.Properties.Name -contains 'processName') { [string]$beforeFrame.processName } else { '' }
         [void]$result.Add([pscustomobject]@{
             id = [string]$candidate.id
             beforeFrame = [string]$candidate.beforeFrame
@@ -917,6 +922,8 @@ function Get-MbRecordedLocalProposals {
             timeMs = [int]$candidate.timeMs
             beforeImage = [string]$candidate.beforeImage
             afterImage = [string]$candidate.afterImage
+            windowTitle = $recordedWindowTitle
+            processName = $recordedProcessName
             source = 'local'
         })
     }
@@ -1483,11 +1490,13 @@ function Import-MbRecordedLocalSelections {
         $clientTitle = if ($clientItem.PSObject.Properties.Name -contains 'title') { [string]$clientItem.title } else { [string]$canonical.title }
         $clientDescription = if ($clientItem.PSObject.Properties.Name -contains 'description') { [string]$clientItem.description } else { [string]$canonical.description }
         $clientReviewed = $clientItem.PSObject.Properties.Name -contains 'reviewed' -and [bool]$clientItem.reviewed
+        $clientScreenConfirmed = $clientItem.PSObject.Properties.Name -contains 'screenConfirmed' -and [bool]$clientItem.screenConfirmed
         $canonical.title = $clientTitle
         $canonical.description = $clientDescription
         $canonical | Add-Member -NotePropertyName reviewed -NotePropertyValue $clientReviewed -Force
-        if ([string]$canonical.actionKind -eq 'visual-change' -and -not $clientReviewed) {
-            throw '画面差分から作った手順は、確認画面で内容を確認してから取り込んでください。'
+        $canonical | Add-Member -NotePropertyName screenConfirmed -NotePropertyValue $clientScreenConfirmed -Force
+        if ([string]$canonical.actionKind -eq 'visual-change' -and (-not $clientReviewed -or -not $clientScreenConfirmed)) {
+            throw '画面差分から作った手順は、記録されたアプリの画面を確認してから取り込んでください。'
         }
         [void]$canonicalItems.Add($canonical)
     }
@@ -1512,7 +1521,8 @@ function Import-MbRecordedLocalSelections {
 
     $hasAcceptedVisualChange = @($items | Where-Object {
         [string]$_.actionKind -eq 'visual-change' -and [string]$_.beforeFrame -match '^F\d{5}$' -and
-        [string]$_.afterFrame -match '^F\d{5}$' -and [string]$_.beforeFrame -ne [string]$_.afterFrame -and [bool]$_.reviewed
+        [string]$_.afterFrame -match '^F\d{5}$' -and [string]$_.beforeFrame -ne [string]$_.afterFrame -and
+        [bool]$_.reviewed -and [bool]$_.screenConfirmed
     }).Count -gt 0
     $visualFrameIds = @($allProposals | ForEach-Object {
         if ([string]$_.beforeFrame -match '^F\d{5}$') { [string]$_.beforeFrame }

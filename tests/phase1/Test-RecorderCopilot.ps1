@@ -663,12 +663,15 @@ try {
     $visualProposal = @($visualProposals | Where-Object {
         [string]$_.actionKind -eq 'visual-change' -and [string]$_.beforeFrame -ne [string]$_.afterFrame
     } | Select-Object -First 1)[0]
-    Add-Result ($null -ne $visualProposal -and [int]$visualProposal.sourceOperationCount -eq 0) `
-        '操作0件でもサーバーが画面差分候補を再生成する'
+    Add-Result ($null -ne $visualProposal -and [int]$visualProposal.sourceOperationCount -eq 0 -and
+        $visualProposal.PSObject.Properties.Name -contains 'windowTitle' -and
+        $visualProposal.PSObject.Properties.Name -contains 'processName') `
+        '操作0件でも記録対象名を含む画面差分候補を再生成する'
     $visualItem = $visualProposal.PSObject.Copy()
     $visualItem.title = 'ReportBinder の画面を切り替える'
     $visualItem.description = '画面差分を確認して、対象画面へ移動します。'
     $visualItem | Add-Member -NotePropertyName reviewed -NotePropertyValue $true -Force
+    $visualItem | Add-Member -NotePropertyName screenConfirmed -NotePropertyValue $true -Force
     $visualProject = New-MbProject
     $visualProjectPath = Join-Path $testRoot 'visual-project.json'
     $visualJson = [pscustomobject]@{ accept = @($visualItem) } | ConvertTo-Json -Depth 10 -Compress
@@ -705,15 +708,16 @@ try {
     $unreviewedJob = $visualJob.PSObject.Copy(); $unreviewedJob.JobId = $unreviewedJobId; $unreviewedJob.LedgerPath = $unreviewedLedgerPath
     & (Get-Module ManualBuilder.RecorderServer) { param($Value) $script:MbRecordingJob = $Value } $unreviewedJob
     $unreviewedItem = $visualProposal.PSObject.Copy()
-    $unreviewedItem | Add-Member -NotePropertyName reviewed -NotePropertyValue $false -Force
+    $unreviewedItem | Add-Member -NotePropertyName reviewed -NotePropertyValue $true -Force
+    $unreviewedItem | Add-Member -NotePropertyName screenConfirmed -NotePropertyValue $false -Force
     $unreviewedRejected = $false
     try {
         $unreviewedJson = [pscustomobject]@{ accept = @($unreviewedItem) } | ConvertTo-Json -Depth 10 -Compress
         [void](Import-MbRecordedLocalSelections -Project (New-MbProject) -ProjectPath (Join-Path $testRoot 'unreviewed-project.json') `
             -SheetId $visualProject.sheets[0].id -SelectionJson $unreviewedJson)
-    } catch { $unreviewedRejected = $_.Exception.Message -like '*確認画面で内容を確認*' }
+    } catch { $unreviewedRejected = $_.Exception.Message -like '*記録されたアプリの画面を確認*' }
     Add-Result ($unreviewedRejected -and -not (Test-Path -LiteralPath (Join-Path (Join-Path $testRoot 'evidence') $unreviewedJobId))) `
-        '未確認の画面差分候補を副作用なしで拒否する'
+        '記録対象画面を明示確認していない画面差分候補を副作用なしで拒否する'
 } finally {
     & (Get-Module ManualBuilder.RecorderServer) { $script:MbRecordingJob = $null }
     if ($null -ne $graphics) { $graphics.Dispose() }
