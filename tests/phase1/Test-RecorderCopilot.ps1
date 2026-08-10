@@ -564,32 +564,39 @@ try {
         EvidenceDirectory = $evidenceDirectory; LedgerPath = $ledgerPath
     }
     & (Get-Module ManualBuilder.RecorderServer) { param($Value) $script:MbRecordingJob = $Value } $job
-    $directSafetyProject = New-MbProject
-    $directCrossJson = [pscustomobject]@{accept=@([pscustomobject]@{
-        beforeFrame='F00004'; afterFrame='F00013'; eventIds=@(1); targetEventId=1
-        title='不正な切替'; description='切り替えます。'; confidence='high'; reason=''
-    })} | ConvertTo-Json -Depth 8 -Compress
-    $directCross = Import-MbRecordedLocalSelections -Project $directSafetyProject -ProjectPath $projectPath `
-        -SheetId $directSafetyProject.sheets[0].id -SelectionJson $directCrossJson
-    Add-Result ([int]$directCross.added -eq 0 -and [int]$directCross.skipped -eq 1) '取り込み側でも別アプリの操作前後画像を拒否する'
-    $directForeignJson = [pscustomobject]@{accept=@([pscustomobject]@{
-        beforeFrame='F00004'; afterFrame=''; eventIds=@(2); targetEventId=2
-        title='要確認'; description='対象を操作します。'; confidence='high'; reason=''
-    })} | ConvertTo-Json -Depth 8 -Compress
-    $directForeign = Import-MbRecordedLocalSelections -Project $directSafetyProject -ProjectPath $projectPath `
-        -SheetId $directSafetyProject.sheets[0].id -SelectionJson $directForeignJson
-    $directStep = @($directSafetyProject.sheets[0].steps)[0]
-    Add-Result ([int]$directForeign.added -eq 1 -and [int]$directForeign.needsReview -eq 1 -and
-        @($directStep.annotations).Count -eq 0 -and [string]$directStep.review.action -eq 'review') `
-        '取り込み側でも不整合アンカーを外し高confidenceを要確認にする'
     $localServerProposals = @(Get-MbRecordedLocalProposals)
     Add-Result ($localServerProposals.Count -ge 1 -and [string]$localServerProposals[0].source -eq 'local') `
         'Copilotを使わず安定フレームから編集可能な候補を返す'
+    $trustedLocalProposal = @($localServerProposals | Where-Object { [string]$_.actionKind -ne 'visual-change' } | Select-Object -First 1)[0]
+    $tamperedItem = $trustedLocalProposal.PSObject.Copy()
+    $tamperedItem.beforeFrame = 'F00013'; $tamperedItem.afterFrame = 'F00004'
+    $tamperedItem.actionKind = 'visual-change'; $tamperedItem.confidence = 'high'
+    $tamperedItem.evidenceIds = @('evidence-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+    $tamperedItem.sourceOperationCount = 99; $tamperedItem.reason = '改ざんした理由'
+    $tamperedItem.title = '利用者が直した題名'; $tamperedItem.description = '利用者が直した説明です。'
+    $tamperedItem | Add-Member -NotePropertyName reviewed -NotePropertyValue $true -Force
+    $tamperProject = New-MbProject
+    $tamperJson = [pscustomobject]@{ accept = @($tamperedItem) } | ConvertTo-Json -Depth 10 -Compress
+    $tamperImport = Import-MbRecordedLocalSelections -Project $tamperProject -ProjectPath $projectPath `
+        -SheetId $tamperProject.sheets[0].id -SelectionJson $tamperJson
+    $tamperStep = @($tamperProject.sheets[0].steps)[0]
+    Add-Result ([int]$tamperImport.added -eq 1 -and [string]$tamperStep.title -eq '利用者が直した題名' -and
+        [string]$tamperStep.capture.kind -eq 'recorded-local' -and
+        [int]$tamperStep.capture.sourceOperationCount -eq [int]$trustedLocalProposal.sourceOperationCount -and
+        [string]$tamperStep.capture.transformationReason -eq [string]$trustedLocalProposal.transformationReason) `
+        '候補IDに対する文章以外の改ざんを捨て、サーバー再生成値だけを取り込む'
+    $unknownRejected = $false
+    try {
+        $unknownJson = [pscustomobject]@{ accept = @([pscustomobject]@{ id='unknown'; title='不明'; description='不明'; reviewed=$true }) } | ConvertTo-Json -Compress
+        [void](Import-MbRecordedLocalSelections -Project (New-MbProject) -ProjectPath $projectPath `
+            -SheetId $tamperProject.sheets[0].id -SelectionJson $unknownJson)
+    } catch { $unknownRejected = $_.Exception.Message -like '*IDが不明または重複*' }
+    Add-Result $unknownRejected '不明な候補IDを証拠保存前に拒否する'
     $sameLocalProposals = @(Get-MbRecordedLocalProposals)
     Add-Result ((@($localServerProposals | ForEach-Object { [string]$_.id }) -join ',') -eq
         (@($sameLocalProposals | ForEach-Object { [string]$_.id }) -join ',')) `
         '確認画面と取り込み時で同じ候補IDを使う'
-    $reviewedItem = $localServerProposals[0].PSObject.Copy()
+    $reviewedItem = $trustedLocalProposal.PSObject.Copy()
     $reviewedItem.title = '利用者が確認した手順'
     $reviewedItem.description = '候補画面で文章を直して確定します。'
     $reviewedItem | Add-Member -NotePropertyName reviewed -NotePropertyValue $true -Force
@@ -625,13 +632,88 @@ try {
         '候補画面で利用者が除外した判断も変換履歴へ残す'
     $project = New-MbProject
     $project = Save-MbProject -Project $project -Path $projectPath
-    $selectionJson = [pscustomobject]@{ accept = @($proposals) } | ConvertTo-Json -Depth 10 -Compress
+    $importItem = $trustedLocalProposal.PSObject.Copy()
+    $importItem | Add-Member -NotePropertyName reviewed -NotePropertyValue ([bool]$importItem.reviewRequired) -Force
+    $selectionJson = [pscustomobject]@{ accept = @($importItem) } | ConvertTo-Json -Depth 10 -Compress
     $imported = Import-MbRecordedLocalSelections -Project $project -ProjectPath $projectPath -SheetId $project.sheets[0].id -SelectionJson $selectionJson
     $step = @($project.sheets[0].steps)[0]
     Add-Result ([int]$imported.added -eq 1 -and @($project.sheets[0].steps).Count -eq 1) 'Copilotが選んだ単位で手順を作る'
     Add-Result (-not [string]::IsNullOrWhiteSpace([string]$step.resultImageId) -and [string]$step.imageLayout -eq 'before') '結果画像を保持しつつ初稿は案内画像1枚で取り込む'
     Add-Result (@($step.annotations).Count -eq 1 -and [string]$step.capture.kind -eq 'recorded-local') 'クリックイベントは赤枠候補のアンカーとしてだけ使う'
-    Add-Result ([string]$step.title -eq '詳細を表示' -and [string]$step.description -match 'クリック') 'Copilotの手順文を編集可能な初稿へ反映する'
+    Add-Result ([string]$step.title -eq [string]$trustedLocalProposal.title -and -not [string]::IsNullOrWhiteSpace([string]$step.description)) `
+        'サーバー再生成候補の手順文を編集可能な初稿へ反映する'
+
+    # 実機で再現した「操作0件・画面差分候補あり」を、そのままの証拠件数で取り込む。
+    $visualJobId = 'record-' + [guid]::NewGuid().ToString('N')
+    $visualEventsPath = Join-Path $testRoot 'visual-events.jsonl'
+    [IO.File]::WriteAllText($visualEventsPath, '', [Text.UTF8Encoding]::new($false))
+    $visualLedgerPath = Join-Path $testRoot 'visual-evidence-ledger.jsonl'
+    [IO.File]::WriteAllLines($visualLedgerPath, @(
+        ([ordered]@{ recordType='capture-start'; formatVersion=2; sessionId=$visualJobId; mouseHook=$true; keyboardHook=$true; completeness='no-known-gaps' } | ConvertTo-Json -Compress),
+        ([ordered]@{ recordType='capture-end'; formatVersion=2; sessionId=$visualJobId; operationCount=0; reason='stopped'; completeness='no-known-gaps'; warning='' } | ConvertTo-Json -Compress)
+    ), [Text.UTF8Encoding]::new($false))
+    $visualJob = [pscustomobject]@{
+        JobId = $visualJobId; JobDirectory = $testRoot; ProcessId = 0
+        FramesDirectory = $framesDirectory; FramesPath = $framesPath
+        EventsDirectory = $framesDirectory; EventsPath = $visualEventsPath
+        EvidenceDirectory = $evidenceDirectory; LedgerPath = $visualLedgerPath
+    }
+    & (Get-Module ManualBuilder.RecorderServer) { param($Value) $script:MbRecordingJob = $Value } $visualJob
+    $visualProposals = @(Get-MbRecordedLocalProposals)
+    $visualProposal = @($visualProposals | Where-Object {
+        [string]$_.actionKind -eq 'visual-change' -and [string]$_.beforeFrame -ne [string]$_.afterFrame
+    } | Select-Object -First 1)[0]
+    Add-Result ($null -ne $visualProposal -and [int]$visualProposal.sourceOperationCount -eq 0) `
+        '操作0件でもサーバーが画面差分候補を再生成する'
+    $visualItem = $visualProposal.PSObject.Copy()
+    $visualItem.title = 'ReportBinder の画面を切り替える'
+    $visualItem.description = '画面差分を確認して、対象画面へ移動します。'
+    $visualItem | Add-Member -NotePropertyName reviewed -NotePropertyValue $true -Force
+    $visualProject = New-MbProject
+    $visualProjectPath = Join-Path $testRoot 'visual-project.json'
+    $visualJson = [pscustomobject]@{ accept = @($visualItem) } | ConvertTo-Json -Depth 10 -Compress
+    $visualImported = Import-MbRecordedLocalSelections -Project $visualProject -ProjectPath $visualProjectPath `
+        -SheetId $visualProject.sheets[0].id -SelectionJson $visualJson
+    $visualStep = @($visualProject.sheets[0].steps)[0]
+    $visualSession = @($visualProject.evidenceSessions)[0]
+    Add-Result ([int]$visualImported.added -eq 1 -and [int]$visualImported.sourceOperations -eq 0 -and
+        [int]$visualImported.archivedEvidence -eq 0 -and [int]$visualImported.archivedFrames -ge 2) `
+        '操作0件を増やさず、確認済み画面差分だけから1手順を作る'
+    Add-Result ([string]$visualStep.capture.kind -eq 'recorded-visual' -and
+        [int]$visualStep.capture.sourceOperationCount -eq 0 -and @($visualStep.capture.evidenceIds).Count -eq 0 -and
+        @($visualStep.annotations).Count -eq 0 -and [string]$visualStep.review.action -eq 'review') `
+        '画面差分手順を架空操作・赤枠なしの要確認として保持する'
+    Add-Result ([string]$visualStep.title -eq 'ReportBinder の画面を切り替える' -and
+        [string]$visualSession.evidenceBasis -eq 'frames-only' -and
+        [string]$visualSession.captureCompleteness -eq 'known-gaps' -and [string]$visualSession.captureWarning -match '操作イベント') `
+        '利用者の文章だけを反映し、画面差分セッションの警告を保存する'
+    $visualArchive = Join-Path (Join-Path $testRoot 'evidence') $visualJobId
+    $visualDecisions = @([IO.File]::ReadAllLines((Join-Path $visualArchive 'transformations.jsonl'), [Text.Encoding]::UTF8) | ForEach-Object { $_ | ConvertFrom-Json })
+    Add-Result ((Test-Path -LiteralPath (Join-Path $visualArchive 'frames.jsonl') -PathType Leaf) -and
+        @(Get-ChildItem -LiteralPath (Join-Path $visualArchive 'frames') -Filter 'frame-*.jpg').Count -eq [int]$visualSession.frameCount -and
+        @($visualDecisions | Where-Object { [bool]$_.accepted -and [int]$_.sourceOperationCount -eq 0 -and $_.beforeFrame -and $_.afterFrame }).Count -eq 1) `
+        '参照フレームと前後ID・変換判断を操作証拠とは分けて保存する'
+    $visualProject = Save-MbProject -Project $visualProject -Path $visualProjectPath
+    Add-Result ([int]$visualProject.evidenceSessions[0].frameCount -ge 2) '画面差分証拠を含むプロジェクトを検証して再保存できる'
+
+    $unreviewedJobId = 'record-' + [guid]::NewGuid().ToString('N')
+    $unreviewedLedgerPath = Join-Path $testRoot 'unreviewed-evidence-ledger.jsonl'
+    [IO.File]::WriteAllLines($unreviewedLedgerPath, @(
+        ([ordered]@{ recordType='capture-start'; formatVersion=2; sessionId=$unreviewedJobId; completeness='no-known-gaps' } | ConvertTo-Json -Compress),
+        ([ordered]@{ recordType='capture-end'; formatVersion=2; sessionId=$unreviewedJobId; operationCount=0; completeness='no-known-gaps' } | ConvertTo-Json -Compress)
+    ), [Text.UTF8Encoding]::new($false))
+    $unreviewedJob = $visualJob.PSObject.Copy(); $unreviewedJob.JobId = $unreviewedJobId; $unreviewedJob.LedgerPath = $unreviewedLedgerPath
+    & (Get-Module ManualBuilder.RecorderServer) { param($Value) $script:MbRecordingJob = $Value } $unreviewedJob
+    $unreviewedItem = $visualProposal.PSObject.Copy()
+    $unreviewedItem | Add-Member -NotePropertyName reviewed -NotePropertyValue $false -Force
+    $unreviewedRejected = $false
+    try {
+        $unreviewedJson = [pscustomobject]@{ accept = @($unreviewedItem) } | ConvertTo-Json -Depth 10 -Compress
+        [void](Import-MbRecordedLocalSelections -Project (New-MbProject) -ProjectPath (Join-Path $testRoot 'unreviewed-project.json') `
+            -SheetId $visualProject.sheets[0].id -SelectionJson $unreviewedJson)
+    } catch { $unreviewedRejected = $_.Exception.Message -like '*確認画面で内容を確認*' }
+    Add-Result ($unreviewedRejected -and -not (Test-Path -LiteralPath (Join-Path (Join-Path $testRoot 'evidence') $unreviewedJobId))) `
+        '未確認の画面差分候補を副作用なしで拒否する'
 } finally {
     & (Get-Module ManualBuilder.RecorderServer) { $script:MbRecordingJob = $null }
     if ($null -ne $graphics) { $graphics.Dispose() }

@@ -865,6 +865,51 @@ try {
         $oldFormatRejected = $_.Exception.Message -like '*現在の証拠形式ではありません*'
     }
     Add-Result $oldFormatRejected '旧録画形式を推測で取り込まず新形式での記録を求める'
+
+    $validLedgerLines = @([IO.File]::ReadAllLines($ledgerPath, [Text.Encoding]::UTF8))
+    $duplicateLedgerPath = Join-Path $importRoot 'duplicate-start-ledger.jsonl'
+    [IO.File]::WriteAllLines($duplicateLedgerPath, @($validLedgerLines[0], $validLedgerLines[0]) + @($validLedgerLines[1..3]), [Text.UTF8Encoding]::new($false))
+    $duplicateJob = $job.PSObject.Copy(); $duplicateJob.LedgerPath = $duplicateLedgerPath
+    & (Get-Module ManualBuilder.RecorderServer) { param($Job) $script:MbRecordingJob = $Job } $duplicateJob
+    $duplicateStartRejected = $false
+    try {
+        [void](& (Get-Module ManualBuilder.RecorderServer) {
+            param($Project, $Path) Import-MbRecordedEvidenceSession -Project $Project -ProjectPath $Path
+        } (New-MbProject) (Join-Path $importRoot 'duplicate-project.json'))
+    } catch { $duplicateStartRejected = $_.Exception.Message -like '*現在の証拠形式ではありません*' }
+    Add-Result $duplicateStartRejected '重複したcapture-startを取り込み前に拒否する'
+
+    $mismatchLedgerPath = Join-Path $importRoot 'count-mismatch-ledger.jsonl'
+    [IO.File]::WriteAllLines($mismatchLedgerPath, @(
+        $validLedgerLines[0], $validLedgerLines[1], $validLedgerLines[2],
+        ([ordered]@{ recordType='capture-end'; formatVersion=2; sessionId=$recordingJobId; operationCount=1; reason='stopped'; completeness='no-known-gaps'; warning='' } | ConvertTo-Json -Compress)
+    ), [Text.UTF8Encoding]::new($false))
+    $mismatchJob = $job.PSObject.Copy(); $mismatchJob.LedgerPath = $mismatchLedgerPath
+    & (Get-Module ManualBuilder.RecorderServer) { param($Job) $script:MbRecordingJob = $Job } $mismatchJob
+    $countMismatchRejected = $false
+    try {
+        [void](& (Get-Module ManualBuilder.RecorderServer) {
+            param($Project, $Path) Import-MbRecordedEvidenceSession -Project $Project -ProjectPath $Path
+        } (New-MbProject) (Join-Path $importRoot 'mismatch-project.json'))
+    } catch { $countMismatchRejected = $_.Exception.Message -like '*件数が終了台帳と一致しません*' }
+    Add-Result $countMismatchRejected 'capture-end件数とoperation台帳件数の不一致を拒否する'
+
+    $foreignSessionLedgerPath = Join-Path $importRoot 'foreign-session-ledger.jsonl'
+    $foreignOperation = $validLedgerLines[1] | ConvertFrom-Json
+    $foreignOperation.sessionId = 'record-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    [IO.File]::WriteAllLines($foreignSessionLedgerPath, @(
+        $validLedgerLines[0], ($foreignOperation | ConvertTo-Json -Compress), $validLedgerLines[2], $validLedgerLines[3]
+    ), [Text.UTF8Encoding]::new($false))
+    $foreignSessionJob = $job.PSObject.Copy(); $foreignSessionJob.LedgerPath = $foreignSessionLedgerPath
+    & (Get-Module ManualBuilder.RecorderServer) { param($Job) $script:MbRecordingJob = $Job } $foreignSessionJob
+    $foreignSessionRejected = $false
+    try {
+        [void](& (Get-Module ManualBuilder.RecorderServer) {
+            param($Project, $Path) Import-MbRecordedEvidenceSession -Project $Project -ProjectPath $Path
+        } (New-MbProject) (Join-Path $importRoot 'foreign-project.json'))
+    } catch { $foreignSessionRejected = $_.Exception.Message -like '*セッション情報が一致しません*' }
+    Add-Result $foreignSessionRejected '別セッションのoperation混入を拒否する'
+
     & (Get-Module ManualBuilder.RecorderServer) { param($Job) $script:MbRecordingJob = $Job } $job
     $listedEvents = @(Get-MbRecordedEvents)
     Add-Result ($listedEvents.Count -eq 2) 'EdgeからExcelへ移った操作をどちらも確認一覧へ残す'

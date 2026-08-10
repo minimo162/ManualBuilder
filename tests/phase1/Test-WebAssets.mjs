@@ -217,6 +217,9 @@ if (appJs) {
   check('変換理由と元操作件数は詳細を開いたときだけ表示する',
     appJs.includes('recorder-source-evidence') && appJs.includes('<summary>元の操作を見る</summary>') &&
     appJs.includes('sourceOperationCount'));
+  check('画面差分だけの候補を架空の元操作1件として表示しない',
+    appJs.includes('Math.max(0, reportedOperationCount)') &&
+    !appJs.includes('Math.max(1, Number(item.sourceOperationCount'));
   check('録画終了後はローカル候補だけを表示する',
     appJs.includes('renderRecordedProposals(recorder.localProposals)') &&
     !appJs.includes("fetch('/api/recorder/analyze/"));

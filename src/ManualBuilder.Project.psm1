@@ -261,6 +261,18 @@ function Test-MbProject {
             [string]$session.decisionsFile -notmatch '^evidence/record-[a-f0-9]{32}/transformations\.jsonl$') {
             throw '操作証拠の保存先が不正です。'
         }
+        if ($session.PSObject.Properties.Name -contains 'evidenceBasis') {
+            if ([string]$session.evidenceBasis -notin @('operations', 'operations-and-frames', 'frames-only')) {
+                throw '操作証拠の根拠種別が不正です。'
+            }
+            $frameCount = [int]$session.frameCount
+            if ($frameCount -lt 0 -or $frameCount -gt 100000) { throw '画面差分の証拠件数が不正です。' }
+            if ($frameCount -gt 0 -and
+                ([string]$session.frameManifestFile -notmatch '^evidence/record-[a-f0-9]{32}/frames\.jsonl$' -or
+                 [string]$session.frameImageDirectory -notmatch '^evidence/record-[a-f0-9]{32}/frames$')) {
+                throw '画面差分の証拠保存先が不正です。'
+            }
+        }
     }
     foreach ($sheet in @($Project.sheets)) {
         if ([string]$sheet.id -notmatch '^sheet-[a-f0-9]{32}$') { throw 'シートIDの形式が不正です。' }

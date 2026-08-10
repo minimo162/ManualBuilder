@@ -31,6 +31,31 @@ function Get-MbDefaultAppCacheRoot {
     return [IO.Path]::GetFullPath((Join-Path $LocalApplicationData 'ManualBuilder\app'))
 }
 
+function Get-MbRuntimeEntryUrl {
+    param([Parameter(Mandatory = $true)][object]$Runtime)
+
+    # 現行サーバーは画面本体もセッショントークンで保護するため、再起動時も
+    # runtime.json に保存した入口URLを開く。url は entryUrl を持たない旧版との
+    # 互換用にだけ残し、値は localhost のルートURLへ厳密に限定する。
+    $entryUrl = if ($Runtime.PSObject.Properties.Name -contains 'entryUrl') {
+        [string]$Runtime.entryUrl
+    } else {
+        ''
+    }
+    if (-not [string]::IsNullOrWhiteSpace($entryUrl)) {
+        if ($entryUrl -notmatch '^http://localhost:\d+/\?token=[a-f0-9]{32}$') {
+            throw '実行中のManualBuilderの入口URLが不正です。'
+        }
+        return $entryUrl
+    }
+
+    $legacyUrl = [string]$Runtime.url
+    if ($legacyUrl -notmatch '^http://localhost:\d+/$') {
+        throw '実行中のManualBuilderのURLが不正です。'
+    }
+    return $legacyUrl
+}
+
 function Get-MbAppPackageFiles {
     param([Parameter(Mandatory = $true)][string]$AppRoot)
 
@@ -255,6 +280,7 @@ function Install-MbLocalApplication {
 Export-ModuleMember -Function @(
     'Get-MbApplicationVersion',
     'Get-MbDefaultAppCacheRoot',
+    'Get-MbRuntimeEntryUrl',
     'Install-MbLocalApplication',
     'Test-MbCachedApplication'
 )

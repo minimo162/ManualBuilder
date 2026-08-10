@@ -1177,7 +1177,9 @@ function Import-MbRecordedEvents {
 function Import-MbRecordedEvidenceSession {
     param(
         [Parameter(Mandatory = $true)][object]$Project,
-        [Parameter(Mandatory = $true)][string]$ProjectPath
+        [Parameter(Mandatory = $true)][string]$ProjectPath,
+        [AllowEmptyCollection()][string[]]$VisualFrameIds = @(),
+        [switch]$AllowFrameOnly
     )
     if ($null -eq $script:MbRecordingJob) { return $null }
     if ($script:MbRecordingJob.PSObject.Properties.Name -notcontains 'JobId' -or
@@ -1199,18 +1201,21 @@ function Import-MbRecordedEvidenceSession {
         try { [void]$ledgerEntries.Add(($line | ConvertFrom-Json)) }
         catch { throw '操作証拠の台帳が壊れています。記録を取り込まずに停止しました。' }
     }
-    $captureStart = @($ledgerEntries | Where-Object { [string]$_.recordType -eq 'capture-start' } | Select-Object -First 1)
-    $captureEnd = @($ledgerEntries | Where-Object { [string]$_.recordType -eq 'capture-end' } | Select-Object -Last 1)
+    # First/Last へ絞ってから Count を調べると、重複した開始・終了を見逃す。
+    $captureStart = @($ledgerEntries | Where-Object { [string]$_.recordType -eq 'capture-start' })
+    $captureEnd = @($ledgerEntries | Where-Object { [string]$_.recordType -eq 'capture-end' })
     if ($captureStart.Count -ne 1 -or $captureEnd.Count -ne 1 -or
         [int]$captureStart[0].formatVersion -ne 2 -or [int]$captureEnd[0].formatVersion -ne 2) {
         throw 'この記録は現在の証拠形式ではありません。新しい形式で記録し直してください。'
     }
-    if ([string]$captureStart[0].sessionId -ne $jobId -or [string]$captureEnd[0].sessionId -ne $jobId -or
-        @($ledgerEntries | Where-Object { [string]$_.recordType -eq 'capture-gap' -and [string]$_.sessionId -ne $jobId }).Count -gt 0) {
+    $sessionEntries = @($ledgerEntries | Where-Object { [string]$_.recordType -in @('capture-start', 'operation', 'decision', 'capture-gap', 'capture-end') })
+    if (@($sessionEntries | Where-Object { [string]$_.sessionId -ne $jobId }).Count -gt 0) {
         throw '操作証拠のセッション情報が一致しません。取り込まずに停止しました。'
     }
     $operations = @($ledgerEntries | Where-Object { [string]$_.recordType -eq 'operation' })
-    if ($operations.Count -eq 0) { throw '取り込める操作証拠がありません。' }
+    if ([int]$captureEnd[0].operationCount -ne $operations.Count) {
+        throw '操作証拠の件数が終了台帳と一致しません。取り込まずに停止しました。'
+    }
     foreach ($operation in $operations) {
         $evidenceId = [string]$operation.id
         $imageName = [string]$operation.image
@@ -1220,6 +1225,53 @@ function Import-MbRecordedEvidenceSession {
             -not (Test-Path -LiteralPath (Join-Path $evidenceSource $imageName) -PathType Leaf)) {
             throw '操作証拠の画像が不足しています。欠けたまま手順へ変換せずに停止しました。'
         }
+    }
+
+    # 操作イベントが無い場合も、サーバーが再生成した画面差分候補の参照フレームを
+    # 別種の証拠として保存できる。架空の operation や evidence ID は作らない。
+    $requestedFrameIds = New-Object 'System.Collections.Generic.HashSet[string]'
+    foreach ($frameId in @($VisualFrameIds)) {
+        if ([string]$frameId -notmatch '^F\d{5}$' -or -not $requestedFrameIds.Add([string]$frameId)) { continue }
+    }
+    $visualFrames = New-Object System.Collections.ArrayList
+    if ($requestedFrameIds.Count -gt 0) {
+        if ($script:MbRecordingJob.PSObject.Properties.Name -notcontains 'FramesPath' -or
+            $script:MbRecordingJob.PSObject.Properties.Name -notcontains 'FramesDirectory') {
+            throw '画面差分の証拠情報がありません。記録し直してください。'
+        }
+        $framesPath = [string]$script:MbRecordingJob.FramesPath
+        $framesDirectory = [string]$script:MbRecordingJob.FramesDirectory
+        if (-not (Test-Path -LiteralPath $framesPath -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $framesDirectory -PathType Container)) {
+            throw '画面差分の台帳または画像がありません。記録し直してください。'
+        }
+        $frameIds = New-Object 'System.Collections.Generic.HashSet[string]'
+        $frameNames = New-Object 'System.Collections.Generic.HashSet[string]'
+        $lastFrameTime = -1
+        foreach ($line in @([IO.File]::ReadAllLines($framesPath, [Text.Encoding]::UTF8))) {
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            try { $frame = $line | ConvertFrom-Json }
+            catch { throw '画面差分の台帳が壊れています。取り込まずに停止しました。' }
+            $frameId = [string]$frame.id; $frameName = [string]$frame.image; $frameTime = [int]$frame.timeMs
+            if ($frameId -notmatch '^F\d{5}$' -or $frameName -notmatch '^frame-\d{5}\.jpg$' -or
+                -not $frameIds.Add($frameId) -or -not $frameNames.Add($frameName) -or $frameTime -lt $lastFrameTime) {
+                throw '画面差分の台帳に不正なID、名前、または時刻順があります。'
+            }
+            $lastFrameTime = $frameTime
+            if ($requestedFrameIds.Contains($frameId)) {
+                $frameSource = Join-Path $framesDirectory $frameName
+                if (-not (Test-Path -LiteralPath $frameSource -PathType Leaf)) {
+                    throw '画面差分の画像が不足しています。欠けたまま手順へ変換せずに停止しました。'
+                }
+                [void]$visualFrames.Add($frame)
+            }
+        }
+        if ($visualFrames.Count -ne $requestedFrameIds.Count) {
+            throw '画面差分の参照先が台帳にありません。取り込まずに停止しました。'
+        }
+    }
+    if ($operations.Count -eq 0 -and (-not $AllowFrameOnly -or $visualFrames.Count -lt 2)) {
+        throw '取り込める操作証拠または確認済みの画面差分がありません。'
     }
     if ($Project.PSObject.Properties.Name -notcontains 'evidenceSessions') {
         $Project | Add-Member -NotePropertyName 'evidenceSessions' -NotePropertyValue @() -Force
@@ -1240,16 +1292,32 @@ function Import-MbRecordedEvidenceSession {
         Copy-Item -LiteralPath (Join-Path $evidenceSource $imageName) `
             -Destination (Join-Path $imagesDestination $imageName) -Force
     }
+    if ($visualFrames.Count -gt 0) {
+        $frameImagesDestination = Join-Path $sessionRoot 'frames'
+        [void](New-Item -ItemType Directory -Path $frameImagesDestination -Force)
+        $frameManifestLines = New-Object System.Collections.ArrayList
+        foreach ($frame in @($visualFrames)) {
+            $frameName = [string]$frame.image
+            Copy-Item -LiteralPath (Join-Path ([string]$script:MbRecordingJob.FramesDirectory) $frameName) `
+                -Destination (Join-Path $frameImagesDestination $frameName) -Force
+            [void]$frameManifestLines.Add(($frame | ConvertTo-Json -Depth 8 -Compress))
+        }
+        [IO.File]::WriteAllLines((Join-Path $sessionRoot 'frames.jsonl'), @($frameManifestLines), [Text.UTF8Encoding]::new($false))
+    }
     $operationCount = 0; $undoneCount = 0
     foreach ($entry in $ledgerEntries) {
         if ([string]$entry.recordType -eq 'operation') { $operationCount++ }
         elseif ([string]$entry.recordType -eq 'decision' -and [string]$entry.action -eq 'undo') { $undoneCount++ }
     }
     $captureGaps = @($ledgerEntries | Where-Object { [string]$_.recordType -eq 'capture-gap' })
-    $captureCompleteness = if ($captureGaps.Count -gt 0 -or
+    $captureCompleteness = if ($operations.Count -eq 0 -and $visualFrames.Count -gt 0) {
+        'known-gaps'
+    } elseif ($captureGaps.Count -gt 0 -or
         [string]$captureStart[0].completeness -eq 'known-gaps' -or
         [string]$captureEnd[0].completeness -eq 'known-gaps') { 'known-gaps' } else { 'no-known-gaps' }
-    $captureWarning = if ($captureCompleteness -eq 'known-gaps') {
+    $captureWarning = if ($operations.Count -eq 0 -and $visualFrames.Count -gt 0) {
+        '操作イベントを取得できなかったため、確認済みの画面差分から手順を作成しました。操作内容と手順の抜けを確認してください。'
+    } elseif ($captureCompleteness -eq 'known-gaps') {
         $warning = [string]$captureEnd[0].warning
         if ([string]::IsNullOrWhiteSpace($warning)) { '一部の操作を記録できなかった可能性があります。' } else { $warning }
     } else { '' }
@@ -1260,6 +1328,10 @@ function Import-MbRecordedEvidenceSession {
         ledgerFile = ('evidence/' + $jobId + '/evidence-ledger.jsonl')
         imageDirectory = ('evidence/' + $jobId + '/images')
         decisionsFile = ('evidence/' + $jobId + '/transformations.jsonl')
+        evidenceBasis = $(if ($operations.Count -eq 0) { 'frames-only' } elseif ($visualFrames.Count -gt 0) { 'operations-and-frames' } else { 'operations' })
+        frameCount = $visualFrames.Count
+        frameManifestFile = $(if ($visualFrames.Count -gt 0) { 'evidence/' + $jobId + '/frames.jsonl' } else { '' })
+        frameImageDirectory = $(if ($visualFrames.Count -gt 0) { 'evidence/' + $jobId + '/frames' } else { '' })
         formatVersion = 2
         captureCompleteness = $captureCompleteness
         captureWarning = $captureWarning
@@ -1321,6 +1393,9 @@ function Save-MbRecordedTransformationDecisions {
             proposalId = $proposalId
             evidenceIds = $evidenceIds
             sourceOperationCount = $sourceOperationCount
+            beforeFrame = $(if ($proposal.PSObject.Properties.Name -contains 'beforeFrame') { [string]$proposal.beforeFrame } else { '' })
+            afterFrame = $(if ($proposal.PSObject.Properties.Name -contains 'afterFrame') { [string]$proposal.afterFrame } else { '' })
+            actionKind = $(if ($proposal.PSObject.Properties.Name -contains 'actionKind') { [string]$proposal.actionKind } else { '' })
             accepted = $acceptedIds.Contains($proposalId)
             reason = $reason
             reviewed = $reviewed
@@ -1380,17 +1455,74 @@ function Import-MbRecordedLocalSelections {
     )
     if ([string]::IsNullOrWhiteSpace($SelectionJson)) { throw '取り込む手順候補がありません。' }
     try { $selection = $SelectionJson | ConvertFrom-Json } catch { throw '手順候補の形式が正しくありません。' }
-    $items = @($selection)
-    if ($selection.PSObject.Properties.Name -contains 'accept') { $items = @($selection.accept) }
-    elseif ($selection.PSObject.Properties.Name -contains 'steps') { $items = @($selection.steps) }
-    $decisionItems = if ($selection.PSObject.Properties.Name -contains 'decisions') { @($selection.decisions) } else { @() }
-    if ($items.Count -gt 300) { throw '一度に取り込める手順は300件までです。' }
+    $clientItems = @($selection)
+    if ($selection.PSObject.Properties.Name -contains 'accept') { $clientItems = @($selection.accept) }
+    elseif ($selection.PSObject.Properties.Name -contains 'steps') { $clientItems = @($selection.steps) }
+    $clientDecisions = if ($selection.PSObject.Properties.Name -contains 'decisions') { @($selection.decisions) } else { @() }
+    if ($clientItems.Count -gt 300) { throw '一度に取り込める手順は300件までです。' }
 
-    $evidenceSession = Import-MbRecordedEvidenceSession -Project $Project -ProjectPath $ProjectPath
-    $sessionId = if ($null -ne $evidenceSession) { [string]$evidenceSession.id } else { '' }
+    # 候補の証拠情報をブラウザーから信頼しない。現在の記録から候補を再生成し、
+    # IDで一致した title / description / reviewed だけを反映する。
     $allProposals = @(Get-MbRecordedLocalProposals)
+    $proposalMap = @{}
+    foreach ($proposal in $allProposals) {
+        $proposalId = if ($null -ne $proposal -and $proposal.PSObject.Properties.Name -contains 'id') { [string]$proposal.id } else { '' }
+        if ([string]::IsNullOrWhiteSpace($proposalId) -or $proposalMap.ContainsKey($proposalId)) {
+            throw '記録から再生成した手順候補のIDが不正です。取り込まずに停止しました。'
+        }
+        $proposalMap[$proposalId] = $proposal
+    }
+    $acceptedIds = New-Object 'System.Collections.Generic.HashSet[string]'
+    $canonicalItems = New-Object System.Collections.ArrayList
+    foreach ($clientItem in $clientItems) {
+        $clientId = if ($null -ne $clientItem -and $clientItem.PSObject.Properties.Name -contains 'id') { [string]$clientItem.id } else { '' }
+        if ([string]::IsNullOrWhiteSpace($clientId) -or -not $proposalMap.ContainsKey($clientId) -or -not $acceptedIds.Add($clientId)) {
+            throw '選択した手順候補のIDが不明または重複しています。確認画面を開き直してください。'
+        }
+        $canonical = $proposalMap[$clientId].PSObject.Copy()
+        $clientTitle = if ($clientItem.PSObject.Properties.Name -contains 'title') { [string]$clientItem.title } else { [string]$canonical.title }
+        $clientDescription = if ($clientItem.PSObject.Properties.Name -contains 'description') { [string]$clientItem.description } else { [string]$canonical.description }
+        $clientReviewed = $clientItem.PSObject.Properties.Name -contains 'reviewed' -and [bool]$clientItem.reviewed
+        $canonical.title = $clientTitle
+        $canonical.description = $clientDescription
+        $canonical | Add-Member -NotePropertyName reviewed -NotePropertyValue $clientReviewed -Force
+        if ([string]$canonical.actionKind -eq 'visual-change' -and -not $clientReviewed) {
+            throw '画面差分から作った手順は、確認画面で内容を確認してから取り込んでください。'
+        }
+        [void]$canonicalItems.Add($canonical)
+    }
+    $items = @($canonicalItems)
+
+    $decisionItems = New-Object System.Collections.ArrayList
+    $decisionIds = New-Object 'System.Collections.Generic.HashSet[string]'
+    foreach ($clientDecision in $clientDecisions) {
+        $decisionId = if ($null -ne $clientDecision -and $clientDecision.PSObject.Properties.Name -contains 'id') { [string]$clientDecision.id } else { '' }
+        if ([string]::IsNullOrWhiteSpace($decisionId) -or -not $proposalMap.ContainsKey($decisionId) -or -not $decisionIds.Add($decisionId)) {
+            throw '確認結果の手順候補IDが不明または重複しています。確認画面を開き直してください。'
+        }
+        $canonicalDecision = $proposalMap[$decisionId]
+        [void]$decisionItems.Add([pscustomobject]@{
+            id = $decisionId
+            accepted = $acceptedIds.Contains($decisionId)
+            reviewed = $clientDecision.PSObject.Properties.Name -contains 'reviewed' -and [bool]$clientDecision.reviewed
+            title = $(if ($clientDecision.PSObject.Properties.Name -contains 'title') { [string]$clientDecision.title } else { [string]$canonicalDecision.title })
+            description = $(if ($clientDecision.PSObject.Properties.Name -contains 'description') { [string]$clientDecision.description } else { [string]$canonicalDecision.description })
+        })
+    }
+
+    $hasAcceptedVisualChange = @($items | Where-Object {
+        [string]$_.actionKind -eq 'visual-change' -and [string]$_.beforeFrame -match '^F\d{5}$' -and
+        [string]$_.afterFrame -match '^F\d{5}$' -and [string]$_.beforeFrame -ne [string]$_.afterFrame -and [bool]$_.reviewed
+    }).Count -gt 0
+    $visualFrameIds = @($allProposals | ForEach-Object {
+        if ([string]$_.beforeFrame -match '^F\d{5}$') { [string]$_.beforeFrame }
+        if ([string]$_.afterFrame -match '^F\d{5}$') { [string]$_.afterFrame }
+    } | Select-Object -Unique)
+    $evidenceSession = Import-MbRecordedEvidenceSession -Project $Project -ProjectPath $ProjectPath `
+        -VisualFrameIds $visualFrameIds -AllowFrameOnly:$hasAcceptedVisualChange
+    $sessionId = if ($null -ne $evidenceSession) { [string]$evidenceSession.id } else { '' }
     Save-MbRecordedTransformationDecisions -ProjectPath $ProjectPath -SessionId $sessionId `
-        -AllProposals $allProposals -AcceptedItems $items -DecisionItems $decisionItems
+        -AllProposals $allProposals -AcceptedItems $items -DecisionItems @($decisionItems)
 
     $frameMap = @{}
     foreach ($frame in @(Get-MbRecordedFrames)) { $frameMap[[string]$frame.id] = $frame }
@@ -1494,7 +1626,9 @@ function Import-MbRecordedLocalSelections {
             Get-MbRecorderTransformationReason -Events @($eventIds | ForEach-Object { $eventMap[[int]$_] }) `
                 -ActionKind $itemActionKind -HasAfterImage ($null -ne $afterFrame)
         }
-        [void](Set-MbStepCapture -Project $Project -StepId $stepId -Kind 'recorded-local' -VideoTimeMs ([int]$beforeFrame.timeMs) `
+        $isVisualOnly = $itemActionKind -eq 'visual-change' -and $sourceOperationCount -eq 0
+        $captureKind = if ($isVisualOnly) { 'recorded-visual' } else { 'recorded-local' }
+        [void](Set-MbStepCapture -Project $Project -StepId $stepId -Kind $captureKind -VideoTimeMs ([int]$beforeFrame.timeMs) `
             -ClickLabel $targetName -WindowTitle ([string]$beforeFrame.windowTitle) -TargetType $targetType `
             -TargetSource $targetSource -TargetConfidence $targetConfidence -TargetCandidateId $candidateId `
             -TargetCandidatesJson $candidatesJson -ClickPointJson $clickPointJson -SourceSessionId $sessionId `
@@ -1502,7 +1636,7 @@ function Import-MbRecordedLocalSelections {
             -TransformationReason $transformationReason)
         $confidence = if ($item.PSObject.Properties.Name -contains 'confidence') { [string]$item.confidence } else { 'low' }
         $userReviewed = $item.PSObject.Properties.Name -contains 'reviewed' -and [bool]$item.reviewed
-        if (($confidence -ne 'high' -or @($annotations).Count -eq 0) -and -not $userReviewed) {
+        if ($isVisualOnly -or (($confidence -ne 'high' -or @($annotations).Count -eq 0) -and -not $userReviewed)) {
             $reason = if ($item.PSObject.Properties.Name -contains 'reason') { [string]$item.reason } else { '' }
             if ([string]::IsNullOrWhiteSpace($reason)) { $reason = 'このPCで選んだ画像と手順です。文章と赤枠を確認してください。' }
             [void](Set-MbStepReview -Project $Project -StepId $stepId -Action 'review' -Reason $reason)
@@ -1514,6 +1648,7 @@ function Import-MbRecordedLocalSelections {
         added = $added; skipped = $skipped; generated = $added; needsReview = $needsReview
         sourceOperations = $(if ($null -ne $evidenceSession) { [int]$evidenceSession.operationCount } else { $eventMap.Count })
         archivedEvidence = $(if ($null -ne $evidenceSession) { [int]$evidenceSession.operationCount } else { 0 })
+        archivedFrames = $(if ($null -ne $evidenceSession -and $evidenceSession.PSObject.Properties.Name -contains 'frameCount') { [int]$evidenceSession.frameCount } else { 0 })
         sourceSessionId = $sessionId
     }
 }

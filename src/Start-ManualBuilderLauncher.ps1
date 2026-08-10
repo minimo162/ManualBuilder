@@ -61,9 +61,8 @@ function Show-MbAlreadyRunningNotice {
 function Open-MbRunningApplication {
     try {
         $runtime = [IO.File]::ReadAllText($runtimePath, [Text.Encoding]::UTF8) | ConvertFrom-Json
-        $url = [string]$runtime.url
-        if ($url -notmatch '^http://localhost:\d+/$') { return $false }
-        Start-Process $url
+        $entryUrl = Get-MbRuntimeEntryUrl -Runtime $runtime
+        Start-Process $entryUrl
         return $true
     } catch {
         Write-MbLauncherLog "起動中のManualBuilderをブラウザーで開けませんでした: $($_.Exception.Message)" 'WARN'

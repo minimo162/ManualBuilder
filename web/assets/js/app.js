@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const appVersion = '0.53.0';
+  const appVersion = '0.53.2';
   // 番号注釈はSVG属性で指定するためCSS変数を参照できない。
   // 編集画面とExcel・Word出力（New-MbAnnotatedImage）で同じ見た目にするため、基準フォントを揃える。
   const ANNOTATION_NUMBER_FONT = '"BIZ UDPGothic", "BIZ UDPゴシック", "BIZ UDGothic", "BIZ UDゴシック", Meiryo, "Yu Gothic UI", "MS Pゴシック", sans-serif';
@@ -4570,7 +4570,10 @@
       const reviewRequired = captureNeedsReview || proposalReviewRequired;
       const reviewClass = reviewRequired ? ' recorder-proposal--review' : '';
       const selected = recorder.localSelection instanceof Set ? recorder.localSelection.has(index) : true;
-      const operationCount = Math.max(1, Number(item.sourceOperationCount || item.eventIds?.length || 1));
+      const reportedOperationCount = Number(item.sourceOperationCount);
+      const operationCount = Number.isFinite(reportedOperationCount)
+        ? Math.max(0, reportedOperationCount)
+        : Math.max(0, Number(item.eventIds?.length || 0));
       const reviewReason = captureNeedsReview
         ? (recorder.captureWarning || '記録の完全性を確認できません。前後の手順に抜けがないか確認してください。')
         : (item.reason || '操作対象または画面の変化を自動で確定できませんでした。');
