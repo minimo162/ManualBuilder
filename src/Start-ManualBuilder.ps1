@@ -1473,7 +1473,8 @@ function Invoke-MbRoute {
                 Import-MbRecordedEvents -Project $project -ProjectPath $ProjectPath -SheetId $sheetId -SelectionJson $selectionJson
             }
             $archivedEvidence = if ($imported.PSObject.Properties.Name -contains 'archivedEvidence') { [int]$imported.archivedEvidence } else { 0 }
-            if ([int]$imported.added -gt 0 -or $archivedEvidence -gt 0) {
+            $archivedFrames = if ($imported.PSObject.Properties.Name -contains 'archivedFrames') { [int]$imported.archivedFrames } else { 0 }
+            if ([int]$imported.added -gt 0 -or $archivedEvidence -gt 0 -or $archivedFrames -gt 0) {
                 [void](Save-MbProject -Project $project -Path $ProjectPath)
                 $script:CaptureVersion++
             }

@@ -33,6 +33,29 @@ try {
     [void](New-Item -ItemType Directory -Path $testRoot -Force)
     Import-Module $launcherModule -Force
 
+    $sessionToken = '0123456789abcdef0123456789abcdef'
+    $currentRuntime = [pscustomobject]@{
+        url = 'http://localhost:8765/'
+        entryUrl = "http://localhost:8765/?token=$sessionToken"
+    }
+    Assert-Mb ((Get-MbRuntimeEntryUrl -Runtime $currentRuntime) -eq $currentRuntime.entryUrl) `
+        '起動中の現行版を開き直すときはセッショントークン付き入口URLを使う'
+
+    $legacyRuntime = [pscustomobject]@{ url = 'http://localhost:8765/' }
+    Assert-Mb ((Get-MbRuntimeEntryUrl -Runtime $legacyRuntime) -eq $legacyRuntime.url) `
+        'entryUrlを持たない旧版だけはlocalhostの従来URLを使う'
+
+    $invalidRuntimeRejected = $false
+    try {
+        [void](Get-MbRuntimeEntryUrl -Runtime ([pscustomobject]@{
+            url = 'http://localhost:8765/'
+            entryUrl = 'https://example.invalid/?token=0123456789abcdef0123456789abcdef'
+        }))
+    } catch {
+        $invalidRuntimeRejected = $true
+    }
+    Assert-Mb $invalidRuntimeRejected '不正なentryUrlを従来URLへフォールバックせず拒否する'
+
     $sourceRoot = Join-Path $testRoot 'shared-app'
     $cacheRoot = Join-Path $testRoot 'local-profile\ManualBuilder\app'
     Set-MbFakeApplication -Root $sourceRoot -Version '1.0.0' -Marker 'first'

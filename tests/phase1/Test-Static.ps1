@@ -108,7 +108,7 @@ Add-Result ($serverText -match '\$storageLayout\.RuntimePath') '二重起動情�
 Add-Result (($serverText -match 'AllowParallelTestInstance') -and ($serverText -match '\$ProjectPath\|\$Port') -and ($serverText -match 'ManualBuilder-\$sid') -and ($serverText -match '-Test-\$scopeHash')) '通常起動の単一起動制御を保ったまま隔離E2Eを並行起動できる'
 Add-Result ($serverText -match '\$storageLayout\.ExportJobsRoot') 'Office一時ジョブをユーザーデータ配下へ置く'
 Add-Result (($runCommandText -match '%~dp0src\\Start-ManualBuilderLauncher\.ps1') -and ($runCommandText -notmatch '(?im)^cd /d')) 'UNC共有フォルダーから更新ランチャーを起動できる'
-Add-Result ([string]$appVersionManifest.appVersion -eq '0.53.0') '配布用アプリバージョンを0.53.0へ更新する'
+Add-Result ([string]$appVersionManifest.appVersion -eq '0.53.2') '配布用アプリバージョンを0.53.2へ更新する'
 Add-Result ($workspaceModuleText -notmatch "ManualBuilder\.Project\.psm1'\) -Force") 'WorkspaceがProjectコマンドを強制再読込しない'
 Add-Result ($launcherModuleText -match "'ManualBuilder\\app'") 'アプリ実行コードをLocalApplicationDataへキャッシュする'
 Add-Result ($launcherModuleText -match "@\('src', 'web', 'run\.cmd', 'app-version\.json'\)") 'キャッシュ対象からプロジェクトデータを除外する'
@@ -117,6 +117,7 @@ Add-Result ($launcherModuleText -match 'コピー中に配布元のバージョ�
 Add-Result ($launcherModuleText -match "\.previous'") '更新前のローカル実行版を1世代残す'
 Add-Result ($launcherModuleText -match "'ManualBuilder\.cmd'") '共有フォルダーなしで使えるローカル起動ファイルを作る'
 Add-Result (($launcherText -match 'Test-MbApplicationIsRunning') -and ($launcherText -match 'Open-MbRunningApplication')) '起動中はローカル実行版を差し替えず既存画面を開く'
+Add-Result (($launcherText -match 'Get-MbRuntimeEntryUrl -Runtime \$runtime') -and ($launcherModuleText -match 'entryUrl')) '起動中の現行版はトークン付き入口URLで開き直す'
 Add-Result (($launcherText -match 'Test-MbCachedApplication -CacheRoot \$cacheRoot') -and ($launcherText -match "検証済みの既存ローカル版で起動します")) '共有更新失敗時は検証済みローカル版へフォールバックする'
 Add-Result (($launcherText -match '-LegacyAppRoot \$sourceRoot') -and ($serverText -match '-LegacyAppRoot \$LegacyAppRoot')) 'ローカル起動後も共有元の旧データを移行できる'
 Add-Result ($serverText -match 'FileSystemWatcher') 'スクリーンショット保存先の監視を実装する'
@@ -243,7 +244,7 @@ Add-Result ($excelModuleText -notmatch 'Weight 3') 'Excel罫線に未定義のWe
 Add-Result (($excelModuleText -match '\$indexSheet\.Tab\.Color') -and ($excelModuleText -match '\$worksheet\.Tab\.Color')) 'Excelのシートタブへ文書テーマ色を付ける'
 Add-Result ($excelModuleText -notmatch '\[IO\.File\]::Replace\([^\r\n]*\$null') 'Excel進捗JSONを有効なバックアップパスで置換する'
 Add-Result ($serverText -notmatch '\[IO\.File\]::Replace\([^\r\n]*\$null') 'サーバー進捗JSONを有効なバックアップパスで置換する'
-Add-Result (($launcherText -match 'Start-Process \$url') -and
+Add-Result (($launcherText -match 'Start-Process \$entryUrl') -and
     ($serverText -match 'Start-Process \$existingUrl')) '二重起動時に既存のManualBuilderをブラウザーで開き直す'
 Add-Result ($projectModuleText -match "'Remove-MbSheet'") '承認済み動詞のシート削除コマンドを公開する'
 Add-Result ($projectModuleText -match "'Copy-MbSheet'") 'シート複製コマンドを公開する'
