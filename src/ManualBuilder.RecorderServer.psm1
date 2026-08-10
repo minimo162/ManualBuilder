@@ -180,7 +180,7 @@ function Read-MbRecordingStatus {
     $status | Add-Member -NotePropertyName 'controllerAvailable' -NotePropertyValue ([bool]$controllerAvailable) -Force
 
     # 記録プロセスが落ちたまま recording / paused が残らないようにする。
-    if ([string]$status.state -in @('starting', 'recording', 'paused')) {
+    if ([string]$status.state -in @('starting', 'ready', 'recording', 'paused')) {
         $alive = $false
         try {
             $alive = if ($script:MbRecordingJob.PSObject.Properties.Name -contains 'ProcessIdentity') {
@@ -221,10 +221,16 @@ function Start-MbRecordingJob {
     )
 
     $current = Read-MbRecordingStatus
-    if ([string]$current.state -in @('starting', 'recording', 'paused')) { return $current }
+    if ([string]$current.state -in @('starting', 'ready', 'recording', 'paused')) { return $current }
 
     $capability = Get-MbRecorderCapability
     if (-not $capability.available) { throw ([string]$capability.reason) }
+
+    # APIを受け付けた時点のManualBuilder画面を保持する。capability確認でNative型を
+    # 初期化した直後に取得し、WebView2準備中の対象アプリ切替と取り違えない。
+    $manualBuilderWindowHandle = try {
+        [long][MbRecorderNative]::GetForegroundWindow()
+    } catch { 0L }
 
     # 記録モニターはWPF + WebView2版だけを使用する。欠落時に旧UIへ退避せず、
     # 記録を開始する前に明確なエラーとして止める。
@@ -270,6 +276,10 @@ function Start-MbRecordingJob {
     $manualResultPath = Join-Path $jobDirectory 'result.requested'
     $uiaTargetPath = Join-Path $jobDirectory 'uia-target.json'
     $uiaLogPath = Join-Path $jobDirectory 'uia-monitor.log'
+
+    # 記録モニターを開いただけでは撮影を始めない。利用者が対象アプリへ移動し、
+    # 小型操作画面から明示的に開始するまでワーカーを開始待ちにする。
+    [IO.File]::WriteAllText($pausePath, 'ready', (New-Object Text.UTF8Encoding($false)))
 
     $queued = [pscustomobject]@{
         jobId = $jobId; state = 'starting'; count = 0
@@ -353,7 +363,8 @@ function Start-MbRecordingJob {
             '-ResultPath', (& $quote $manualResultPath),
             '-StopPath', (& $quote $stopPath),
             '-JobId', (& $quote $jobId),
-            '-WebRoot', (& $quote $controllerWebRoot)
+            '-WebRoot', (& $quote $controllerWebRoot),
+            '-ReturnWindowHandle', ([string]$manualBuilderWindowHandle)
         )
         $controller = Start-Process -FilePath $powerShellPath -ArgumentList $controllerArguments `
             -WorkingDirectory $controllerVendorRoot -WindowStyle Hidden -PassThru
@@ -410,13 +421,13 @@ function Start-MbRecordingJob {
 function Stop-MbRecordingJob {
     if ($null -eq $script:MbRecordingJob) { return (Get-MbRecordingIdleStatus) }
     $status = Read-MbRecordingStatus
-    if ([string]$status.state -in @('starting', 'recording', 'paused')) {
+    if ([string]$status.state -in @('starting', 'ready', 'recording', 'paused')) {
         [IO.File]::WriteAllText([string]$script:MbRecordingJob.StopPath, 'stop', (New-Object Text.UTF8Encoding($false)))
         # 記録プロセスが停止を見て後始末を終えるまで少しだけ待つ。
         for ($i = 0; $i -lt 40; $i++) {
             Start-Sleep -Milliseconds 100
             $status = Read-MbRecordingStatus
-            if ([string]$status.state -notin @('starting', 'recording', 'paused')) { break }
+            if ([string]$status.state -notin @('starting', 'ready', 'recording', 'paused')) { break }
         }
     }
     return $status
@@ -426,7 +437,7 @@ function Set-MbRecordingPaused {
     param([bool]$Paused)
     if ($null -eq $script:MbRecordingJob) { return (Get-MbRecordingIdleStatus) }
     $status = Read-MbRecordingStatus
-    if ([string]$status.state -notin @('recording', 'paused')) { return $status }
+    if ([string]$status.state -notin @('ready', 'recording', 'paused')) { return $status }
     $pausePath = [string]$script:MbRecordingJob.PausePath
     if ($Paused) {
         [IO.File]::WriteAllText($pausePath, 'pause', (New-Object Text.UTF8Encoding($false)))

@@ -200,6 +200,33 @@ try {
         'ローカル候補でもクリックと入力をまとめ、入力途中より完成した通常コマを操作後へ割り当てる'
     Add-Result ([int]$localCandidates[0].timeMs -eq 1000 -and [int]$localCandidates[1].timeMs -eq 3000) `
         '同じ操作前画像を共有してもイベント時刻で手順順序を保つ'
+
+    $duplicateClickFrames = @(
+        [pscustomobject]@{ id='D00001'; index=1; timeMs=800; image='frame-00001.jpg'; windowTitle='申請 - Microsoft Edge' },
+        [pscustomobject]@{ id='D00002'; index=2; timeMs=1600; image='frame-00002.jpg'; windowTitle='申請 - Microsoft Edge' }
+    )
+    $duplicateClickEvents = @(
+        [pscustomobject]@{ index=1; timeMs=1000; kind='click'; targetName='保存'; windowTitle='申請 - Microsoft Edge'; rect=[pscustomobject]@{x1=.10;y1=.10;x2=.20;y2=.20}; clickPoint=[pscustomobject]@{x=.15;y=.15} },
+        [pscustomobject]@{ index=2; timeMs=1080; kind='click'; targetName=''; windowTitle='申請 - Microsoft Edge'; rect=[pscustomobject]@{x1=.11;y1=.11;x2=.21;y2=.21}; clickPoint=[pscustomobject]@{x=.16;y=.16} },
+        [pscustomobject]@{ index=3; timeMs=1200; kind='click'; targetName='保存'; windowTitle='申請 - Microsoft Edge'; rect=$null; clickPoint=[pscustomobject]@{x=.17;y=.16} }
+    )
+    $duplicateClickCandidates = @(New-MbRecorderLocalFrameCandidates -Frames $duplicateClickFrames `
+        -Events $duplicateClickEvents -MaximumFrames 8)
+    Add-Result ($duplicateClickCandidates.Count -eq 1 -and
+        (@($duplicateClickCandidates[0].eventIds) -join ',') -eq '1,2,3') `
+        '同じ対象を450ms以内に複数経路で記録したクリックは全eventIdsを持つ1候補にする'
+
+    $differentTargetEvents = @(
+        [pscustomobject]@{ index=1; timeMs=1000; kind='click'; targetName='保存'; windowTitle='申請 - Microsoft Edge'; rect=[pscustomobject]@{x1=.10;y1=.10;x2=.20;y2=.20} },
+        [pscustomobject]@{ index=2; timeMs=1200; kind='click'; targetName='閉じる'; windowTitle='申請 - Microsoft Edge'; rect=[pscustomobject]@{x1=.70;y1=.10;x2=.80;y2=.20} }
+    )
+    $differentTargetCandidates = @(New-MbRecorderLocalFrameCandidates -Frames $duplicateClickFrames `
+        -Events $differentTargetEvents -MaximumFrames 8)
+    Add-Result ($differentTargetCandidates.Count -eq 2 -and
+        @($differentTargetCandidates[0].eventIds).Count -eq 1 -and
+        @($differentTargetCandidates[1].eventIds).Count -eq 1) `
+        '短時間のクリックでも対象が異なれば別候補のまま残す'
+
     $candidateFrames = @(Select-MbRecorderCandidateFrames -Frames $meaningFrames -Candidates $localCandidates)
     Add-Result ($candidateFrames.Count -eq 4 -and @($candidateFrames | Where-Object { $_.id -eq 'F00002' }).Count -eq 1 -and
         @($candidateFrames | Where-Object { $_.id -eq 'F00003' }).Count -eq 1) `
@@ -232,6 +259,20 @@ try {
         [string]$noEventCandidates[0].actionKind -eq 'visual-change' -and
         [int]$noEventCandidates[0].targetEventId -eq 0 -and @($noEventCandidates[0].eventIds).Count -eq 0) `
         '操作イベントが0件でも安定した画像差分を赤枠なしの要確認候補として回収する'
+
+    $visualEpisodeFrames = @(
+        [pscustomobject]@{ id='V00001'; index=1; timeMs=500; image='frame-00001.jpg'; windowTitle='Book1 - Excel'; visualChange=0.0 },
+        [pscustomobject]@{ id='V00002'; index=2; timeMs=1000; image='frame-00002.jpg'; windowTitle='Book1 - Excel'; visualChange=0.0008 },
+        [pscustomobject]@{ id='V00003'; index=3; timeMs=2300; image='frame-00003.jpg'; windowTitle='Book1 - Excel'; visualChange=0.0012 }
+    )
+    $visualEpisodeCandidates = @(New-MbRecorderLocalFrameCandidates -Frames $visualEpisodeFrames `
+        -Events @() -MaximumFrames 8)
+    Add-Result ($visualEpisodeCandidates.Count -eq 1 -and
+        [string]$visualEpisodeCandidates[0].beforeFrame -eq 'V00001' -and
+        [string]$visualEpisodeCandidates[0].afterFrame -eq 'V00003' -and
+        @($visualEpisodeCandidates[0].eventIds).Count -eq 0 -and
+        [int]$visualEpisodeCandidates[0].targetEventId -eq 0) `
+        '同じアプリで1500ms以内に続く画面変化を最初から最後までの1episodeにまとめる'
 
     $leadingGapFrames = @(
         [pscustomobject]@{ id='L00001'; index=1; timeMs=800; image='frame-00001.jpg'; windowTitle='Book1 - Excel'; visualChange=0.0 },

@@ -58,10 +58,10 @@
       <footer class="commandbar">
         <p class="help-text" id="help-text" role="status" aria-live="polite">対象アプリでいつもどおり操作してください。クリックや入力は自動で記録されます。</p>
         <div class="command-actions">
-          <button class="secondary-button" id="pause-button" type="button">一時停止</button>
+          <button class="secondary-button" id="pause-button" type="button" aria-keyshortcuts="Control+Alt+Space">一時停止</button>
           <button class="secondary-button" id="undo-button" type="button" disabled>直前の操作を取り消す</button>
           <button class="secondary-button" id="result-button" type="button" disabled>結果画像を追加</button>
-          <button class="primary-button" id="finish-button" type="button" disabled>終了して確認</button>
+          <button class="primary-button" id="finish-button" type="button" aria-keyshortcuts="Control+Alt+Enter" disabled>終了して確認</button>
         </div>
       </footer>
     </main>
@@ -72,14 +72,15 @@
           <span>記録レシート</span>
           <strong id="compact-target-label">操作を待っています</strong>
         </div>
+        <p class="shortcut-guide" id="shortcut-guide">Ctrl+Alt+Space：開始・一時停止・再開<br>Ctrl+Alt+Enter：終了確認</p>
         <ol class="receipt-list" id="receipt-list" aria-label="最近記録した操作">
-          <li class="receipt-empty">操作すると、ここに直近3件が表示されます</li>
+          <li class="receipt-empty">操作すると、ここに直前の操作が表示されます</li>
         </ol>
       </div>
       <div class="compact-actions" aria-label="記録の操作">
-        <button class="icon-text-button" id="compact-pause-button" type="button">一時停止</button>
+        <button class="icon-text-button" id="compact-pause-button" type="button" aria-keyshortcuts="Control+Alt+Space">一時停止</button>
         <button class="icon-text-button" id="compact-undo-button" type="button" disabled>直前を取り消す</button>
-        <button class="primary-button" id="compact-finish-button" type="button" disabled>終了して確認</button>
+        <button class="primary-button" id="compact-finish-button" type="button" aria-keyshortcuts="Control+Alt+Enter" disabled>終了して確認</button>
         <button class="quiet-button" id="expand-button" type="button">直前画像を確認</button>
       </div>
     </section>
@@ -92,7 +93,7 @@
       <p id="close-description">終了すると、ManualBuilderで記録した操作を確認できます。</p>
       <div class="modal-actions">
         <button class="secondary-button" id="cancel-close-button" type="button">記録を続ける</button>
-        <button class="primary-button" id="confirm-close-button" type="button">終了して確認</button>
+        <button class="primary-button" id="confirm-close-button" type="button">記録を終了する</button>
       </div>
     </section>
   </dialog>

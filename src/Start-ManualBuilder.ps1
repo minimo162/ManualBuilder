@@ -1422,7 +1422,7 @@ function Invoke-MbRoute {
                 }
             } catch { }
             $status = Start-MbRecordingJob -ResultCaptureDelayMs $resultCaptureDelayMs
-            Write-MbLog '操作の記録を開始しました。' 'OK'
+            Write-MbLog '記録の操作画面を開きました。対象アプリへ移動してから記録を開始してください。' 'OK'
             Write-MbResponse $Context ($status | ConvertTo-Json -Depth 6 -Compress) 200 'application/json; charset=utf-8'
         } catch {
             Write-MbResponse $Context (([pscustomobject]@{ message = [string]$_.Exception.Message } | ConvertTo-Json -Compress)) 400 'application/json; charset=utf-8'

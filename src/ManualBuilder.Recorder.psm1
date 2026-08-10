@@ -2310,15 +2310,19 @@ function Invoke-MbRecordingLoop {
     $pendingResultWindowHandle = 0L
     $pendingResultDueAtMs = 0
     $suppressedTypingKeys = New-Object 'System.Collections.Generic.HashSet[int]'
-    $paused = $false
+    $paused = -not [string]::IsNullOrWhiteSpace($PausePath) -and
+        (Test-Path -LiteralPath $PausePath -PathType Leaf)
+    $recordingHasStarted = -not $paused
     # 常駐パネルは応答が遅いと同じIDを再送する。同一IDの破壊的操作は1回だけ実行する。
     $processedUndoRequests = @{}
     $processedResultRequests = @{}
 
-    Write-MbRecordingStatus -StatusPath $StatusPath -JobId $JobId -State 'recording' -Count 0 -Message '操作を記録しています'
+    Write-MbRecordingStatus -StatusPath $StatusPath -JobId $JobId `
+        -State $(if ($paused) { 'ready' } else { 'recording' }) -Count 0 `
+        -Message $(if ($paused) { '対象アプリへ移動してから記録を開始してください' } else { '操作を記録しています' })
 
     while ($true) {
-        if ($mouseHookActive) {
+        if ($mouseHookActive -and $recordingHasStarted) {
             $droppedMouseClicks = try { [long][MbRecorderNative]::DroppedMouseClicks } catch { 0L }
             $droppedKeyboardActivities = try { [long][MbRecorderNative]::DroppedKeyboardActivities } catch { 0L }
             if ($droppedMouseClicks -gt $lastDroppedMouseClicks -or
@@ -2356,6 +2360,12 @@ function Invoke-MbRecordingLoop {
                 if ($null -ne $preClickCapture) { try { $preClickCapture.bitmap.Dispose() } catch { } }
                 $preClickCapture = $null; $preClickWindow = $null; $preClickCaptureAtMs = -1000
             }
+            $pauseState = if (-not $recordingHasStarted -and $index -eq 0) { 'ready' } else { 'paused' }
+            if ($pauseState -eq 'ready' -and $mouseHookActive) {
+                # 対象アプリへ移る操作や開始ショートカットを、開始後の最初の手順へ混ぜない。
+                [MbRecorderNative]::ClearMouseClicks()
+                [MbRecorderNative]::ClearKeyboardActivities()
+            }
             if (-not [string]::IsNullOrWhiteSpace($UndoPath) -and (Test-Path -LiteralPath $UndoPath -PathType Leaf)) {
                 $undoRequestId = try { [string](Get-Content -Raw -LiteralPath $UndoPath -ErrorAction Stop) } catch { '' }
                 Remove-Item -LiteralPath $UndoPath -Force -ErrorAction SilentlyContinue
@@ -2372,7 +2382,7 @@ function Invoke-MbRecordingLoop {
                             $index = [int]$undo.count; $lastTarget = [string]$undo.lastTarget
                         }
                     }
-                    Write-MbRecordingStatus -StatusPath $StatusPath -JobId $JobId -State 'paused' -Count $index `
+                    Write-MbRecordingStatus -StatusPath $StatusPath -JobId $JobId -State $pauseState -Count $index `
                         -Message $(if ($undoRemoved) { '直前の操作を取り消しました' } else { '取り消せる操作がありませんでした' }) `
                         -LastTarget $lastTarget -UndoRequestId $undoRequestId
                 }
@@ -2385,7 +2395,7 @@ function Invoke-MbRecordingLoop {
                     if ([bool]$manualResult.saved -and $pendingResultIndex -eq $index) {
                         $pendingResultIndex = 0; $pendingResultWindowHandle = 0L
                     }
-                    Write-MbRecordingStatus -StatusPath $StatusPath -JobId $JobId -State 'paused' -Count $index `
+                    Write-MbRecordingStatus -StatusPath $StatusPath -JobId $JobId -State $pauseState -Count $index `
                         -Message $(if ([bool]$manualResult.saved) { '直前の手順へ結果画面を追加しました' } else { '結果画面を追加できませんでした' }) `
                         -LastTarget $lastTarget -ResultRequestId ([string]$manualResult.requestId)
                 }
@@ -2395,8 +2405,9 @@ function Invoke-MbRecordingLoop {
                 $watch.Elapsed.TotalMinutes -ge $MaxMinutes) { break }
             if (([int]$watch.ElapsedMilliseconds - $lastStatusMs) -ge 400) {
                 $lastStatusMs = [int]$watch.ElapsedMilliseconds
-                Write-MbRecordingStatus -StatusPath $StatusPath -JobId $JobId -State 'paused' -Count $index `
-                    -Message '記録を一時停止しています' -LastTarget $lastTarget
+                Write-MbRecordingStatus -StatusPath $StatusPath -JobId $JobId -State $pauseState -Count $index `
+                    -Message $(if ($pauseState -eq 'ready') { '対象アプリへ移動してから記録を開始してください' } else { '記録を一時停止しています' }) `
+                    -LastTarget $lastTarget
             }
             Start-Sleep -Milliseconds 50
             continue
@@ -2410,9 +2421,19 @@ function Invoke-MbRecordingLoop {
             $rightState = [int][MbRecorderNative]::GetAsyncKeyState($script:MbVkRightButton)
             $leftWasDown = Test-MbAsyncKeyStateDown -State $leftState
             $rightWasDown = Test-MbAsyncKeyStateDown -State $rightState
+            $firstStart = -not $recordingHasStarted
+            if ($firstStart) {
+                # 準備中の待ち時間を記録時刻や最大記録時間へ含めない。
+                $watch.Restart()
+                $recordingStartedTimestamp = [MbRecorderNative]::GetTimestamp()
+                $lastFrameAtMs = -1000
+                $lastStatusMs = -1000
+                $recordingHasStarted = $true
+            }
             $paused = $false
             Write-MbRecordingStatus -StatusPath $StatusPath -JobId $JobId -State 'recording' -Count $index `
-                -Message '操作の記録を再開しました' -LastTarget $lastTarget
+                -Message $(if ($firstStart) { '操作の記録を開始しました' } else { '操作の記録を再開しました' }) `
+                -LastTarget $lastTarget
         }
 
         if (-not [string]::IsNullOrWhiteSpace($UndoPath) -and (Test-Path -LiteralPath $UndoPath -PathType Leaf)) {

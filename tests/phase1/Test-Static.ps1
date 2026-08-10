@@ -445,7 +445,7 @@ Add-Result (($recorderModuleText -match 'if \(-not \[string\]::IsNullOrWhiteSpac
     ($recorderModuleText -match '\$windowTitle\.IndexOf\(\$snapshotTitle')) '遷移後ページのタイトルだけで古いDOM対象を許可しない'
 Add-Result (($jsText -notmatch 'data-recorder-mode') -and
     ($jsText -notmatch '専用プロファイル') -and
-    ($jsText -match '対象のアプリで普段どおり操作してください')) '普段のEdgeとアプリを記録する単一モードにする'
+    ($jsText -match '対象アプリへ移動し')) '普段のEdgeとアプリを記録する単一モードにする'
 Add-Result (($serverText -match 'Start-MbRecordingJob') -and
     ($serverText -notmatch 'WithNarration') -and
     ($serverText -notmatch 'Start-MbRecordingJob[^\r\n]+-Mode')) '普段のデスクトップを外部送信なしで記録する'
@@ -471,6 +471,12 @@ Add-Result (($recorderServerText -notmatch 'Get-MbRecorderTargetCrop -Rect') -an
 Add-Result (($serverText -match '/api/recorder/pause') -and ($serverText -match '/api/recorder/undo') -and
     ($recorderModuleText -match 'Remove-MbLastRecordingEvent') -and ($jsText -match 'data-recorder-pause') -and
     ($jsText -match 'data-recorder-undo')) '記録を一時停止し直前の操作を取り消せる'
+Add-Result (($recorderServerText -match 'WriteAllText\(\$pausePath, ''ready''') -and
+    ($recorderModuleText -match 'State \$\(if \(\$paused\) \{ ''ready'' \}') -and
+    ($recorderModuleText -match '\$recordingHasStarted') -and
+    ($jsText -match "status\.state === 'ready'") -and
+    ($jsText -match '開始待ち・まだ記録していません')) `
+    '対象アプリへ移動して明示開始するまで操作や画面を記録しない'
 Add-Result (($serverText -match "resultDelayMs") -and
     ($recorderServerText -match 'ResultCaptureDelayMs = 700') -and
     ($recorderModuleText -match '\$pendingResultDueAtMs = \[int\]\$watch\.ElapsedMilliseconds \+ \$ResultCaptureDelayMs') -and

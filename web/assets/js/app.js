@@ -4373,6 +4373,7 @@
     captureCompleteness: 'unknown',
     captureWarning: '',
     paused: false,
+    state: 'idle',
     undoBusy: false,
     count: 0,
     capabilityRequestId: 0,
@@ -4397,7 +4398,7 @@
     });
     const startButton = dialog.querySelector('[data-recorder-start]');
     startButton.hidden = view !== 'setup';
-    startButton.textContent = '記録を開始';
+    startButton.textContent = '記録の操作画面を開く';
     dialog.querySelector('[data-recorder-stop]').hidden = view !== 'recording';
     dialog.querySelector('[data-recorder-import]').hidden = view !== 'review';
     dialog.querySelectorAll('[data-recorder-phase]').forEach((item) => {
@@ -4664,8 +4665,11 @@ ${shots}
     else renderRecordedEvents(recorder.events);
     const candidateCount = recorder.localProposals.length || recorder.events.length;
     const reviewCount = [...recorder.dialog.querySelectorAll('[data-recorder-event][data-review-required="true"]')].length;
+    const operationCount = recorder.events.length;
     setRecorderMessage(
-      candidateCount > 0 ? `${candidateCount} 件の手順を作成・確認が必要なのは ${reviewCount} 件` : '操作を記録できませんでした',
+      candidateCount > 0
+        ? `${operationCount} 回の操作を ${candidateCount} 件の手順に整理・要確認 ${reviewCount} 件`
+        : '操作を記録できませんでした',
       candidateCount > 0
         ? (detail || (reviewCount > 0 ? '要確認の手順だけを表示しています。問題なければそのまま手順を作成できます。' : '確認が必要な箇所はありません。そのまま手順を作成します。'))
         : '対象アプリで操作して、もう一度お試しください。'
@@ -4725,6 +4729,7 @@ ${shots}
       if (!response.ok) return;
       const status = await response.json();
       if (status.state === 'starting') {
+        recorder.state = 'starting';
         recorder.paused = false;
         recorder.count = 0;
         const pauseButton = recorder.dialog?.querySelector('[data-recorder-pause]');
@@ -4736,7 +4741,22 @@ ${shots}
         setRecorderMessage('記録の準備をしています', '「記録を開始しました」と表示されるまで、そのままお待ちください。');
         return;
       }
+      if (status.state === 'ready') {
+        recorder.state = 'ready';
+        recorder.paused = true;
+        recorder.count = 0;
+        const pauseButton = recorder.dialog?.querySelector('[data-recorder-pause]');
+        const undoButton = recorder.dialog?.querySelector('[data-recorder-undo]');
+        const stopButton = recorder.dialog?.querySelector('[data-recorder-stop]');
+        if (pauseButton) pauseButton.textContent = '記録を開始';
+        if (pauseButton) pauseButton.disabled = false;
+        if (undoButton) undoButton.disabled = true;
+        if (stopButton) stopButton.disabled = true;
+        setRecorderMessage('開始待ち・まだ記録していません', '対象アプリへ移動し、小さい操作画面の［記録を開始］を押してください。');
+        return;
+      }
       if (status.state === 'recording') {
+        recorder.state = 'recording';
         recorder.paused = false;
         recorder.count = Number(status.count || 0);
         const pauseButton = recorder.dialog?.querySelector('[data-recorder-pause]');
@@ -4761,6 +4781,7 @@ ${shots}
         return;
       }
       if (status.state === 'paused') {
+        recorder.state = 'paused';
         recorder.paused = true;
         recorder.count = Number(status.count || 0);
         const pauseButton = recorder.dialog?.querySelector('[data-recorder-pause]');
@@ -4792,6 +4813,7 @@ ${shots}
     recorder.active = true;
     recorder.localProposals = [];
     recorder.paused = false;
+    recorder.state = 'starting';
     recorder.undoBusy = false;
     recorder.count = 0;
     updateRecorderLivePreview({});
@@ -4828,7 +4850,7 @@ ${shots}
 
   const setRecordingPaused = async () => {
     if (!recorder.active || recorder.busy || recorder.undoBusy) return;
-    const nextPaused = !recorder.paused;
+    const nextPaused = recorder.state === 'recording';
     const body = new URLSearchParams();
     body.set('paused', nextPaused ? 'true' : 'false');
     try {
@@ -4839,6 +4861,7 @@ ${shots}
       });
       if (!response.ok) throw new Error(await response.text() || describeHttpFailure(response.status));
       recorder.paused = nextPaused;
+      recorder.state = nextPaused ? 'paused' : 'recording';
       const button = recorder.dialog.querySelector('[data-recorder-pause]');
       button.textContent = nextPaused ? '記録を再開' : '一時停止';
       setRecorderMessage(
@@ -5013,7 +5036,7 @@ ${shots}
       + '<ol class="recorder-flow" aria-label="作成の流れ"><li data-recorder-phase="record"><span>1</span>普段どおり操作</li><li data-recorder-phase="analyze"><span>2</span>手順を自動作成</li><li data-recorder-phase="review"><span>3</span>必要な所だけ確認</li></ol>'
       + '<section data-recorder-view="setup">'
       + '<h3 class="recorder-view-heading" data-recorder-view-heading tabindex="-1">記録を始める</h3>'
-      + '<p class="recorder-quick-start" id="recorder-quick-start">対象のアプリで普段どおり操作してください。クリックと画面変化から手順候補を作ります。</p>'
+      + '<p class="recorder-quick-start" id="recorder-quick-start">操作画面を開いてから対象アプリへ移動し、小さい操作画面の［記録を開始］を押します。移動中の画面やクリックは記録されません。</p>'
       + '<p class="recorder-privacy-alert"><strong>入力した文字や通知も画面画像に写ります。</strong>機密情報を閉じてから記録を始めてください。取り込まなかった元画像も、作成根拠としてこのマニュアル内に残ります。</p>'
       + '<details class="recorder-advanced"><summary>うまく撮れない場合の設定</summary><label class="recorder-capture-quality"><span><strong>操作後画面を撮るまで</strong><small>通常は「標準」のままで問題ありません。読込途中の画面が多い場合だけ長めにします。</small></span><select data-recorder-result-delay><option value="300">すぐ（0.3秒）</option><option value="700" selected>標準（0.7秒）</option><option value="1200">ゆっくり（1.2秒）</option><option value="2000">とてもゆっくり（2.0秒）</option></select></label></details>'
       + '<details class="recorder-recorded-info"><summary>記録される情報とプライバシー</summary><div><p>対応しているクリックと入力活動、その時刻、画面、ウィンドウ名、操作対象の候補を記録します。ドラッグ、スクロール、特殊な画面などは自動で確定できず、確認が必要になる場合があります。</p><p><strong>押したキーそのものは保存しません</strong>が、入力した文字は画面画像に写ります。画像と操作情報はこのPCの外へ送信しません。</p><p>黒塗りは出力画像を隠すための編集です。元の記録画像を完全に削除する機能ではありません。元画像はプロジェクトを削除するまでこのPCに残ります。</p></div></details>'
@@ -5044,7 +5067,7 @@ ${shots}
       + '<footer class="copilot-dialog__footer">'
       + '<span class="excel-export-dialog__spacer"></span>'
       + '<button type="button" class="button button--ghost" data-recorder-close>閉じる</button>'
-      + '<button type="button" class="button button--primary" data-recorder-start>記録を開始</button>'
+      + '<button type="button" class="button button--primary" data-recorder-start>記録の操作画面を開く</button>'
       + '<button type="button" class="button button--primary" data-recorder-stop hidden>記録を終了</button>'
       + '<button type="button" class="button button--primary" data-recorder-import hidden>確認した内容で手順を作成</button>'
       + '</footer>';
