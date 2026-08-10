@@ -135,6 +135,12 @@ Assert-Mb (([regex]::Matches($navHtml, 'data-step-nav-delete')).Count -eq 3) '�
 Write-Host ''
 Write-Host '--- 録画から手順書を作る主導線 ---' -ForegroundColor Cyan
 
+$projectLibraryHtml = ConvertTo-MbProjectLibraryHtml -Projects @()
+Assert-Mb ($projectLibraryHtml -match '<label for="new-project-title">新しいマニュアル名</label>') '新規作成の名前をプレースホルダーだけでなく可視ラベルで示す'
+Assert-Mb ($projectLibraryHtml -match 'data-project-home' -and $projectLibraryHtml -match '>新しいマニュアルを作る</button>') '新規作成ボタンを成果が分かる文言にする'
+Assert-Mb ($projectLibraryHtml -match '名前を空欄にすると「新しいマニュアル」で作成します') '名前を省略できる既存動作をフォーム内で説明する'
+Assert-Mb ($projectLibraryHtml -notmatch '右上|右の') '画面幅で変わる位置語に頼らず新規作成を案内する'
+
 function New-MbTestProject {
     param([object[]]$Steps)
     $sheet = New-MbTestSheet -Steps $Steps
@@ -155,7 +161,7 @@ Assert-Mb ($emptyWorkspaceHtml -match 'empty-state__main-button[^>]*data-record-
 Assert-Mb (([regex]::Matches($emptyWorkspaceHtml, 'button button--primary[^>]*data-record-operations')).Count -eq 1) '空の画面では操作記録の主ボタンを重複させない'
 Assert-Mb ($emptyWorkspaceHtml -match 'data-open-video-picker>録画ファイルを取り込む') '既存録画の取り込みを同じ画面から選べる'
 Assert-Mb (([regex]::Matches($emptyWorkspaceHtml, 'data-open-video-picker>録画ファイルを取り込む')).Count -eq 1) '空の画面では既存録画の入口を重複させない'
-Assert-Mb ($emptyWorkspaceHtml -match '操作を記録.+手順を確認・修正.+Excel・Wordで作成') 'ローカルで完了する主機能の3段階を最初に示す'
+Assert-Mb ($emptyWorkspaceHtml -match '操作を記録.+手順を確認・修正.+Excelで作成') 'ローカルで完了する主機能の3段階を最初に示す'
 Assert-Mb ($emptyWorkspaceHtml -match 'accept="video/mp4,video/webm"') '主ボタンから選べる動画形式を制限する'
 
 $filledWorkspaceHtml = ConvertTo-MbWorkspaceHtml -Project (New-MbTestProject -Steps @((New-MbTestStep -AnnotationCount 0))) -Token 'testtoken'
@@ -179,8 +185,11 @@ Assert-Mb ($filledWorkspaceHtml -match 'data-finish-check="text"') '説明なし
 Assert-Mb ($filledWorkspaceHtml -notmatch 'data-finish-check="annotation"') '任意の赤枠・番号を未完了項目として数えない'
 Assert-Mb ($filledWorkspaceHtml -match 'data-finish-check="attention"') '自動作成後の要確認手順へ移動できる'
 Assert-Mb ($filledWorkspaceHtml -match 'data-add-step-end[^>]*>＋ 手順を追加') '通常の追加は一覧末尾へ追加する入口にする'
-# 出力の入口は仕上げ欄の1つに絞る。同じ文言のボタンが上下に並ぶと押し分けの理由が読めない。
-Assert-Mb (([regex]::Matches($filledWorkspaceHtml, 'data-open-export-dialog')).Count -eq 1) '最終出力の入口を仕上げ欄の1つに絞る'
+# 出力の入口はスクロール中も見える確認ツールバーの1つに絞り、主出力名を直接示す。
+Assert-Mb (([regex]::Matches($filledWorkspaceHtml, 'data-open-export-dialog')).Count -eq 1 -and
+    $filledWorkspaceHtml -match 'step-review-toolbar__export[^>]*data-open-export-dialog[^>]*>Excelで作成') '最終出力の入口を固定ツールバーのExcel作成1つに絞る'
+Assert-Mb ($filledWorkspaceHtml -match 'id="finish-guide-title">出力前の確認' -and
+    $filledWorkspaceHtml -notmatch 'finish-guide__export') '仕上げ欄は出力ボタンを重複させず確認状態だけを示す'
 Assert-Mb (([regex]::Matches($filledWorkspaceHtml, 'class="button button--primary')).Count -eq 1) '手順があるとき画面内の主ボタンを1つに絞る'
 $cardHtml = ConvertTo-MbStepCardHtml -Step (New-MbTestStep -AnnotationCount 0) -Number 2 -Total 3 -Token 'testtoken'
 Assert-Mb ($cardHtml -notmatch 'data-step-move=|data-step-card-delete') '手順カードへ一覧と重複する整理操作を置かない'

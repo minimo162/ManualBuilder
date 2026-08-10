@@ -875,7 +875,7 @@ function Get-MbRecordedLocalProposals {
                 title = '画面の変化を確認'
                 description = '操作前後を比較し、必要な操作内容を確認します。'
                 reviewRequired = $true
-                reviewReason = '操作イベントが欠けた区間を画面変化から補いました。文章と赤枠を確認してください。'
+                reviewReason = '操作イベントが欠けた区間を画面変化から補いました。操作内容と前後の画像を確認してください。'
             }
         } else {
             Get-MbLocalStepDraft -ActionKind ([string]$candidate.actionKind) -TargetName $targetName `

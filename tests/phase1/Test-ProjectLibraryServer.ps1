@@ -54,7 +54,7 @@ try {
 
     $library = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/ui/workspace" -Headers $headers -TimeoutSec 5
     Assert-Mb ($library.Content -match 'class="workspace project-library"') '通常起動でマニュアル一覧を表示する'
-    Assert-Mb ($library.Content -match '新規作成') '一覧から新規作成できる'
+    Assert-Mb ($library.Content -match '>新しいマニュアルを作る</button>') '一覧から新しいマニュアルを作成できる'
     Assert-Mb ($library.Content -match 'data-project-home') '一覧画面のアプリロゴをホーム操作として表示する'
     Assert-Mb (Test-Path -LiteralPath (Join-Path $dataRoot 'projects\default\project.json') -PathType Leaf) '従来のdefaultマニュアルを残す'
 

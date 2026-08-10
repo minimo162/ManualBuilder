@@ -166,12 +166,37 @@ function Select-MbRecorderTimelineFrames {
     $orderedEvents = @($Events | Sort-Object { [int]$_.timeMs }, { [int]$_.index })
     if ($orderedEvents.Count -lt 1) {
         if ($ordered.Count -le $Maximum) { return @($ordered) }
-        $uniform = New-Object 'System.Collections.Generic.HashSet[int]'
-        for ($slot = 0; $slot -lt $Maximum; $slot++) {
-            $position = [int][Math]::Round(($slot / [double]([Math]::Max(1, $Maximum - 1))) * ($ordered.Count - 1))
-            [void]$uniform.Add($position)
+
+        # イベントを全件取り逃した記録でも、画面差分とその直前画像は手順を
+        # 復元できる唯一の根拠になる。等間隔だけで上限を埋める前に保護する。
+        $important = New-Object 'System.Collections.Generic.HashSet[int]'
+        for ($frameIndex = 0; $frameIndex -lt $ordered.Count; $frameIndex++) {
+            $frame = $ordered[$frameIndex]
+            $visualChange = if ($frame.PSObject.Properties.Name -contains 'visualChange') { [double]$frame.visualChange } else { 0.0 }
+            if ($visualChange -lt 0.00035 -or
+                (Test-MbRecorderTransientFrameTitle -WindowTitle ([string]$frame.windowTitle))) { continue }
+            [void]$important.Add($frameIndex)
+            if ($frameIndex -gt 0 -and
+                (Get-MbRecorderItemAppKey -Item $ordered[$frameIndex - 1]) -eq
+                    (Get-MbRecorderItemAppKey -Item $frame)) {
+                [void]$important.Add($frameIndex - 1)
+            }
         }
-        return @($uniform | Sort-Object | ForEach-Object { $ordered[[int]$_] })
+        $importantIndexes = @($important | Sort-Object)
+        $chosen = New-Object 'System.Collections.Generic.HashSet[int]'
+        if ($importantIndexes.Count -gt $Maximum) {
+            for ($slot = 0; $slot -lt $Maximum; $slot++) {
+                $position = [int][Math]::Round(($slot / [double]([Math]::Max(1, $Maximum - 1))) * ($importantIndexes.Count - 1))
+                [void]$chosen.Add([int]$importantIndexes[$position])
+            }
+        } else {
+            foreach ($importantIndex in $importantIndexes) { [void]$chosen.Add([int]$importantIndex) }
+        }
+        for ($slot = 0; $slot -lt $Maximum -and $chosen.Count -lt $Maximum; $slot++) {
+            $position = [int][Math]::Round(($slot / [double]([Math]::Max(1, $Maximum - 1))) * ($ordered.Count - 1))
+            [void]$chosen.Add($position)
+        }
+        return @($chosen | Sort-Object | ForEach-Object { $ordered[[int]$_] })
     }
 
     # 等間隔の間引きは、実機で「入力完了」を落として入力途中を残した。
@@ -321,11 +346,16 @@ function New-MbRecorderLocalFrameCandidates {
         [ValidateRange(250, 10000)][int]$EditMergeGapMs = 5000
     )
     $orderedEvents = @($Events | Sort-Object { [int]$_.timeMs }, { [int]$_.index })
-    if ($orderedEvents.Count -lt 1 -or @($Frames).Count -lt 1) { return @() }
+    if (@($Frames).Count -lt 1) { return @() }
 
     # 入力イベントは確定時に記録されるため、クリックを取り逃した最初の入力では
     # 操作前画像がイベントより2秒以上前になることがある。
-    $scoped = @(Select-MbRecorderEventWindowFrames -Frames @($Frames) -Events $orderedEvents -BeforePaddingMs 3000)
+    # イベントを全件取り逃した場合は、記録全体の画像差分を安全側の候補にする。
+    $scoped = if ($orderedEvents.Count -gt 0) {
+        @(Select-MbRecorderEventWindowFrames -Frames @($Frames) -Events $orderedEvents -BeforePaddingMs 3000)
+    } else {
+        @($Frames | Sort-Object { [int]$_.timeMs }, { [int]$_.index })
+    }
     $selected = @(Select-MbRecorderTimelineFrames -Frames $scoped -Events $orderedEvents -Maximum $MaximumFrames)
     if ($selected.Count -lt 1) { return @() }
 
@@ -527,18 +557,12 @@ function New-MbRecorderLocalFrameCandidates {
             endMs = [int]$group[$group.Count - 1].timeMs + 1800
         })
     }
-    $firstCandidateStartMs = [int]::MaxValue
-    foreach ($candidate in $result) {
-        $candidateBefore = @($scoped | Where-Object { [string]$_.id -eq [string]$candidate.beforeFrame } | Select-Object -First 1)
-        if ($candidateBefore.Count -gt 0) { $firstCandidateStartMs = [Math]::Min($firstCandidateStartMs, [int]$candidateBefore[0].timeMs) }
-    }
     foreach ($frame in $selected) {
         $change = if ($frame.PSObject.Properties.Name -contains 'visualChange') { [double]$frame.visualChange } else { 0.0 }
         if ($change -lt 0.00035 -or $existingAfter.Contains([string]$frame.id) -or
             (Test-MbRecorderTransientFrameTitle -WindowTitle ([string]$frame.windowTitle))) { continue }
         $frameApp = Get-MbRecorderItemAppKey -Item $frame
         $frameTime = [int]$frame.timeMs
-        if ($frameTime -le $firstCandidateStartMs) { continue }
 
         # 入力イベントが取れている区間は、そのグループの最新input-evidenceで十分。
         # 途中の数文字やカーソル点滅を別の「画面変化」手順として追加しない。
@@ -582,12 +606,9 @@ function New-MbRecorderLocalFrameCandidates {
                 -not (Test-MbRecorderTransientFrameTitle -WindowTitle ([string]$_.windowTitle))
         } | Sort-Object { [int]$_.timeMs }, { [int]$_.index } | Select-Object -Last 1)
         if ($before.Count -lt 1 -or [string]$before[0].id -eq [string]$frame.id) { continue }
-        $anchor = @($orderedEvents | Where-Object {
-            (Get-MbRecorderItemAppKey -Item $_) -eq $frameApp -and
-                [int]$_.timeMs -le ($frameTime + 1200) -and [int]$_.timeMs -ge ($frameTime - 2200) -and
-                (Test-MbRecorderEventHasVisualAnchor -Event $_)
-        } | Sort-Object { [Math]::Abs([int]$_.timeMs - $frameTime) } | Select-Object -First 1)
-        $anchorId = if ($anchor.Count -gt 0) { [int]$anchor[0].index } else { 0 }
+        # 画像差分だけでは、近くのイベントがこの変化を起こしたとは断定できない。
+        # 誤った赤枠を付けないため、必ず根拠イベントなし・要確認として残す。
+        $anchorId = 0
         [void]$result.Add([pscustomobject]@{
             id = New-MbRecorderLocalProposalId -BeforeFrame ([string]$before[0].id) -AfterFrame ([string]$frame.id) `
                 -EventIds $(if ($anchorId -gt 0) { @($anchorId) } else { @() }) -TargetEventId $anchorId -ActionKind 'visual-change'

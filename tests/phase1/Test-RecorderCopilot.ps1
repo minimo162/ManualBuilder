@@ -214,8 +214,51 @@ try {
         [pscustomobject]@{ index=1; timeMs=1000; kind='click'; targetName='B2'; targetType='ControlType.DataItem'; windowTitle='Book1 - Excel'; rect=[pscustomobject]@{x1=.1;y1=.2;x2=.2;y2=.3} }
     )
     $missingCandidates = @(New-MbRecorderLocalFrameCandidates -Frames $missingEventFrames -Events $missingEventEvents -MaximumFrames 8)
-    Add-Result (@($missingCandidates | Where-Object { $_.actionKind -eq 'visual-change' -and $_.afterFrame -eq 'F00003' }).Count -eq 1) `
+    Add-Result (@($missingCandidates | Where-Object {
+        $_.actionKind -eq 'visual-change' -and $_.afterFrame -eq 'F00003' -and
+            [int]$_.targetEventId -eq 0 -and @($_.eventIds).Count -eq 0
+    }).Count -eq 1) `
         'クリックイベントが欠けても画面差分から要確認候補を補う'
+
+    $noEventFrames = @(
+        [pscustomobject]@{ id='N00001'; index=1; timeMs=500; image='frame-00001.jpg'; windowTitle='Book1 - Excel'; visualChange=0.0 },
+        [pscustomobject]@{ id='N00002'; index=2; timeMs=1100; image='frame-00002.jpg'; windowTitle='Book1 - Excel'; visualChange=0.0008 },
+        [pscustomobject]@{ id='N00003'; index=3; timeMs=1700; image='frame-00003.jpg'; windowTitle='読み込み中 - Excel'; visualChange=0.0020 }
+    )
+    $noEventCandidates = @(New-MbRecorderLocalFrameCandidates -Frames $noEventFrames -Events @() -MaximumFrames 8)
+    Add-Result ($noEventCandidates.Count -eq 1 -and
+        [string]$noEventCandidates[0].beforeFrame -eq 'N00001' -and
+        [string]$noEventCandidates[0].afterFrame -eq 'N00002' -and
+        [string]$noEventCandidates[0].actionKind -eq 'visual-change' -and
+        [int]$noEventCandidates[0].targetEventId -eq 0 -and @($noEventCandidates[0].eventIds).Count -eq 0) `
+        '操作イベントが0件でも安定した画像差分を赤枠なしの要確認候補として回収する'
+
+    $leadingGapFrames = @(
+        [pscustomobject]@{ id='L00001'; index=1; timeMs=800; image='frame-00001.jpg'; windowTitle='Book1 - Excel'; visualChange=0.0 },
+        [pscustomobject]@{ id='L00002'; index=2; timeMs=1400; image='frame-00002.jpg'; windowTitle='Book1 - Excel'; visualChange=0.0009 },
+        [pscustomobject]@{ id='L00003'; index=3; timeMs=3300; image='frame-00003.jpg'; windowTitle='Book1 - Excel'; visualChange=0.0 },
+        [pscustomobject]@{ id='L00004'; index=4; timeMs=4300; image='frame-00004.jpg'; windowTitle='Book1 - Excel'; visualChange=0.0 }
+    )
+    $leadingGapEvents = @(
+        [pscustomobject]@{ index=1; timeMs=3500; kind='click'; targetName='保存'; targetType='ControlType.Button'; windowTitle='Book1 - Excel'; rect=[pscustomobject]@{x1=.7;y1=.1;x2=.8;y2=.2} }
+    )
+    $leadingGapCandidates = @(New-MbRecorderLocalFrameCandidates -Frames $leadingGapFrames -Events $leadingGapEvents -MaximumFrames 8)
+    Add-Result (@($leadingGapCandidates | Where-Object {
+        $_.actionKind -eq 'visual-change' -and $_.beforeFrame -eq 'L00001' -and $_.afterFrame -eq 'L00002' -and
+            [int]$_.targetEventId -eq 0
+    }).Count -eq 1) `
+        '最初の操作イベントより前に取り逃した画面変化も要確認候補として回収する'
+
+    $longNoEventFrames = for ($index = 1; $index -le 24; $index++) {
+        [pscustomobject]@{
+            id=('Z{0:d5}' -f $index); index=$index; timeMs=$index * 500; image='frame-00001.jpg';
+            windowTitle='Book1 - Excel'; visualChange=$(if ($index -in @(4, 21)) { 0.001 } else { 0.0 })
+        }
+    }
+    $longNoEventSelection = @(Select-MbRecorderTimelineFrames -Frames $longNoEventFrames -Events @() -Maximum 8)
+    $longNoEventIds = @($longNoEventSelection | ForEach-Object { [string]$_.id })
+    Add-Result (@('Z00003','Z00004','Z00020','Z00021' | Where-Object { $_ -notin $longNoEventIds }).Count -eq 0) `
+        'イベント0件の長い記録でも変化画像と直前画像を等間隔間引きより先に保護する'
 
     $coveredInputFrames = @(
         [pscustomobject]@{ id='F00001'; index=1; timeMs=800; image='frame-00001.jpg'; windowTitle='Book1 - Excel'; visualChange=0.0 },

@@ -108,7 +108,7 @@ Add-Result ($serverText -match '\$storageLayout\.RuntimePath') '二重起動情�
 Add-Result (($serverText -match 'AllowParallelTestInstance') -and ($serverText -match '\$ProjectPath\|\$Port') -and ($serverText -match 'ManualBuilder-\$sid') -and ($serverText -match '-Test-\$scopeHash')) '通常起動の単一起動制御を保ったまま隔離E2Eを並行起動できる'
 Add-Result ($serverText -match '\$storageLayout\.ExportJobsRoot') 'Office一時ジョブをユーザーデータ配下へ置く'
 Add-Result (($runCommandText -match '%~dp0src\\Start-ManualBuilderLauncher\.ps1') -and ($runCommandText -notmatch '(?im)^cd /d')) 'UNC共有フォルダーから更新ランチャーを起動できる'
-Add-Result ([string]$appVersionManifest.appVersion -eq '0.51.0') '配布用アプリバージョンを0.51.0へ更新する'
+Add-Result ([string]$appVersionManifest.appVersion -eq '0.53.0') '配布用アプリバージョンを0.53.0へ更新する'
 Add-Result ($workspaceModuleText -notmatch "ManualBuilder\.Project\.psm1'\) -Force") 'WorkspaceがProjectコマンドを強制再読込しない'
 Add-Result ($launcherModuleText -match "'ManualBuilder\\app'") 'アプリ実行コードをLocalApplicationDataへキャッシュする'
 Add-Result ($launcherModuleText -match "@\('src', 'web', 'run\.cmd', 'app-version\.json'\)") 'キャッシュ対象からプロジェクトデータを除外する'
@@ -445,7 +445,7 @@ Add-Result (($recorderModuleText -match 'if \(-not \[string\]::IsNullOrWhiteSpac
     ($recorderModuleText -match '\$windowTitle\.IndexOf\(\$snapshotTitle')) '遷移後ページのタイトルだけで古いDOM対象を許可しない'
 Add-Result (($jsText -notmatch 'data-recorder-mode') -and
     ($jsText -notmatch '専用プロファイル') -and
-    ($jsText -match '普段の画面をそのまま記録')) '普段のEdgeとアプリを記録する単一モードにする'
+    ($jsText -match '対象のアプリで普段どおり操作してください')) '普段のEdgeとアプリを記録する単一モードにする'
 Add-Result (($serverText -match 'Start-MbRecordingJob') -and
     ($serverText -notmatch 'WithNarration') -and
     ($serverText -notmatch 'Start-MbRecordingJob[^\r\n]+-Mode')) '普段のデスクトップを外部送信なしで記録する'
@@ -457,8 +457,9 @@ Add-Result (($serverText -match 'localProposals = \$localProposals') -and
     ($recorderServerText -match 'Get-MbRecordedLocalProposals') -and
     ($jsText -match 'renderRecordedProposals\(recorder\.localProposals\)')) `
     '安定フレームのローカル候補を確認する'
-Add-Result (($jsText -match '取り込んでいない記録があります。捨てて閉じますか') -and
-    ($jsText -match "dialog\.addEventListener\('cancel'")) '記録中の誤操作で結果を即破棄しない'
+Add-Result (($jsText -match '確認中の記録があります') -and
+    ($jsText -match '確認に戻る') -and
+    ($jsText -match "decision\.addEventListener\('cancel'")) '記録中の誤操作で結果を即破棄しない'
 Add-Result (($jsText -match 'recorder-proposal__shot') -and
     ($recorderServerText -match 'Test-MbRecordedSelectionAnchorContext') -and
     ($recorderServerText -match 'Set-MbStepAnnotations')) 'ローカル候補の操作前後と赤枠候補を確認できる'
@@ -555,7 +556,10 @@ Add-Result (($serverText -notmatch "'not found'") -and ($serverText -notmatch "'
 Add-Result (($jsText -match 'data-export-retry') -and ($jsText -match 'data-word-export-retry')) '出力に失敗したその場で作り直せる'
 
 # 記録レシートの×は「終了して確認」へ進むのに、本体の×は破棄だった。
-Add-Result (($jsText -match '記録中です。') -and ($jsText -match '記録レシートの')) '記録中の誤った出口で記録を捨てない'
+Add-Result (($jsText -match '記録を続ける') -and
+    ($jsText -match '終了して確認') -and
+    ($jsText -match '記録を捨てて閉じる') -and
+    ($jsText -notmatch 'window\.confirm\(`記録中')) '記録中の誤った出口で記録を捨てない'
 
 # --- 呼称の統一 ---
 Add-Result (($jsText -notmatch '操作後画像を追加') -and ($webModuleText -notmatch '比較画像を追加') -and

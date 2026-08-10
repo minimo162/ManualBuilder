@@ -20,7 +20,7 @@ function ConvertTo-MbSaveStatusHtml {
         'error' { '!' }
     }
     $time = if ($State -eq 'saved') { ' ' + (Get-Date).ToString('HH:mm') } else { '' }
-    return '<span id="save-status" class="save-status save-status--' + $State + '" role="status"><span aria-hidden="true">' + $icon + '</span> ' + (ConvertTo-MbHtml ($Message + $time)) + '</span>'
+    return '<span id="save-status" class="save-status save-status--' + $State + '" role="status"><span aria-hidden="true">' + $icon + '</span><span class="save-status__message">' + (ConvertTo-MbHtml ($Message + $time)) + '</span></span>'
 }
 
 function Render-MbSheetNavigation {
@@ -323,14 +323,14 @@ function ConvertTo-MbProjectLibraryHtml {
     )
 
     $sb = New-Object System.Text.StringBuilder
-    [void]$sb.AppendLine('<div id="workspace" class="workspace project-library" data-app-version="0.51.0">')
+    [void]$sb.AppendLine('<div id="workspace" class="workspace project-library" data-app-version="0.53.0">')
     [void]$sb.AppendLine('<header class="topbar project-library__topbar"><button type="button" class="brand brand--home" data-project-home hx-post="/api/projects/home" hx-target="#workspace" hx-swap="outerHTML" title="マニュアル一覧" aria-label="マニュアル一覧" aria-current="page"><span class="brand__mark" aria-hidden="true">M</span><span>ManualBuilder</span></button><div class="project-library__topbar-title">マニュアル一覧</div><div></div><div class="topbar__actions"><details class="action-menu topbar-menu"><summary role="button" aria-expanded="false" class="icon-button" title="その他" aria-label="その他の操作を開く">…</summary><div class="action-menu__panel action-menu__panel--right"><button type="button" class="menu-command" data-import-project-package>ZIPからマニュアルを取り込む</button><button type="button" class="menu-command menu-command--danger" hx-post="/api/shutdown" hx-target="body" hx-swap="none" hx-confirm="ManualBuilderを終了しますか？">ManualBuilderを終了</button></div></details></div></header>')
     [void]$sb.AppendLine('<main class="project-library__main">')
-    [void]$sb.AppendLine('<section class="project-library__intro"><div><p class="eyebrow">操作を記録して手順書を作る</p><h1>作業するマニュアルを選ぶ</h1><p class="project-library__lead">初めての場合は右の「＋ 新規作成」でマニュアルを作り、「操作を記録して始める」から進めます。</p></div><div class="project-library__actions"><input id="project-package-input" type="file" accept=".zip,application/zip" hidden><form class="project-create" hx-post="/api/projects/create" hx-target="#workspace" hx-swap="outerHTML"><label><span class="sr-only">新しいマニュアルの名前</span><input type="text" name="title" maxlength="100" placeholder="新しいマニュアルの名前"></label><button type="submit" class="button button--primary">＋ 新規作成</button></form></div></section>')
+    [void]$sb.AppendLine('<section class="project-library__intro"><div><p class="eyebrow">操作を記録して手順書を作る</p><h1>作業するマニュアルを選ぶ</h1><p class="project-library__lead">新しく作るか、下の一覧から続きのマニュアルを開きます。</p></div><div class="project-library__actions"><input id="project-package-input" type="file" accept=".zip,application/zip" hidden><form class="project-create" hx-post="/api/projects/create" hx-target="#workspace" hx-swap="outerHTML"><label for="new-project-title">新しいマニュアル名</label><div class="project-create__controls"><input id="new-project-title" type="text" name="title" maxlength="100" placeholder="例：経費申請の手順" aria-describedby="new-project-title-help"><button type="submit" class="button button--primary">新しいマニュアルを作る</button></div><small id="new-project-title-help">名前を空欄にすると「新しいマニュアル」で作成します。</small></form></div></section>')
 
     [void]$sb.AppendLine('<section class="project-library__section" aria-labelledby="active-projects-heading"><div class="project-library__section-heading"><div><h2 id="active-projects-heading">マニュアル</h2><span>' + @($Projects).Count + ' 件</span></div><label class="project-search"><span aria-hidden="true">⌕</span><span class="sr-only">マニュアルを検索</span><input type="search" placeholder="名前で検索" data-project-search></label></div>')
     if (@($Projects).Count -eq 0) {
-        [void]$sb.AppendLine('<div class="project-library__empty"><strong>マニュアルはまだありません</strong><span>右上の「新規作成」から始められます。</span></div>')
+        [void]$sb.AppendLine('<div class="project-library__empty"><strong>マニュアルはまだありません</strong><span>上の「新しいマニュアル名」から作成できます。</span></div>')
     } else {
         [void]$sb.AppendLine('<div class="project-grid" data-project-grid>')
         foreach ($entry in @($Projects)) {
@@ -351,7 +351,7 @@ function ConvertTo-MbProjectLibraryHtml {
     }
     [void]$sb.AppendLine('</section>')
 
-    [void]$sb.AppendLine('<footer class="project-library__footer"><span>v0.51.0</span></footer></main></div>')
+    [void]$sb.AppendLine('<footer class="project-library__footer"><span>v0.53.0</span></footer></main></div>')
     return $sb.ToString()
 }
 
@@ -406,7 +406,7 @@ function ConvertTo-MbWorkspaceHtml {
     $finishJson = ConvertTo-MbHtml (ConvertTo-Json -InputObject @($finishItems) -Compress -Depth 5)
     $projectStepCount = @($finishItems).Count
 
-    [void]$sb.AppendLine('<div id="workspace" class="workspace step-view--review" data-app-version="0.51.0" data-revision="' + [int]$Project.revision + '" data-capture-version="' + $CaptureVersion + '"><a class="skip-link" href="#editor-main">編集画面へスキップ</a>')
+    [void]$sb.AppendLine('<div id="workspace" class="workspace step-view--review" data-app-version="0.53.0" data-revision="' + [int]$Project.revision + '" data-capture-version="' + $CaptureVersion + '"><a class="skip-link" href="#editor-main">編集画面へスキップ</a>')
     [void]$sb.AppendLine('<textarea hidden data-project-finish-data>' + $finishJson + '</textarea>')
     [void]$sb.AppendLine('<header class="topbar">')
     [void]$sb.AppendLine('<button type="button" class="brand brand--home" data-project-home hx-post="/api/projects/home" hx-target="#workspace" hx-swap="outerHTML" title="マニュアル一覧へ戻る" aria-label="マニュアル一覧へ戻る"><span class="brand__mark" aria-hidden="true">M</span><span>ManualBuilder</span></button>')
@@ -435,7 +435,7 @@ function ConvertTo-MbWorkspaceHtml {
     [void]$sb.AppendLine('</header>')
 
     [void]$sb.AppendLine('<div class="app-layout">')
-    [void]$sb.AppendLine('<aside class="sidebar">' + (Render-MbSheetNavigation -Project $Project) + (Render-MbStepNavigation -Sheet $sheet -Project $Project) + '<div class="sidebar__footer"><span class="sidebar__version">v0.51.0</span></div></aside>')
+    [void]$sb.AppendLine('<aside class="sidebar">' + (Render-MbSheetNavigation -Project $Project) + (Render-MbStepNavigation -Sheet $sheet -Project $Project) + '<div class="sidebar__footer"><span class="sidebar__version">v0.53.0</span></div></aside>')
     [void]$sb.AppendLine('<main id="editor-main" class="editor" tabindex="-1">')
     # 編集画面の見出しは入力欄なので、文書構造としての見出しが無い。読み上げの目次から
     # 何を編集中か分かるよう、画面には出さない h1 を置く。
@@ -457,11 +457,11 @@ function ConvertTo-MbWorkspaceHtml {
     [void]$sb.AppendLine('</div>')
 
     if ($steps.Count -gt 0) {
-        [void]$sb.AppendLine('<section class="step-review-toolbar" data-step-review-toolbar aria-labelledby="step-review-title"><div class="step-review-toolbar__heading"><strong id="step-review-title">手順を確認・修正</strong><span>画面と説明を上から順に確認します</span></div><div class="step-view-options" role="group" aria-label="手順の表示方法"><button type="button" class="step-view-option" data-step-view="review" aria-pressed="true">一覧で確認</button><button type="button" class="step-view-option" data-step-view="focus" aria-pressed="false">1件ずつ編集</button></div><div class="step-review-navigation" aria-label="手順の移動"><button type="button" data-step-previous aria-label="前の手順">← 前</button><span data-step-position aria-live="off">1 / ' + $steps.Count + '</span><button type="button" data-step-next aria-label="次の手順">次 →</button></div></section>')
+        [void]$sb.AppendLine('<section class="step-review-toolbar" data-step-review-toolbar aria-labelledby="step-review-title"><div class="step-review-toolbar__heading"><strong id="step-review-title">手順を確認・修正</strong><span>画面と説明を上から順に確認します</span></div><div class="step-view-options" role="group" aria-label="手順の表示方法"><button type="button" class="step-view-option" data-step-view="review" aria-pressed="true">一覧で確認</button><button type="button" class="step-view-option" data-step-view="focus" aria-pressed="false">1件ずつ編集</button></div><div class="step-review-navigation" aria-label="手順の移動"><button type="button" data-step-previous aria-label="前の手順">← 前</button><span data-step-position aria-live="off">1 / ' + $steps.Count + '</span><button type="button" data-step-next aria-label="次の手順">次 →</button></div><button type="button" class="button button--primary step-review-toolbar__export" data-open-export-dialog>Excelで作成</button></section>')
     }
 
     if ($projectStepCount -gt 0) {
-        [void]$sb.AppendLine('<section class="finish-guide" data-finish-guide aria-labelledby="finish-guide-title"><div class="finish-guide__heading"><span class="finish-guide__mark" aria-hidden="true">✓</span><div><strong id="finish-guide-title">Excel・Wordで作成</strong><span data-finish-summary>説明と画像を確認します</span></div></div><div class="finish-guide__checks" aria-label="出力前の確認"><button type="button" data-finish-check="text"><span>説明</span><strong data-finish-text>確認中</strong></button><button type="button" data-finish-check="image"><span>画像</span><strong data-finish-image>確認中</strong></button><button type="button" data-finish-check="attention"><span>要確認</span><strong data-finish-attention>なし</strong></button></div><button type="button" class="button button--primary finish-guide__export" data-open-export-dialog>Excel・Wordで作成</button></section>')
+        [void]$sb.AppendLine('<section class="finish-guide" data-finish-guide aria-labelledby="finish-guide-title"><div class="finish-guide__heading"><span class="finish-guide__mark" aria-hidden="true">✓</span><div><strong id="finish-guide-title">出力前の確認</strong><span data-finish-summary>説明と画像を確認します</span></div></div><div class="finish-guide__checks" aria-label="出力前の確認"><button type="button" data-finish-check="text"><span>説明</span><strong data-finish-text>確認中</strong></button><button type="button" data-finish-check="image"><span>画像</span><strong data-finish-image>確認中</strong></button><button type="button" data-finish-check="attention"><span>要確認</span><strong data-finish-attention>なし</strong></button></div></section>')
     }
 
     [void]$sb.AppendLine('<div class="editor-import-inputs"><input id="image-file-input" type="file" accept="image/png,image/jpeg,image/bmp" multiple hidden><input id="replacement-image-file-input" type="file" accept="image/png,image/jpeg,image/bmp" hidden><input id="result-image-file-input" type="file" accept="image/png,image/jpeg,image/bmp" hidden><input id="video-file-input" type="file" accept="video/mp4,video/webm" hidden></div>')
@@ -470,7 +470,7 @@ function ConvertTo-MbWorkspaceHtml {
         # 他のシートに手順がある人は初回ではない。初回案内ではなく、このシートを埋める手段だけを示す。
         [void]$sb.AppendLine('<div class="empty-state empty-state--sheet drop-target"><div class="empty-state__icon empty-state__icon--record" aria-hidden="true">●</div><h2>このシートはまだ空です</h2><p class="empty-state__lead">操作を記録するか、手順を追加してこのシートを作ります。</p><div class="empty-state__actions"><button type="button" class="button button--primary empty-state__main-button" data-record-operations>操作を記録</button><button type="button" class="button button--secondary empty-state__button" data-open-video-picker>録画ファイルを取り込む</button><button type="button" class="button button--ghost empty-state__button" data-open-image-picker>画像から作る</button><button type="button" class="button button--ghost empty-state__button" hx-post="/api/steps/add" hx-vals=''{"sheetId":"' + $sheetId + '"}'' hx-target="#workspace" hx-swap="outerHTML">空の手順を追加</button></div></div>')
     } elseif ($steps.Count -eq 0) {
-        [void]$sb.AppendLine('<div class="empty-state drop-target"><p class="empty-state__eyebrow">初めての方はこちら</p><div class="empty-state__icon empty-state__icon--record" aria-hidden="true">●</div><h2>操作を記録して、手順書を作る</h2><p class="empty-state__lead">普段どおり操作すると、画面とクリック位置から編集できる手順を作ります。</p><ol class="empty-state__flow" aria-label="作成の流れ"><li><span>1</span>操作を記録</li><li><span>2</span>手順を確認・修正</li><li><span>3</span>Excel・Wordで作成</li></ol><button type="button" class="button button--primary empty-state__main-button" data-record-operations>操作を記録して始める</button><p class="empty-state__privacy">画像と操作情報はこのPC内だけに保存されます。</p><details class="empty-state__alternatives"><summary>別の方法で作る</summary><div class="empty-state__actions"><button type="button" class="button button--secondary empty-state__button" data-open-video-picker>録画ファイルを取り込む <small>mp4・webm</small></button><button type="button" class="button button--ghost empty-state__button" data-open-image-picker>画像から作る</button><button type="button" class="button button--ghost empty-state__button" hx-post="/api/steps/add" hx-vals=''{"sheetId":"' + $sheetId + '"}'' hx-target="#workspace" hx-swap="outerHTML">空の手順を追加</button></div><p>録画や画像を使わず、文章だけの手順も作れます。</p></details></div>')
+        [void]$sb.AppendLine('<div class="empty-state drop-target"><p class="empty-state__eyebrow">初めての方はこちら</p><div class="empty-state__icon empty-state__icon--record" aria-hidden="true">●</div><h2>操作を記録して、手順書を作る</h2><p class="empty-state__lead">普段どおり操作すると、画面とクリック位置から編集できる手順を作ります。</p><ol class="empty-state__flow" aria-label="作成の流れ"><li><span>1</span>操作を記録</li><li><span>2</span>手順を確認・修正</li><li><span>3</span>Excelで作成</li></ol><button type="button" class="button button--primary empty-state__main-button" data-record-operations>操作を記録して始める</button><p class="empty-state__privacy">画像と操作情報はこのPC内だけに保存されます。</p><details class="empty-state__alternatives"><summary>別の方法で作る</summary><div class="empty-state__actions"><button type="button" class="button button--secondary empty-state__button" data-open-video-picker>録画ファイルを取り込む <small>mp4・webm</small></button><button type="button" class="button button--ghost empty-state__button" data-open-image-picker>画像から作る</button><button type="button" class="button button--ghost empty-state__button" hx-post="/api/steps/add" hx-vals=''{"sheetId":"' + $sheetId + '"}'' hx-target="#workspace" hx-swap="outerHTML">空の手順を追加</button></div><p>録画や画像を使わず、文章だけの手順も作れます。</p></details></div>')
     } else {
         for ($i = 0; $i -lt $steps.Count; $i++) {
             $canUndo = $UndoImageStepIds -contains [string]$steps[$i].id

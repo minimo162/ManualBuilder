@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const appVersion = '0.51.0';
+  const appVersion = '0.53.0';
   // 番号注釈はSVG属性で指定するためCSS変数を参照できない。
   // 編集画面とExcel・Word出力（New-MbAnnotatedImage）で同じ見た目にするため、基準フォントを揃える。
   const ANNOTATION_NUMBER_FONT = '"BIZ UDPGothic", "BIZ UDPゴシック", "BIZ UDGothic", "BIZ UDゴシック", Meiryo, "Yu Gothic UI", "MS Pゴシック", sans-serif';
@@ -44,18 +44,63 @@
   // 出力ダイアログの見出しが「HTTP 500」の4文字になっていた。
   const describeHttpFailure = (status) => {
     const code = Number(status) || 0;
-    if (code === 403) return 'この画面の情報が古くなっています。ブラウザーを再読み込みしてください。入力内容は保存されています。';
+    if (code === 403) return 'この画面の情報が古くなっています。内容を確認してからブラウザーを再読み込みしてください。';
     if (code === 404) return 'この操作は見つかりませんでした。ブラウザーを再読み込みしてください。';
     if (code === 409) return '保存できません。ほかのアプリがファイルを使っています。少し待ってから、もう一度お試しください。';
-    if (code >= 500) return 'ManualBuilderの内部で問題が起きました。入力内容は保存されています。アプリを再起動してから、もう一度お試しください。';
+    if (code >= 500) return 'ManualBuilderの内部で問題が起きました。アプリを再起動してから、もう一度お試しください。';
     return '処理を完了できませんでした。入力内容はそのまま残っています。もう一度お試しください。';
   };
 
-  const saveStatus = (state, message) => {
+  const SAVE_PATHS = new Set(['/api/steps/update', '/api/project/title', '/api/sheets/rename']);
+  let failedSaveRequest = null;
+  const saveStatus = (state, message, allowRetry = false) => {
     const target = document.getElementById('save-status');
     if (!target) return;
     target.className = `save-status save-status--${state}`;
-    target.textContent = `${state === 'error' ? '!' : '◌'} ${message}`;
+    target.setAttribute('role', state === 'error' ? 'alert' : 'status');
+    target.setAttribute('aria-live', state === 'error' ? 'assertive' : 'polite');
+    target.setAttribute('aria-atomic', 'true');
+    const icon = document.createElement('span');
+    icon.setAttribute('aria-hidden', 'true');
+    icon.textContent = state === 'error' ? '!' : state === 'saved' ? '●' : '◌';
+    const text = document.createElement('span');
+    text.className = 'save-status__message';
+    text.textContent = message;
+    target.replaceChildren(icon, text);
+    if (allowRetry && failedSaveRequest) {
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'save-status__retry';
+      retry.textContent = '再試行';
+      retry.addEventListener('click', () => retryFailedSave());
+      target.appendChild(retry);
+    }
+  };
+
+  const rememberFailedSave = (event) => {
+    const path = requestPath(event);
+    const element = event.detail?.elt;
+    if (!SAVE_PATHS.has(path) || !element) return false;
+    failedSaveRequest = { path, element };
+    return true;
+  };
+
+  // 保存対象は状態表示だけを差し替えるため、失敗しても入力欄はDOMに残る。
+  // 同じ要素のchangeを再送し、利用者に再入力や画面再読込を求めない。
+  const retryFailedSave = () => {
+    const failed = failedSaveRequest;
+    if (!failed?.element?.isConnected) {
+      failedSaveRequest = null;
+      saveStatus('error', '再試行できません');
+      showToast('編集欄が更新されています。現在の入力内容を確認して、もう一度変更してください。');
+      return;
+    }
+    saveStatus('saving', '再試行中…');
+    if (window.htmx?.trigger) {
+      window.htmx.trigger(failed.element, 'change');
+    } else {
+      failed.element.dispatchEvent(new Event('change', { bubbles: true }));
+    }
   };
 
   // 通知は積んで出す。以前は1件だけを差し替えていたため、続けて起きた出来事のうち
@@ -2618,7 +2663,7 @@
     dialog.id = 'excel-export-dialog';
     dialog.className = 'excel-export-dialog';
     dialog.setAttribute('aria-label', 'Excelで作成');
-    dialog.innerHTML = '<header class="excel-export-dialog__header"><div><strong>Excelで作成</strong><span>現在の内容をこのPCへ出力します</span></div><button type="button" class="excel-export-dialog__close" data-export-close aria-label="閉じる">×</button></header><div class="excel-export-dialog__content"><div class="excel-export-dialog__state" role="status" aria-live="polite"><span class="excel-export-dialog__mark" data-export-mark aria-hidden="true"></span><div><strong data-export-message>準備しています</strong><span data-export-detail>マニュアルを保存しています</span></div></div><div class="excel-export-progress" role="progressbar" aria-label="Excel作成の進捗" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span data-export-progress></span></div><p class="excel-export-dialog__path" data-export-path hidden></p><p class="excel-export-dialog__note" data-export-local-note hidden>PC内に作成しました。共有や公開が必要な場合は、完成ファイルを手動でコピーまたは送付してください。</p><p class="excel-export-dialog__note" data-export-video-note hidden></p><details class="excel-export-dialog__mappings" data-export-mappings hidden><summary>出力シート名を確認</summary><ul></ul></details><p class="excel-export-dialog__error" data-export-error hidden></p></div><footer class="excel-export-dialog__footer"><button type="button" class="button button--ghost" data-export-cancel>中止</button><span class="excel-export-dialog__spacer"></span><button type="button" class="button button--ghost" data-export-open="folder" hidden>保存先を開く</button><button type="button" class="button button--primary" data-export-open="file" hidden>Excelを開く</button><button type="button" class="button button--primary" data-export-retry hidden>もう一度作成</button><button type="button" class="button button--ghost" data-export-close data-export-done hidden>閉じる</button></footer>';
+    dialog.innerHTML = '<header class="excel-export-dialog__header"><div><strong>Excelで作成</strong><span>現在の内容をこのPCへ出力します</span></div><button type="button" class="excel-export-dialog__close" data-export-close aria-label="閉じる">×</button></header><div class="excel-export-dialog__content"><div class="excel-export-dialog__state" role="status" aria-live="polite"><span class="excel-export-dialog__mark" data-export-mark aria-hidden="true"></span><div><strong data-export-message tabindex="-1">準備しています</strong><span data-export-detail>マニュアルを保存しています</span></div></div><div class="excel-export-progress" role="progressbar" aria-label="Excel作成の進捗" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span data-export-progress></span></div><p class="excel-export-dialog__path" data-export-path hidden></p><p class="excel-export-dialog__note" data-export-local-note hidden>PC内に作成しました。共有や公開が必要な場合は、完成ファイルを手動でコピーまたは送付してください。</p><p class="excel-export-dialog__note" data-export-video-note hidden></p><details class="excel-export-dialog__mappings" data-export-mappings hidden><summary>出力シート名を確認</summary><ul></ul></details><p class="excel-export-dialog__error" data-export-error hidden></p></div><footer class="excel-export-dialog__footer"><button type="button" class="button button--ghost" data-export-cancel>中止</button><span class="excel-export-dialog__spacer"></span><button type="button" class="button button--ghost" data-export-open="folder" hidden>保存先を開く</button><button type="button" class="button button--primary" data-export-open="file" hidden>Excelを開く</button><button type="button" class="button button--primary" data-export-retry hidden>もう一度作成</button><button type="button" class="button button--ghost" data-export-close data-export-done hidden>閉じる</button></footer>';
     dialog.querySelectorAll('[data-export-close]').forEach((button) => {
       button.addEventListener('click', () => dialog.close());
     });
@@ -2664,6 +2709,7 @@
   const updateExcelExportDialog = (status = {}) => {
     const dialog = ensureExcelExportDialog();
     const state = status.state || 'failed';
+    const previousState = excelExport.state;
     const percent = Math.max(0, Math.min(100, Number(status.percent) || 0));
     // Excelが開いていて安全に中止した場合は、Word側と同じ扱いにする。
     // 記録の対象がExcel操作であることが多く、この中止は日常的に起きる。
@@ -2746,6 +2792,14 @@
     setExcelExportButtonsBusy(active);
     if (active) startExcelExportPolling();
     else stopExcelExportPolling();
+    if (previousState !== state && dialog.open) {
+      const focusTarget = state === 'completed'
+        ? dialog.querySelector('[data-export-open="file"]')
+        : (state === 'failed' || state === 'cancelled')
+          ? dialog.querySelector('[data-export-retry]')
+          : dialog.querySelector('[data-export-message]');
+      window.requestAnimationFrame(() => focusTarget?.focus({ preventScroll: true }));
+    }
   };
 
   const pollExcelExport = async () => {
@@ -2774,6 +2828,7 @@
     const dialog = ensureExcelExportDialog();
     updateExcelExportDialog({ state: 'queued', message: '編集内容を保存しています', percent: 0, currentStep: 0, totalSteps: 0 });
     if (!dialog.open) dialog.showModal();
+    window.requestAnimationFrame(() => dialog.querySelector('[data-export-message]')?.focus({ preventScroll: true }));
     try {
       await flushPendingStructuralSaves({ waitForText: true });
       const status = await excelExportRequest('/api/export/excel/start', new URLSearchParams());
@@ -2931,10 +2986,10 @@
     if (outputReviewDialog) return outputReviewDialog;
     const dialog = document.createElement('dialog');
     dialog.className = 'output-review-dialog';
-    dialog.setAttribute('aria-label', 'Excel・Wordで作成');
-    dialog.innerHTML = '<header class="output-review-dialog__header"><div><strong>Excel・Wordで作成</strong><span>ボタンを押すと、このPCにファイルを作成します</span></div><button type="button" class="output-review-dialog__close" data-output-close aria-label="閉じる">×</button></header>'
+    dialog.setAttribute('aria-labelledby', 'output-review-title');
+    dialog.innerHTML = '<header class="output-review-dialog__header"><div><h2 id="output-review-title">Excelで作成</h2><span>内容を確認して、このPCにExcelファイルを作成します</span></div><button type="button" class="output-review-dialog__close" data-output-close aria-label="閉じる">×</button></header>'
       + '<div class="output-review-dialog__content"><section class="output-review-dialog__summary" aria-label="出力前の確認"><div><span>全手順</span><strong data-output-total>0件</strong></div><button type="button" data-output-fix="text"><span>説明なし</span><strong data-output-missing-text>0件</strong></button><button type="button" data-output-fix="image"><span>画像なし</span><strong data-output-missing-image>0件</strong></button><button type="button" data-output-fix="attention"><span>要確認</span><strong data-output-attention>0件</strong></button></section><p class="output-review-dialog__note" data-output-note></p>'
-      + '<section class="output-review-dialog__formats" aria-label="出力形式"><button type="button" class="output-format output-format--recommended" data-output-format="excel"><span class="output-format__badge">おすすめ</span><strong>Excelファイルを作成</strong><span>画像と説明を見比べやすく、出力後も追記できます</span></button><button type="button" class="output-format" data-output-format="word"><strong>Wordファイルを作成</strong><span>印刷しやすい縦型です</span></button></section></div>'
+      + '<section class="output-review-dialog__actions" aria-label="作成するファイル"><button type="button" class="button button--primary output-review-dialog__primary" data-output-format="excel">Excelファイルを作成</button><button type="button" class="button button--ghost output-review-dialog__word" data-output-format="word">印刷向けにWordで作成</button><p>Excelが標準です。Wordは印刷用の副出力が必要な場合だけ選びます。</p></section></div>'
       + '<footer class="output-review-dialog__footer"><span>出力後の共有や公開は、作成したファイルを利用者が管理します。</span><button type="button" class="button button--ghost" data-output-close>編集に戻る</button></footer>';
     dialog.querySelectorAll('[data-output-close]').forEach((button) => button.addEventListener('click', () => dialog.close()));
     dialog.addEventListener('click', (event) => {
@@ -2984,8 +3039,8 @@
     if (metrics.missingImage.length) issueLabels.push(`画像なし ${metrics.missingImage.length}件`);
     if (metrics.attention.length) issueLabels.push(`要確認 ${metrics.attention.length}件`);
     dialog.querySelector('[data-output-note]').textContent = issueLabels.length
-      ? `${issueLabels.join('、')}があります。件数を押すと該当手順を直せます。意図した状態ならそのまま形式を選べます。`
-      : '説明と画像が揃っています。作成するファイルを選んでください。';
+      ? `${issueLabels.join('、')}があります。件数を押すと該当手順を直せます。意図した状態ならそのままExcelを作成できます。`
+      : '説明と画像が揃っています。Excelファイルを作成できます。';
     if (!dialog.open) dialog.showModal();
     window.requestAnimationFrame(() => dialog.querySelector('[data-output-format="excel"]')?.focus());
   };
@@ -4218,6 +4273,7 @@
   document.body.addEventListener('htmx:afterRequest', (event) => {
     const path = requestPath(event);
     if (path === '/api/steps/update') pendingStepSaveRequests.delete(htmxRequestIdentity(event));
+    if (SAVE_PATHS.has(path) && event.detail.successful) failedSaveRequest = null;
     if (path === '/api/shutdown' && event.detail.successful) {
       document.body.innerHTML = '<main class="shutdown-screen"><div class="shutdown-screen__mark">M</div><h1>ManualBuilderを終了しました</h1><p>このタブは閉じてかまいません。</p></main>';
       return;
@@ -4228,16 +4284,21 @@
       const serverMessage = contentType.includes('text/plain') && responseText.length <= 300 ? responseText : '';
       // 保存系はどれも「保存できません」に揃える。トップバーは短い状態語だけを出し、
       // 理由と次の一手はトーストへ回す（長文を入れるとトップバーが押し広げられる）。
-      const savePaths = ['/api/steps/update', '/api/project/title', '/api/sheets/rename'];
-      saveStatus('error', savePaths.includes(path) ? '保存できません' : '処理できません');
-      showToast(serverMessage || describeHttpFailure(event.detail.xhr?.status));
+      const saveFailed = rememberFailedSave(event);
+      saveStatus('error', saveFailed ? '保存できません' : '処理できません', saveFailed);
+      showToast(saveFailed
+        ? '画面には残っていますが、まだ保存されていません。上部の［再試行］を押してください。'
+        : (serverMessage || describeHttpFailure(event.detail.xhr?.status)));
     }
   });
 
   document.body.addEventListener('htmx:sendError', (event) => {
     if (requestPath(event) === '/api/steps/update') pendingStepSaveRequests.delete(htmxRequestIdentity(event));
-    saveStatus('error', 'サーバーへ接続できません');
-    showToast('ManualBuilderとの接続が切れました。アプリが起動中か確認してください。');
+    const saveFailed = rememberFailedSave(event);
+    saveStatus('error', 'サーバーへ接続できません', saveFailed);
+    showToast(saveFailed
+      ? '画面には残っていますが、まだ保存されていません。接続を確認して上部の［再試行］を押してください。'
+      : 'ManualBuilderとの接続が切れました。アプリが起動中か確認してください。');
   });
 
   let scrollTimer = 0;
@@ -4315,7 +4376,8 @@
     undoBusy: false,
     count: 0,
     capabilityRequestId: 0,
-    capabilityController: null
+    capabilityController: null,
+    currentView: ''
   };
 
   const stopRecorderPolling = () => {
@@ -4328,6 +4390,8 @@
   const setRecorderView = (view) => {
     const dialog = recorder.dialog;
     if (!dialog) return;
+    const changed = recorder.currentView !== view;
+    recorder.currentView = view;
     dialog.querySelectorAll('[data-recorder-view]').forEach((section) => {
       section.hidden = section.dataset.recorderView !== view;
     });
@@ -4347,6 +4411,11 @@
       if (current) item.setAttribute('aria-current', 'step');
       else item.removeAttribute('aria-current');
     });
+    if (changed && dialog.open) {
+      window.requestAnimationFrame(() => {
+        dialog.querySelector(`[data-recorder-view="${view}"] [data-recorder-view-heading]`)?.focus({ preventScroll: true });
+      });
+    }
   };
 
   const setRecorderMessage = (message, detail = '') => {
@@ -4508,9 +4577,13 @@
       const reviewEditor = reviewRequired
         ? `<div class="recorder-proposal__editor"><label><span>手順名</span><input type="text" maxlength="100" data-recorder-title value="${escapeRecorderHtml(item.title || '')}"></label><label><span>説明</span><textarea rows="3" maxlength="500" data-recorder-description>${escapeRecorderHtml(item.description || '')}</textarea></label></div>`
         : '';
-      return `<article class="recorder-proposal${reviewClass}${selected ? '' : ' is-excluded'}" data-recorder-event data-proposal-index="${index}" data-review-required="${reviewRequired ? 'true' : 'false'}" data-selected="${selected ? 'true' : 'false'}">
+      const titleId = `recorder-proposal-title-${index}`;
+      const proposalContent = reviewRequired
+        ? `<h3 id="${titleId}">手順 ${index + 1}（要確認）</h3>`
+        : `<h3 id="${titleId}">手順 ${index + 1}　${escapeRecorderHtml(item.title || '')}</h3><p>${escapeRecorderHtml(item.description || '')}</p>`;
+      return `<article class="recorder-proposal${reviewClass}${selected ? '' : ' is-excluded'}" aria-labelledby="${titleId}" data-recorder-event data-proposal-index="${index}" data-review-required="${reviewRequired ? 'true' : 'false'}" data-selected="${selected ? 'true' : 'false'}">
 ${shots}
-<div class="recorder-proposal__body"><span class="recorder-proposal__status">${reviewRequired ? '要確認' : 'そのまま使えます'}</span><strong>手順 ${index + 1}　${escapeRecorderHtml(item.title || '')}</strong><span>${escapeRecorderHtml(item.description || '')}</span>${reviewRequired ? `<p class="recorder-proposal__reason">${escapeRecorderHtml(reviewReason)}</p>` : ''}${reviewEditor}<div class="recorder-proposal__actions"><button type="button" class="button button--secondary button--small" data-recorder-toggle aria-pressed="${selected ? 'true' : 'false'}">${selected ? 'この手順を除外' : 'この手順を使う'}</button></div><details class="recorder-source-evidence"><summary>元の操作を見る</summary><p>${escapeRecorderHtml(transformationReason)}</p><p>${operationCount} 件の元操作は、除外してもこのマニュアル内に残ります。</p></details></div>
+<div class="recorder-proposal__body"><span class="recorder-proposal__status">${reviewRequired ? '要確認' : 'そのまま使えます'}</span>${proposalContent}${reviewRequired ? `<p class="recorder-proposal__reason">${escapeRecorderHtml(reviewReason)}</p>` : ''}${reviewEditor}<div class="recorder-proposal__actions"><button type="button" class="button button--secondary button--small" data-recorder-toggle aria-pressed="${selected ? 'true' : 'false'}">${selected ? 'この手順を除外' : 'この手順を使う'}</button></div><details class="recorder-source-evidence"><summary>元の操作を見る</summary><p>${escapeRecorderHtml(transformationReason)}</p><p>${operationCount} 件の元操作は、除外してもこのマニュアル内に残ります。</p></details></div>
 </article>`;
     }).join('');
     bindRecorderRowControls(list);
@@ -4639,6 +4712,7 @@ ${shots}
     recorder.active = false;
     recorder.eventSelection = null;
     recorder.localSelection = null;
+    recorder.currentView = '';
     const summary = showRecordedCandidates();
     if (summary.candidateCount > 0 && summary.reviewCount === 0) {
       await importRecordedEvents(null, true);
@@ -4904,19 +4978,42 @@ ${shots}
     }
   };
 
+  const askRecorderCloseAction = ({ title, description, safeLabel = '記録を続ける', primaryLabel = '', showDiscard = true }) => new Promise((resolve) => {
+    const decision = document.createElement('dialog');
+    const headingId = `recorder-close-title-${Date.now()}`;
+    decision.className = 'recorder-decision-dialog';
+    decision.setAttribute('aria-labelledby', headingId);
+    decision.innerHTML = `<form method="dialog"><h2 id="${headingId}">${title}</h2><p>${description}</p><div class="recorder-decision-dialog__actions"><button type="button" class="button button--secondary" data-recorder-decision="continue" autofocus>${safeLabel}</button>${primaryLabel ? `<button type="button" class="button button--primary" data-recorder-decision="finish">${primaryLabel}</button>` : ''}${showDiscard ? '<button type="button" class="button button--danger" data-recorder-decision="discard">記録を捨てて閉じる</button>' : ''}</div><p class="recorder-decision-dialog__warning">「記録を捨てて閉じる」は元に戻せません。</p></form>`;
+    const finish = (action) => {
+      decision.close();
+      decision.remove();
+      resolve(action);
+    };
+    decision.querySelectorAll('[data-recorder-decision]').forEach((button) => {
+      button.addEventListener('click', () => finish(button.dataset.recorderDecision));
+    });
+    decision.addEventListener('cancel', (event) => {
+      event.preventDefault();
+      finish('continue');
+    });
+    document.body.appendChild(decision);
+    keepDialogFocusInside(decision);
+    decision.showModal();
+  });
+
   const createRecorderDialog = () => {
     if (recorder.dialog) return recorder.dialog;
     const dialog = document.createElement('dialog');
     dialog.id = 'recorder-dialog';
     dialog.className = 'copilot-dialog';
-    dialog.setAttribute('aria-label', '操作を記録して手順にする');
+    dialog.setAttribute('aria-labelledby', 'recorder-dialog-title');
     dialog.setAttribute('aria-describedby', 'recorder-quick-start');
-    dialog.innerHTML = '<header class="copilot-dialog__header"><div><strong>操作を記録して手順書を作る</strong><span>普段どおり操作すると、クリックや入力から手順候補を自動作成します</span></div><button type="button" class="copilot-dialog__close" data-recorder-close aria-label="閉じる">×</button></header>'
+    dialog.innerHTML = '<header class="copilot-dialog__header"><div><h2 id="recorder-dialog-title">操作を記録して手順書を作る</h2><span>普段どおり操作すると、クリックや入力から手順候補を自動作成します</span></div><button type="button" class="copilot-dialog__close" data-recorder-close aria-label="閉じる">×</button></header>'
       + '<div class="copilot-dialog__content">'
       + '<ol class="recorder-flow" aria-label="作成の流れ"><li data-recorder-phase="record"><span>1</span>普段どおり操作</li><li data-recorder-phase="analyze"><span>2</span>手順を自動作成</li><li data-recorder-phase="review"><span>3</span>必要な所だけ確認</li></ol>'
       + '<section data-recorder-view="setup">'
-      + '<p class="recorder-quick-start" id="recorder-quick-start"><strong>［記録を開始］</strong> → 対象のアプリで普段どおり操作 → 記録レシートで確認・終了</p>'
-      + '<div class="recorder-scope"><strong>普段の画面をそのまま記録</strong><span>Edge、Excel、エクスプローラーなど、いつものアプリで操作してください。クリックと画面変化から操作前・操作後を選びます。</span></div>'
+      + '<h3 class="recorder-view-heading" data-recorder-view-heading tabindex="-1">記録を始める</h3>'
+      + '<p class="recorder-quick-start" id="recorder-quick-start">対象のアプリで普段どおり操作してください。クリックと画面変化から手順候補を作ります。</p>'
       + '<p class="recorder-privacy-alert"><strong>入力した文字や通知も画面画像に写ります。</strong>機密情報を閉じてから記録を始めてください。取り込まなかった元画像も、作成根拠としてこのマニュアル内に残ります。</p>'
       + '<details class="recorder-advanced"><summary>うまく撮れない場合の設定</summary><label class="recorder-capture-quality"><span><strong>操作後画面を撮るまで</strong><small>通常は「標準」のままで問題ありません。読込途中の画面が多い場合だけ長めにします。</small></span><select data-recorder-result-delay><option value="300">すぐ（0.3秒）</option><option value="700" selected>標準（0.7秒）</option><option value="1200">ゆっくり（1.2秒）</option><option value="2000">とてもゆっくり（2.0秒）</option></select></label></details>'
       + '<details class="recorder-recorded-info"><summary>記録される情報とプライバシー</summary><div><p>対応しているクリックと入力活動、その時刻、画面、ウィンドウ名、操作対象の候補を記録します。ドラッグ、スクロール、特殊な画面などは自動で確定できず、確認が必要になる場合があります。</p><p><strong>押したキーそのものは保存しません</strong>が、入力した文字は画面画像に写ります。画像と操作情報はこのPCの外へ送信しません。</p><p>黒塗りは出力画像を隠すための編集です。元の記録画像を完全に削除する機能ではありません。元画像はプロジェクトを削除するまでこのPCに残ります。</p></div></details>'
@@ -4924,16 +5021,19 @@ ${shots}
       + '<p class="copilot-dialog__error" data-recorder-detail></p>'
       + '</section>'
       + '<section data-recorder-view="recording" hidden>'
+      + '<h3 class="recorder-view-heading" data-recorder-view-heading tabindex="-1">操作を記録中</h3>'
       + '<div class="copilot-dialog__state" role="status" aria-live="polite"><strong data-recorder-message>記録しています</strong><span data-recorder-detail></span></div>'
       + '<p class="copilot-note" data-recorder-controller-status>対象アプリの端に記録レシートが開きます。直前画像の確認、取消、結果画面の追加、終了をその場で操作できます。</p>'
       + '<div class="recorder-live-preview" data-recorder-live-preview hidden><div class="recorder-live-preview__header"><strong>直前に記録した操作</strong><span>違っていたら、下のボタンですぐ取り消せます</span></div><div class="recorder-live-preview__shots"><span><small>操作前</small><img data-recorder-preview-before alt="直前に記録した操作前の画面"></span><span data-recorder-preview-after-wrap hidden><small>操作後</small><img data-recorder-preview-after alt="直前に記録した操作後の画面"></span></div></div>'
       + '<div class="recorder-controller" aria-label="記録の操作"><button type="button" class="button button--secondary" data-recorder-pause>一時停止</button><button type="button" class="button button--ghost" data-recorder-undo disabled>直前の操作を取り消す</button></div>'
       + '</section>'
       + '<section data-recorder-view="analyzing" hidden>'
+      + '<h3 class="recorder-view-heading" data-recorder-view-heading tabindex="-1">手順候補を作成中</h3>'
       + '<div class="copilot-dialog__state" role="status" aria-live="polite"><strong data-recorder-message>記録画面を並べています</strong><span data-recorder-detail></span></div>'
       + '<div class="recorder-analysis"><span class="recorder-analysis__pulse" aria-hidden="true"></span><div><strong>このPCで手順候補を作成中</strong><p>クリックの時刻・位置と画面変化を照合し、読込中や重複した画面を除いています。</p></div></div>'
       + '</section>'
       + '<section data-recorder-view="review" hidden>'
+      + '<h3 class="recorder-view-heading" data-recorder-view-heading tabindex="-1">作成する手順を確認</h3>'
       + '<div class="copilot-dialog__state" role="status" aria-live="polite"><strong data-recorder-message></strong><span data-recorder-detail></span></div>'
       + '<p class="recorder-capture-warning" data-recorder-capture-warning role="alert" hidden></p>'
       + '<p class="copilot-note" data-recorder-review-note>要確認の手順だけを表示しています。大きな画像と理由を確認し、不要な手順は［この手順を除外］を押してください。</p>'
@@ -4952,27 +5052,29 @@ ${shots}
     recorder.dialog = dialog;
     keepDialogFocusInside(dialog);
 
-    const requestClose = () => {
+    const requestClose = async () => {
       // 記録レシートの×は「終了して確認」へ進むのに、ここの×は破棄だった。
       // 同じ×印で結果が正反対になるため、まず「手順にする」を既定の出口にする。
       if (recorder.active) {
         const count = Number(recorder.count) || 0;
         const amount = count > 0 ? `ここまでの ${count} 件` : 'ここまでの記録';
-        if (window.confirm(`記録中です。${amount}を手順にしますか？\n\n［OK］記録を終了して手順にします\n［キャンセル］記録を続けます\n\n記録を捨てたいときは、記録レシートの［記録を終了］から手順を作らずに閉じてください。`)) {
-          stopRecording();
-        }
+        const action = await askRecorderCloseAction({ title: '記録を終了しますか？', description: `${amount}を手順候補にできます。`, primaryLabel: '終了して確認' });
+        if (action === 'finish') await stopRecording();
+        if (action === 'discard') dialog.close();
         return;
       }
-      if ((recorder.events.length > 0 || recorder.localProposals.length > 0)
-        && !window.confirm('取り込んでいない記録があります。捨てて閉じますか？\n\nこの記録は元に戻せません。')) return;
+      if (recorder.events.length > 0 || recorder.localProposals.length > 0) {
+        const action = await askRecorderCloseAction({ title: '確認中の記録があります', description: '手順にする場合は確認画面へ戻ってください。', safeLabel: '確認に戻る' });
+        if (action !== 'discard') return;
+      }
       dialog.close();
     };
     dialog.querySelectorAll('[data-recorder-close]').forEach((button) => {
-      button.addEventListener('click', requestClose);
+      button.addEventListener('click', () => { void requestClose(); });
     });
     dialog.addEventListener('cancel', (event) => {
       event.preventDefault();
-      requestClose();
+      void requestClose();
     });
     dialog.querySelector('[data-recorder-start]').addEventListener('click', () => startRecording());
     dialog.querySelector('[data-recorder-capability-retry]').addEventListener('click', () => checkRecorderCapability(dialog));

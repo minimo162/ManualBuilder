@@ -6,6 +6,8 @@
 
 ## 現在の状態
 
+- Phase 1基盤 v0.53.0: 老眼・弱視・手指の震え・低い画面を前提に、本文16px、補助情報14px、操作44px（主操作48px）へ統一。新規作成、記録終了、保存再試行、Excel出力を、位置やOK／キャンセルの解読に頼らない導線へ整理
+- Phase 1基盤 v0.52.0: 操作イベントを全件または先頭だけ取り逃しても、安定した画面差分から赤枠なしの要確認候補を回収する。保存失敗時は入力を残したままトップバーから再試行できる。主出力を固定ツールバーの「Excelで作成」へ統一し、Wordは印刷向けの副出力として選べる
 - Phase 0（技術・安全性検証）完了・`phase0-v2.16` で固定
 - Excel COMによる主出力: 単発、10回連続、キャンセル、異常分岐を実機確認済み
 - 既存の未保存Excelブックへ影響しないことを実機確認済み
@@ -146,6 +148,8 @@ v0.14.1以前のアプリ配下に `data\projects\default` がある場合、v0.
 共有側の `run.cmd` から起動した場合は最新版を確認し、更新失敗時は検証済みのローカル版へ戻ります。
 
 初回は `tests\phase1\run-tests.cmd` を実行し、PowerShell 5.1構文、プロジェクト保存、localhostサーバーを確認してください。詳しくは [docs/PHASE1-FOUNDATION.md](docs/PHASE1-FOUNDATION.md) を参照してください。
+
+Phase 1 v0.53.0のUI/UX再確認手順は [docs/RETEST-PHASE1-v0.53.0.md](docs/RETEST-PHASE1-v0.53.0.md) にまとめています。v0.52.0の記録回収・保存再試行の確認は [docs/RETEST-PHASE1-v0.52.0.md](docs/RETEST-PHASE1-v0.52.0.md) を参照してください。
 
 Phase 1 v0.34.1の再確認手順は [docs/RETEST-PHASE1-v0.34.1.md](docs/RETEST-PHASE1-v0.34.1.md) にまとめています。
 
