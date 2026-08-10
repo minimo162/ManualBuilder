@@ -94,6 +94,7 @@ button:disabled { cursor: default; opacity: .45; }
 }
 
 .status-dot.paused { background: #d69721; box-shadow: 0 0 0 5px rgba(214, 151, 33, .12); }
+.status-dot.ready { background: #547099; box-shadow: 0 0 0 5px rgba(84, 112, 153, .12); }
 .status-dot.completed { background: #258557; box-shadow: 0 0 0 5px rgba(37, 133, 87, .12); }
 .status-dot.failed { background: #be2f36; box-shadow: 0 0 0 5px rgba(190, 47, 54, .12); }
 
@@ -225,21 +226,22 @@ button:disabled { cursor: default; opacity: .45; }
 .command-actions { justify-content: flex-end; gap: 8px; }
 .command-actions .primary-button { margin-left: 8px; }
 
-.compact-panel { min-height: 0; padding: 12px 16px 14px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; gap: 18px; background: var(--surface-subtle); }
+.compact-panel { min-height: 0; padding: 8px 10px 10px; display: grid; grid-template-columns: minmax(0, 1fr) 218px; align-items: stretch; gap: 10px; background: var(--surface-subtle); }
 .compact-panel[hidden] { display: none; }
-.receipt-panel { min-width: 0; display: grid; gap: 8px; }
+.receipt-panel { min-width: 0; display: grid; gap: 5px; }
 .compact-target { min-width: 0; display: grid; gap: 2px; }
 .compact-target span { color: var(--muted); font-size: 14px; }
 .compact-target strong { overflow: hidden; font-size: 16px; text-overflow: ellipsis; white-space: nowrap; }
+.shortcut-guide { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.2; white-space: pre-line; }
 .receipt-list { min-width: 0; margin: 0; padding: 0; display: grid; gap: 5px; list-style: none; }
 .receipt-list li { min-width: 0; min-height: 44px; padding: 5px 8px; display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 8px; border: 1px solid #e0e6ef; border-radius: 8px; background: #fff; }
 .receipt-list li > span { width: 23px; height: 23px; display: grid; place-items: center; border-radius: 50%; color: #315fca; background: var(--primary-soft); font-size: 11px; font-weight: 700; }
 .receipt-list li strong { overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
 .receipt-list li small { color: var(--muted); font-size: 14px; white-space: nowrap; }
 .receipt-list .receipt-empty { display: flex; color: var(--muted); font-size: 14px; }
-.compact-actions { flex: 0 0 230px; align-content: center; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
-.compact-actions button { min-height: 44px; padding: 0 13px; font-size: 14px; }
-.compact-actions .primary-button { flex: 1 0 100%; }
+.compact-actions { min-width: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: center; gap: 6px; }
+.compact-actions button { min-height: 44px; padding: 0 7px; font-size: 14px; }
+.compact-actions .primary-button { margin: 0; }
 
 .modal-backdrop {
   position: fixed;
@@ -260,18 +262,23 @@ button:disabled { cursor: default; opacity: .45; }
 .modal-actions { justify-content: flex-end; gap: 8px; margin-top: 24px; }
 
 body.is-compact { padding: 6px; }
-body.is-compact .app-shell { grid-template-rows: 58px minmax(0, 1fr); border-radius: 13px; }
-body.is-compact .titlebar { padding-left: 16px; }
+body.is-compact .app-shell { grid-template-rows: 54px minmax(0, 1fr); border-radius: 13px; }
+body.is-compact .titlebar { padding-left: 12px; }
 body.is-compact .status-copy span { display: none; }
 body.is-compact .return-button { display: none; }
 body.is-compact .monitor { display: none; }
-body.is-compact .compact-panel { display: flex; }
+body.is-compact .compact-panel { display: grid; }
 body.is-compact .window-button { min-height: 44px; width: 44px; }
+body.is-compact .receipt-list li:not(:last-child) { display: none; }
+body.is-compact .receipt-list li { min-height: 44px; }
+body.is-compact .modal { max-height: calc(100vh - 20px); padding: 12px 16px; }
+body.is-compact .modal-icon { display: none; }
+body.is-compact .modal h2 { margin: 0 0 4px; font-size: 18px; }
+body.is-compact .modal-actions { margin-top: 10px; }
+body.is-compact .modal-actions button { min-height: 44px; }
 
 @media (max-width: 700px) {
-  .compact-panel { grid-template-columns: 1fr; }
-  .compact-actions { flex: 0 0 auto; justify-content: flex-start; }
-  .compact-actions .primary-button { flex: 0 1 auto; }
+  .compact-panel { grid-template-columns: minmax(0, 1fr) 218px; }
 }
 
 @media (max-width: 830px) {

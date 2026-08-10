@@ -139,7 +139,56 @@ try {
 
     $root = [Windows.Automation.AutomationElement]::FromHandle($handle)
     $panelBounds = $root.Current.BoundingRectangle
-    foreach ($expected in @('一時停止', '直前を削除', '終了して確認', '直前画像を確認')) {
+
+    $status.state = 'ready'
+    [IO.File]::WriteAllText($pausePath, 'ready', [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($statusPath, ($status | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+    $startElement = $null
+    for ($attempt = 0; $attempt -lt 20 -and $null -eq $startElement; $attempt++) {
+        $startElement = Find-UiaElement -Root $root -Name '記録を開始'
+        if ($null -eq $startElement) { Start-Sleep -Milliseconds 100 }
+    }
+    Add-Result ($null -ne $startElement -and $startElement.Current.IsEnabled) '待機中は「記録を開始」と案内する'
+    Add-Result ($null -ne (Find-UiaElement -Root $root -Name '開始待ち')) '待機状態を短く明確に表示する'
+    $shortcutGuide = (Find-UiaElement -Root $root -Name 'Ctrl+Alt+Space：開始・一時停止・再開 Ctrl+Alt+Enter：終了確認')
+    $shortcutUnavailable = (Find-UiaElement -Root $root -Name 'ショートカットは現在利用できません。画面のボタンをお使いください。')
+    Add-Result ($null -ne $shortcutGuide -or $null -ne $shortcutUnavailable) 'ショートカットまたは画面ボタンへの代替案内を表示する'
+    [void][MbControllerTestNative]::SendMessage($handle, 0x0312, [IntPtr]0x4D01, [IntPtr]::Zero)
+    [void][MbControllerTestNative]::SendMessage($handle, 0x0312, [IntPtr]0x4D01, [IntPtr]::Zero)
+    for ($attempt = 0; $attempt -lt 20 -and (Test-Path -LiteralPath $pausePath); $attempt++) { Start-Sleep -Milliseconds 100 }
+    Add-Result (-not (Test-Path -LiteralPath $pausePath)) 'Ctrl+Alt+Space相当で待機から記録を開始できる'
+    Add-Result (-not (Test-Path -LiteralPath $pausePath)) '開始操作を連打しても待機へ戻らない'
+
+    $status.state = 'recording'
+    [IO.File]::WriteAllText($statusPath, ($status | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+    Start-Sleep -Milliseconds 500
+
+    $status.state = 'paused'
+    [IO.File]::WriteAllText($pausePath, 'pause', [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($statusPath, ($status | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+    $resumeElement = $null
+    for ($attempt = 0; $attempt -lt 20 -and $null -eq $resumeElement; $attempt++) {
+        $resumeElement = Find-UiaElement -Root $root -Name '記録を再開'
+        if ($null -eq $resumeElement) { Start-Sleep -Milliseconds 100 }
+    }
+    Add-Result ($null -ne $resumeElement -and $resumeElement.Current.IsEnabled) '一時停止中は「記録を再開」と案内する'
+    [void][MbControllerTestNative]::SendMessage($handle, 0x0312, [IntPtr]0x4D01, [IntPtr]::Zero)
+    [void][MbControllerTestNative]::SendMessage($handle, 0x0312, [IntPtr]0x4D01, [IntPtr]::Zero)
+    for ($attempt = 0; $attempt -lt 20 -and (Test-Path -LiteralPath $pausePath); $attempt++) { Start-Sleep -Milliseconds 100 }
+    Add-Result (-not (Test-Path -LiteralPath $pausePath)) 'Ctrl+Alt+Space相当で一時停止から再開できる'
+    Add-Result (-not (Test-Path -LiteralPath $pausePath)) '再開操作を連打しても一時停止へ戻らない'
+
+    $status.state = 'recording'
+    [IO.File]::WriteAllText($statusPath, ($status | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+    for ($attempt = 0; $attempt -lt 20 -and $null -eq (Find-UiaElement -Root $root -Name '一時停止'); $attempt++) { Start-Sleep -Milliseconds 100 }
+
+    [void][MbControllerTestNative]::SendMessage($handle, 0x0312, [IntPtr]0x4D02, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 300
+    Add-Result ($null -ne (Find-UiaElement -Root $root -Name '記録を終了しますか？')) 'Ctrl+Alt+Enter相当でも終了確認を省略しない'
+    [void](Invoke-UiaElement -Element (Find-UiaElement -Root $root -Name '記録を続ける') -WindowHandle $handle)
+    Start-Sleep -Milliseconds 200
+
+    foreach ($expected in @('一時停止', '直前を取り消す', '終了して確認', '直前画像を確認')) {
         $element = $null
         for ($attempt = 0; $attempt -lt 20 -and $null -eq $element; $attempt++) {
             $element = Find-UiaElement -Root $root -Name $expected
@@ -160,8 +209,8 @@ try {
         if ($null -eq $targetElement) { Start-Sleep -Milliseconds 100 }
     }
     Add-Result ($null -ne $targetElement) '直前の操作対象をその場で確認できる'
-    Add-Result ($panelBounds.Width -ge 640 -and $panelBounds.Width -le 760 -and $panelBounds.Height -ge 270 -and $panelBounds.Height -le 340) `
-        '作業中は直近3件を読める大きさの記録レシートで開く'
+    Add-Result ($panelBounds.Width -ge 440 -and $panelBounds.Width -le 500 -and $panelBounds.Height -ge 200 -and $panelBounds.Height -le 240) `
+        '作業中は約480×220の小型記録レシートで開く'
     Add-Result ($null -ne (Find-UiaElement -Root $root -Name '記録レシート')) '記録レシートの見出しを表示する'
     $expandElement = Find-UiaElement -Root $root -Name '直前画像を確認'
     Add-Result ($null -ne $expandElement) '記録レシートから直前画像を開ける'
@@ -183,19 +232,19 @@ try {
         Start-Sleep -Milliseconds 300
     }
 
-    $undoElement = Find-UiaElement -Root $root -Name '直前の記録を削除'
-    Add-Result ($null -ne $undoElement -and $undoElement.Current.IsEnabled) '記録があれば直前削除を実行できる'
+    $undoElement = Find-UiaElement -Root $root -Name '直前の操作を取り消す'
+    Add-Result ($null -ne $undoElement -and $undoElement.Current.IsEnabled) '記録があれば直前の操作を取り消せる'
     if (Invoke-UiaElement -Element $undoElement -WindowHandle $handle) {
         for ($attempt = 0; $attempt -lt 30 -and -not (Test-Path -LiteralPath $undoPath); $attempt++) { Start-Sleep -Milliseconds 100 }
         $undoRequest = if (Test-Path -LiteralPath $undoPath) { [IO.File]::ReadAllText($undoPath).Trim() } else { '' }
-        Add-Result (-not [string]::IsNullOrWhiteSpace($undoRequest)) '直前の記録削除に識別子付きの要求を送る'
-        $pendingUndo = Find-UiaElement -Root $root -Name '削除中…'
-        Add-Result ($null -ne $pendingUndo -and -not $pendingUndo.Current.IsEnabled) '削除の応答待ち中は二重要求しない'
+        Add-Result (-not [string]::IsNullOrWhiteSpace($undoRequest)) '直前操作の取り消しに識別子付きの要求を送る'
+        $pendingUndo = Find-UiaElement -Root $root -Name '取り消しています…'
+        Add-Result ($null -ne $pendingUndo -and -not $pendingUndo.Current.IsEnabled) '取り消しの応答待ち中は二重要求しない'
         $status.undoRequestId = $undoRequest
         [IO.File]::WriteAllText($statusPath, ($status | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
         Start-Sleep -Milliseconds 500
-        $undoElement = Find-UiaElement -Root $root -Name '直前の記録を削除'
-        Add-Result ($null -ne $undoElement -and $undoElement.Current.IsEnabled) '削除の応答後に再操作できる'
+        $undoElement = Find-UiaElement -Root $root -Name '直前の操作を取り消す'
+        Add-Result ($null -ne $undoElement -and $undoElement.Current.IsEnabled) '取り消しの応答後に再操作できる'
     }
 
     $root = [Windows.Automation.AutomationElement]::FromHandle($handle)
@@ -245,6 +294,9 @@ try {
 
     $finishElement = Find-UiaElement -Root $root -Name '終了して確認'
     [void](Invoke-UiaElement -Element $finishElement -WindowHandle $handle)
+    Start-Sleep -Milliseconds 300
+    Add-Result ($null -ne (Find-UiaElement -Root $root -Name '記録を終了しますか？')) '終了ボタンも確認画面を経由する'
+    [void](Invoke-UiaElement -Element (Find-UiaElement -Root $root -Name '記録を終了する') -WindowHandle $handle)
     for ($attempt = 0; $attempt -lt 30 -and -not (Test-Path -LiteralPath $stopPath); $attempt++) { Start-Sleep -Milliseconds 100 }
     Add-Result (Test-Path -LiteralPath $stopPath) '終了操作で手順候補の作成を開始する'
     [void][MbControllerTestNative]::SendMessage($handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)

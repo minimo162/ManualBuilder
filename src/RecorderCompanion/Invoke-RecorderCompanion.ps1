@@ -8,6 +8,7 @@ param(
     [Parameter(Mandatory = $true)][string]$StopPath,
     [Parameter(Mandatory = $true)][string]$JobId,
     [Parameter(Mandatory = $true)][string]$WebRoot,
+    [long]$ReturnWindowHandle = 0,
     [switch]$TestMode
 )
 
@@ -52,7 +53,8 @@ $arguments = @(
     '--result', [IO.Path]::GetFullPath($ResultPath),
     '--stop', [IO.Path]::GetFullPath($StopPath),
     '--job', $JobId,
-    '--web-root', [IO.Path]::GetFullPath($WebRoot)
+    '--web-root', [IO.Path]::GetFullPath($WebRoot),
+    '--return-window', ([string]$ReturnWindowHandle)
 )
 if ($TestMode) { $arguments += @('--test-mode', 'true') }
 

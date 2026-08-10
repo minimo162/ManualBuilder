@@ -157,7 +157,9 @@ function New-MbTestProject {
 $emptyWorkspaceHtml = ConvertTo-MbWorkspaceHtml -Project (New-MbTestProject -Steps @()) -Token 'testtoken'
 Assert-Mb ($emptyWorkspaceHtml -match '操作を記録して、手順書を作る') '空の画面で主機能を成果が分かる見出しにする'
 Assert-Mb ($emptyWorkspaceHtml -notmatch 'id="watch-status"') '操作記録と矛盾する手動画像追加の状態を初回画面に出さない'
-Assert-Mb ($emptyWorkspaceHtml -match 'empty-state__main-button[^>]*data-record-operations[^>]*>操作を記録して始める') '空の画面で操作記録を主ボタンにする'
+Assert-Mb ($emptyWorkspaceHtml -match 'empty-state__main-button[^>]*data-record-operations[^>]*>記録の操作画面を開く') '空の画面で記録準備を主ボタンにする'
+Assert-Mb ($emptyWorkspaceHtml -match '対象アプリへ移動してから記録を始めます' -and
+    $emptyWorkspaceHtml -match '移動中の操作は記録されません') '対象アプリへ移る前の操作を記録しない流れを案内する'
 Assert-Mb (([regex]::Matches($emptyWorkspaceHtml, 'button button--primary[^>]*data-record-operations')).Count -eq 1) '空の画面では操作記録の主ボタンを重複させない'
 Assert-Mb ($emptyWorkspaceHtml -match 'data-open-video-picker>録画ファイルを取り込む') '既存録画の取り込みを同じ画面から選べる'
 Assert-Mb (([regex]::Matches($emptyWorkspaceHtml, 'data-open-video-picker>録画ファイルを取り込む')).Count -eq 1) '空の画面では既存録画の入口を重複させない'

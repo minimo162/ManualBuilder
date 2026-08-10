@@ -10,6 +10,7 @@
     countLabel: document.getElementById('count-label'),
     targetLabel: document.getElementById('target-label'),
     compactTargetLabel: document.getElementById('compact-target-label'),
+    shortcutGuide: document.getElementById('shortcut-guide'),
     receiptList: document.getElementById('receipt-list'),
     helpText: document.getElementById('help-text'),
     monitor: document.getElementById('monitor'),
@@ -44,13 +45,27 @@
     compare: false,
     recentOperations: []
   };
+  let receiptSignature = '';
 
   const send = (message) => bridge?.postMessage(JSON.stringify(message));
   const command = (name) => send({ type: 'command', command: name });
 
+  const setText = (element, value) => {
+    const text = String(value ?? '');
+    if (element.textContent !== text) element.textContent = text;
+  };
+
   const setButton = (button, label, enabled) => {
-    button.textContent = label;
-    button.disabled = !enabled;
+    setText(button, label);
+    const disabled = !enabled;
+    if (button.disabled !== disabled) button.disabled = disabled;
+  };
+
+  const setCommandPriority = (toggleButton, finishButton, toggleIsPrimary, toggleSecondaryClass) => {
+    toggleButton.classList.toggle('primary-button', toggleIsPrimary);
+    toggleButton.classList.toggle(toggleSecondaryClass, !toggleIsPrimary);
+    finishButton.classList.toggle('primary-button', !toggleIsPrimary);
+    finishButton.classList.toggle('secondary-button', toggleIsPrimary);
   };
 
   const setImage = (image, url) => {
@@ -69,8 +84,11 @@
     if (!hasBefore || !hasAfter) state.compare = false;
     elements.previewStage.classList.toggle('compare', state.compare);
     elements.compareButton.hidden = !(hasBefore && hasAfter);
-    elements.compareButton.textContent = state.compare ? '1枚の表示に戻す' : '結果画像も見る';
-    elements.compareButton.setAttribute('aria-pressed', String(state.compare));
+    setText(elements.compareButton, state.compare ? '1枚の表示に戻す' : '結果画像も見る');
+    const pressed = String(state.compare);
+    if (elements.compareButton.getAttribute('aria-pressed') !== pressed) {
+      elements.compareButton.setAttribute('aria-pressed', pressed);
+    }
 
     let showBefore = false;
     let showAfter = false;
@@ -89,8 +107,11 @@
 
   const renderReceipts = () => {
     const operations = Array.isArray(state.recentOperations) ? state.recentOperations : [];
+    const nextSignature = JSON.stringify(operations);
+    if (nextSignature === receiptSignature) return;
+    receiptSignature = nextSignature;
     if (operations.length === 0) {
-      elements.receiptList.innerHTML = '<li class="receipt-empty">操作すると、ここに直近3件が表示されます</li>';
+      elements.receiptList.innerHTML = '<li class="receipt-empty">操作すると、ここに直前の操作が表示されます</li>';
       return;
     }
     elements.receiptList.innerHTML = operations.map((item) => {
@@ -113,15 +134,19 @@
     elements.body.classList.toggle('is-compact', Boolean(state.compact));
     elements.monitor.hidden = Boolean(state.compact);
     elements.compactPanel.hidden = !state.compact;
-    elements.stateLabel.textContent = state.stateLabel || '記録状態を確認中';
-    elements.statusDot.className = `status-dot ${state.state || ''}`;
-    elements.countLabel.textContent = state.count > 0
+    setText(elements.stateLabel, state.stateLabel || '記録状態を確認中');
+    const statusClass = `status-dot ${state.state || ''}`;
+    if (elements.statusDot.className !== statusClass) elements.statusDot.className = statusClass;
+    const countLabel = state.count > 0
       ? `${state.count}件記録済み・終了すると手順候補を作ります`
-      : '操作を待っています・終了後に手順候補を作ります';
-    elements.targetLabel.textContent = state.target || '直前の操作はまだありません';
-    elements.compactTargetLabel.textContent = state.target || 'まだありません';
-    elements.helpText.textContent = state.help || '';
-    elements.helpText.setAttribute('aria-label', state.help || '');
+      : (state.state === 'ready' ? '開始すると操作を記録します' : '操作を待っています・終了後に手順候補を作ります');
+    setText(elements.countLabel, countLabel);
+    setText(elements.targetLabel, state.target || '直前の操作はまだありません');
+    setText(elements.compactTargetLabel, state.target || 'まだありません');
+    setText(elements.helpText, state.help || '');
+    setText(elements.shortcutGuide, state.hotkeysAvailable === false
+      ? 'ショートカットは現在利用できません。画面のボタンをお使いください。'
+      : 'Ctrl+Alt+Space：開始・一時停止・再開\nCtrl+Alt+Enter：終了確認');
 
     setButton(elements.pauseButton, state.pauseLabel || '一時停止', state.canPause);
     setButton(elements.undoButton, state.undoLabel || '直前の操作を取り消す', state.canUndo);
@@ -130,6 +155,9 @@
     setButton(elements.compactPauseButton, state.pauseLabel || '一時停止', state.canPause);
     setButton(elements.compactUndoButton, state.undoLabel === '取り消しています…' ? '取り消し中…' : '直前を取り消す', state.canUndo);
     setButton(elements.compactFinishButton, state.finishLabel || '終了して確認', state.canFinish);
+    const toggleIsPrimary = state.state === 'ready' || state.state === 'paused';
+    setCommandPriority(elements.pauseButton, elements.finishButton, toggleIsPrimary, 'secondary-button');
+    setCommandPriority(elements.compactPauseButton, elements.compactFinishButton, toggleIsPrimary, 'icon-text-button');
     renderReceipts();
     renderPreview();
   };
@@ -150,17 +178,26 @@
   elements.pauseButton.addEventListener('click', () => command('pause'));
   elements.undoButton.addEventListener('click', () => command('undo'));
   elements.resultButton.addEventListener('click', () => command('result'));
-  elements.finishButton.addEventListener('click', () => command('finish'));
+  elements.finishButton.addEventListener('click', () => send({ type: 'close' }));
   elements.compactPauseButton.addEventListener('click', () => command('pause'));
   elements.compactUndoButton.addEventListener('click', () => command('undo'));
-  elements.compactFinishButton.addEventListener('click', () => command('finish'));
+  elements.compactFinishButton.addEventListener('click', () => send({ type: 'close' }));
   elements.cancelCloseButton.addEventListener('click', () => send({ type: 'cancel-close' }));
-  elements.confirmCloseButton.addEventListener('click', () => command('finish'));
+  elements.confirmCloseButton.addEventListener('click', () => {
+    if (elements.closeConfirm.open) elements.closeConfirm.close();
+    command('finish');
+  });
 
   bridge?.addEventListener('message', (event) => {
     const message = event.data || {};
     if (message.type === 'state') renderState(message);
     if (message.type === 'show-close-confirm') {
+      const ready = state.state === 'ready';
+      setText(document.getElementById('close-title'), ready ? '記録の準備をやめますか？' : '記録を終了しますか？');
+      setText(document.getElementById('close-description'), ready
+        ? 'まだ操作は記録されていません。ManualBuilderへ戻ります。'
+        : '終了すると、ManualBuilderで記録した操作を確認できます。');
+      setText(elements.confirmCloseButton, ready ? '準備をやめる' : '記録を終了する');
       if (!elements.closeConfirm.open) elements.closeConfirm.showModal();
       elements.cancelCloseButton.focus();
     }

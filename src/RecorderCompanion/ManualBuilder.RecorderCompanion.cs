@@ -65,6 +65,7 @@ namespace ManualBuilder.RecorderCompanion
         public string StopPath;
         public string JobId;
         public string WebRoot;
+        public long ReturnWindowHandle;
         public bool TestMode;
 
         public static CompanionOptions Parse(string[] args)
@@ -86,11 +87,20 @@ namespace ManualBuilder.RecorderCompanion
             options.StopPath = RequiredPath(values, "stop");
             options.JobId = RequiredValue(values, "job");
             options.WebRoot = RequiredPath(values, "web-root");
+            string returnWindow;
+            options.ReturnWindowHandle = values.TryGetValue("return-window", out returnWindow)
+                ? LongValue(returnWindow) : 0L;
             string testMode;
             options.TestMode = values.TryGetValue("test-mode", out testMode) &&
                 String.Equals(testMode, "true", StringComparison.OrdinalIgnoreCase);
             if (!Directory.Exists(options.WebRoot)) throw new DirectoryNotFoundException(options.WebRoot);
             return options;
+        }
+
+        private static long LongValue(string value)
+        {
+            long result;
+            return Int64.TryParse(value, out result) ? result : 0L;
         }
 
         private static string RequiredValue(Dictionary<string, string> values, string name)
@@ -111,7 +121,15 @@ namespace ManualBuilder.RecorderCompanion
     {
         private const int GaRoot = 2;
         private const int WmNcLButtonDown = 0x00A1;
+        private const int WmHotKey = 0x0312;
         private const int HtCaption = 2;
+        private const int PauseHotKeyId = 0x4D01;
+        private const int FinishHotKeyId = 0x4D02;
+        private const uint ModAlt = 0x0001;
+        private const uint ModControl = 0x0002;
+        private const uint ModNoRepeat = 0x4000;
+        private const uint VkSpace = 0x20;
+        private const uint VkReturn = 0x0D;
         private const uint MonitorDefaultToNearest = 2;
         private const uint WdaExcludeFromCapture = 0x00000011;
         private const int DwmwaWindowCornerPreference = 33;
@@ -123,6 +141,12 @@ namespace ManualBuilder.RecorderCompanion
         private readonly JavaScriptSerializer json;
         private IntPtr windowHandle;
         private IntPtr lastExternalWindow;
+        private readonly IntPtr manualBuilderWindow;
+        private HwndSource hwndSource;
+        private bool pauseHotKeyRegistered;
+        private bool finishHotKeyRegistered;
+        private string pendingPauseState = String.Empty;
+        private DateTime pendingPauseAtUtc;
         private bool webReady;
         private bool compact = true;
         private bool closingRequested;
@@ -146,10 +170,10 @@ namespace ManualBuilder.RecorderCompanion
             this.options = options;
             json = new JavaScriptSerializer();
             Title = "ManualBuilder Recorder";
-            Width = 760;
-            Height = 300;
-            MinWidth = 720;
-            MinHeight = 270;
+            Width = 480;
+            Height = 220;
+            MinWidth = 440;
+            MinHeight = 200;
             WindowStyle = WindowStyle.None;
             ResizeMode = ResizeMode.NoResize;
             Topmost = true;
@@ -157,7 +181,10 @@ namespace ManualBuilder.RecorderCompanion
             ShowActivated = options.TestMode;
             Background = Brushes.White;
 
-            lastExternalWindow = GetForegroundWindow();
+            manualBuilderWindow = options.ReturnWindowHandle != 0
+                ? new IntPtr(options.ReturnWindowHandle)
+                : GetForegroundWindow();
+            lastExternalWindow = manualBuilderWindow;
             webView = new WebView2();
             Content = webView;
             Loaded += OnLoaded;
@@ -227,6 +254,24 @@ namespace ManualBuilder.RecorderCompanion
         private void OnSourceInitialized(object sender, EventArgs e)
         {
             windowHandle = new WindowInteropHelper(this).Handle;
+            hwndSource = HwndSource.FromHwnd(windowHandle);
+            if (hwndSource != null) hwndSource.AddHook(WindowMessageHook);
+            try
+            {
+                uint modifiers = ModControl | ModAlt | ModNoRepeat;
+                pauseHotKeyRegistered = RegisterHotKey(windowHandle, PauseHotKeyId, modifiers, VkSpace);
+                finishHotKeyRegistered = RegisterHotKey(windowHandle, FinishHotKeyId, modifiers, VkReturn);
+                if (!pauseHotKeyRegistered || !finishHotKeyRegistered)
+                {
+                    // 一部だけ動く状態は案内と実動作が食い違うため、両方を無効にする。
+                    if (pauseHotKeyRegistered) UnregisterHotKey(windowHandle, PauseHotKeyId);
+                    if (finishHotKeyRegistered) UnregisterHotKey(windowHandle, FinishHotKeyId);
+                    pauseHotKeyRegistered = false;
+                    finishHotKeyRegistered = false;
+                    Log(new InvalidOperationException("One or more recorder hot keys could not be registered."));
+                }
+            }
+            catch (Exception ex) { Log(ex); }
             try
             {
                 int awareness = GetAwarenessFromDpiAwarenessContext(GetThreadDpiAwarenessContext());
@@ -243,6 +288,23 @@ namespace ManualBuilder.RecorderCompanion
                 DwmSetWindowAttribute(windowHandle, DwmwaWindowCornerPreference, ref preference, Marshal.SizeOf(typeof(int)));
             }
             catch { }
+        }
+
+        private IntPtr WindowMessageHook(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
+        {
+            if (message != WmHotKey) return IntPtr.Zero;
+            int hotKeyId = wParam.ToInt32();
+            if (hotKeyId == PauseHotKeyId)
+            {
+                handled = true;
+                TogglePause();
+            }
+            else if (hotKeyId == FinishHotKeyId)
+            {
+                handled = true;
+                RequestClose();
+            }
+            return IntPtr.Zero;
         }
 
         private void OnWebMessageReceived(object sender, CoreWebView2WebMessageReceivedEventArgs e)
@@ -272,8 +334,8 @@ namespace ManualBuilder.RecorderCompanion
             if (type == "drag") { BeginWindowDrag(); return; }
             if (type == "minimize") { WindowState = WindowState.Minimized; return; }
             if (type == "close") { RequestClose(); return; }
-            if (type == "cancel-close") { Publish(new Dictionary<string, object> { { "type", "hide-close-confirm" } }); return; }
-            if (type == "toggle-compact") { SetCompact(!compact); RestoreTargetFocus(); return; }
+            if (type == "cancel-close") { CancelClose(); return; }
+            if (type == "toggle-compact") { SetCompact(!compact); return; }
             if (type != "command") return;
             string command = StringValue(message, "command");
             if (command == "pause") TogglePause();
@@ -291,6 +353,20 @@ namespace ManualBuilder.RecorderCompanion
                 if (status == null || StringValue(status, "jobId") != options.JobId) return;
                 lastKnownState = StringValue(status, "state");
                 currentCount = IntValue(status, "count");
+                if (!String.IsNullOrEmpty(pendingPauseState))
+                {
+                    if (lastKnownState == pendingPauseState)
+                    {
+                        pendingPauseState = String.Empty;
+                        pendingPauseAtUtc = DateTime.MinValue;
+                    }
+                    else if (DateTime.UtcNow >= pendingPauseAtUtc.AddSeconds(4))
+                    {
+                        pendingPauseState = String.Empty;
+                        pendingPauseAtUtc = DateTime.MinValue;
+                        helpText = "状態を切り替えられませんでした。画面の状態を確認して、もう一度お試しください。";
+                    }
+                }
                 if (tracedState != lastKnownState)
                 {
                     tracedState = lastKnownState;
@@ -309,7 +385,12 @@ namespace ManualBuilder.RecorderCompanion
                 else if (lastKnownState == "completed" || lastKnownState == "idle")
                 {
                     closingFromStatus = true;
-                    if (closeAtUtc == DateTime.MinValue) closeAtUtc = DateTime.UtcNow.AddMilliseconds(2600);
+                    if (closeAtUtc == DateTime.MinValue)
+                    {
+                        // 終了後の候補確認と自動取り込みが進むManualBuilderへ戻す。
+                        if (manualBuilderWindow != IntPtr.Zero) SetForegroundWindow(manualBuilderWindow);
+                        closeAtUtc = DateTime.UtcNow.AddMilliseconds(2600);
+                    }
                 }
                 if (closeAtUtc != DateTime.MinValue && DateTime.UtcNow >= closeAtUtc)
                 {
@@ -372,13 +453,30 @@ namespace ManualBuilder.RecorderCompanion
 
         private void TogglePause()
         {
-            if (closingRequested || !String.IsNullOrEmpty(pendingResultId)) return;
+            if (closingRequested || !String.IsNullOrEmpty(pendingResultId) ||
+                !String.IsNullOrEmpty(pendingPauseState)) return;
+            if (lastKnownState != "ready" && lastKnownState != "recording" && lastKnownState != "paused") return;
             try
             {
-                if (File.Exists(options.PausePath)) File.Delete(options.PausePath);
-                else WriteText(options.PausePath, "pause");
+                if (lastKnownState == "recording")
+                {
+                    WriteText(options.PausePath, "pause");
+                    pendingPauseState = "paused";
+                }
+                else
+                {
+                    if (File.Exists(options.PausePath)) File.Delete(options.PausePath);
+                    pendingPauseState = "recording";
+                }
+                pendingPauseAtUtc = DateTime.UtcNow;
             }
-            catch (Exception ex) { Log(ex); }
+            catch (Exception ex)
+            {
+                pendingPauseState = String.Empty;
+                pendingPauseAtUtc = DateTime.MinValue;
+                Log(ex);
+            }
+            PublishState();
             RestoreTargetFocus();
         }
 
@@ -442,14 +540,24 @@ namespace ManualBuilder.RecorderCompanion
 
         private void RequestClose()
         {
-            if (closingFromStatus || lastKnownState == "failed")
+            if (closingFromStatus)
             {
-                closingFromStatus = true;
                 Close();
                 return;
             }
             if (closingRequested) return;
+            if (!IsVisible) Show();
+            if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
+            Activate();
+            webView.Focus();
             Publish(new Dictionary<string, object> { { "type", "show-close-confirm" } });
+        }
+
+        private async void CancelClose()
+        {
+            Publish(new Dictionary<string, object> { { "type", "hide-close-confirm" } });
+            await Task.Delay(80);
+            RestoreTargetFocus();
         }
 
         private void OnClosing(object sender, System.ComponentModel.CancelEventArgs e)
@@ -462,6 +570,16 @@ namespace ManualBuilder.RecorderCompanion
         private void OnClosed(object sender, EventArgs e)
         {
             timer.Stop();
+            if (windowHandle != IntPtr.Zero)
+            {
+                try { if (pauseHotKeyRegistered) UnregisterHotKey(windowHandle, PauseHotKeyId); } catch { }
+                try { if (finishHotKeyRegistered) UnregisterHotKey(windowHandle, FinishHotKeyId); } catch { }
+            }
+            if (hwndSource != null)
+            {
+                try { hwndSource.RemoveHook(WindowMessageHook); } catch { }
+                hwndSource = null;
+            }
             try { webView.Dispose(); } catch { }
         }
 
@@ -470,10 +588,10 @@ namespace ManualBuilder.RecorderCompanion
             compact = value;
             if (compact)
             {
-                MinWidth = 720;
-                MinHeight = 270;
-                Width = 760;
-                Height = 300;
+                MinWidth = 440;
+                MinHeight = 200;
+                Width = 480;
+                Height = 220;
                 ResizeMode = ResizeMode.NoResize;
             }
             else
@@ -559,17 +677,23 @@ namespace ManualBuilder.RecorderCompanion
             payload["count"] = count;
             payload["target"] = !String.IsNullOrWhiteSpace(target) ? target : (count > 0 ? "直前の操作を記録しました" : "直前の操作はまだありません");
             payload["message"] = message;
-            payload["help"] = helpText;
+            payload["help"] = state == "ready"
+                ? "対象アプリを前面にして「記録を開始」を押してください。"
+                : helpText;
             payload["compact"] = compact;
             payload["closing"] = closingRequested;
-            payload["pauseLabel"] = state == "paused" ? "記録を再開" : "一時停止";
+            payload["hotkeysAvailable"] = pauseHotKeyRegistered && finishHotKeyRegistered;
+            payload["pauseLabel"] = !String.IsNullOrEmpty(pendingPauseState)
+                ? "切り替えています…"
+                : (state == "ready" ? "記録を開始" : (state == "paused" ? "記録を再開" : "一時停止"));
             payload["undoLabel"] = String.IsNullOrEmpty(pendingUndoId) ? "直前の操作を取り消す" : "取り消しています…";
             payload["resultLabel"] = resultRetryReady ? "追加を再確認" : "結果画像を追加";
-            payload["canPause"] = !closingRequested && (state == "recording" || state == "paused") && String.IsNullOrEmpty(pendingResultId);
+            payload["canPause"] = !closingRequested && String.IsNullOrEmpty(pendingPauseState) &&
+                (state == "ready" || state == "recording" || state == "paused") && String.IsNullOrEmpty(pendingResultId);
             payload["canUndo"] = !closingRequested && count > 0 && (state == "recording" || state == "paused") && String.IsNullOrEmpty(pendingUndoId) && String.IsNullOrEmpty(pendingResultId);
             payload["canResult"] = !closingRequested && count > 0 && state == "recording" && lastExternalWindow != IntPtr.Zero && String.IsNullOrEmpty(pendingUndoId) && (String.IsNullOrEmpty(pendingResultId) || resultRetryReady);
-            payload["canFinish"] = !closingRequested && (state == "recording" || state == "paused" || state == "failed");
-            payload["finishLabel"] = state == "failed" ? "閉じる" : "終了して確認";
+            payload["canFinish"] = !closingRequested && (state == "ready" || state == "recording" || state == "paused" || state == "failed");
+            payload["finishLabel"] = state == "failed" ? "閉じる" : (state == "ready" ? "準備をやめる" : "終了して確認");
             payload["beforeImage"] = ImageUrl(count, false);
             payload["afterImage"] = ImageUrl(count, true);
             payload["recentOperations"] = RecentOperations();
@@ -633,6 +757,7 @@ namespace ManualBuilder.RecorderCompanion
         private string StateLabel(string state)
         {
             if (state == "starting") return "記録の準備中";
+            if (state == "ready") return "開始待ち";
             if (state == "recording") return "記録中";
             if (state == "paused") return "一時停止中";
             if (state == "completed") return "記録完了・ManualBuilderで確認できます";
@@ -774,6 +899,8 @@ namespace ManualBuilder.RecorderCompanion
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
         [DllImport("user32.dll")] private static extern bool ReleaseCapture();
         [DllImport("user32.dll")] private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+        [DllImport("user32.dll", SetLastError = true)] private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint modifiers, uint virtualKey);
+        [DllImport("user32.dll", SetLastError = true)] private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
         [DllImport("user32.dll")] private static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint affinity);
         [DllImport("user32.dll")] private static extern IntPtr GetThreadDpiAwarenessContext();
         [DllImport("user32.dll")] private static extern int GetAwarenessFromDpiAwarenessContext(IntPtr value);

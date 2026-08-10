@@ -51,8 +51,8 @@ Add-Result (($recorderControllerHtmlText -match '記録レシート') -and
     ($recorderControllerHtmlText -match '画像確認を閉じる') -and
     ($recorderControllerHtmlText -notmatch 'data-view="before"') -and
     ($recorderControllerCssText -match 'grid-template-columns: repeat\(2') -and
-    ($recorderControllerSourceText -match 'Width = 760') -and
-    ($recorderControllerSourceText -match 'Height = 300') -and
+    ($recorderControllerSourceText -match 'Width = 480') -and
+    ($recorderControllerSourceText -match 'Height = 220') -and
     ($recorderControllerSourceText -match 'Width = 980') -and
     ($recorderControllerSourceText -match 'Height = 760')) `
     '記録モニターが記録レシートと大きな画像確認を切り替えられる'

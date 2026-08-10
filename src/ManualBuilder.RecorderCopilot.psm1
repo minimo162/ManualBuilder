@@ -359,18 +359,77 @@ function New-MbRecorderLocalFrameCandidates {
     $selected = @(Select-MbRecorderTimelineFrames -Frames $scoped -Events $orderedEvents -Maximum $MaximumFrames)
     if ($selected.Count -lt 1) { return @() }
 
+    function Test-MbRecorderSameSemanticTarget {
+        param([AllowNull()]$First, [AllowNull()]$Second)
+        if ($null -eq $First -or $null -eq $Second) { return $false }
+
+        $firstName = if ($First.PSObject.Properties.Name -contains 'targetName') { ([string]$First.targetName).Trim() } else { '' }
+        $secondName = if ($Second.PSObject.Properties.Name -contains 'targetName') { ([string]$Second.targetName).Trim() } else { '' }
+        if ($firstName -and $secondName -and
+            [string]::Equals($firstName, $secondName, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+
+        if ($First.PSObject.Properties.Name -contains 'rect' -and $null -ne $First.rect -and
+            $Second.PSObject.Properties.Name -contains 'rect' -and $null -ne $Second.rect) {
+            try {
+                $overlapWidth = [Math]::Min([double]$First.rect.x2, [double]$Second.rect.x2) -
+                    [Math]::Max([double]$First.rect.x1, [double]$Second.rect.x1)
+                $overlapHeight = [Math]::Min([double]$First.rect.y2, [double]$Second.rect.y2) -
+                    [Math]::Max([double]$First.rect.y1, [double]$Second.rect.y1)
+                if ($overlapWidth -gt 0.0 -and $overlapHeight -gt 0.0) { return $true }
+            } catch { }
+        }
+
+        if ($First.PSObject.Properties.Name -contains 'clickPoint' -and $null -ne $First.clickPoint -and
+            $Second.PSObject.Properties.Name -contains 'clickPoint' -and $null -ne $Second.clickPoint) {
+            try {
+                $deltaX = [double]$First.clickPoint.x - [double]$Second.clickPoint.x
+                $deltaY = [double]$First.clickPoint.y - [double]$Second.clickPoint.y
+                if ([Math]::Sqrt(($deltaX * $deltaX) + ($deltaY * $deltaY)) -le 0.045) { return $true }
+            } catch { }
+        }
+        return $false
+    }
+
+    # UIA・押下履歴など複数の経路が同じクリックを報告しても、確認候補は1件にする。
+    # raw eventは消さず、同じsemantic groupのeventIdsとして全件を後段へ渡す。
+    $semanticGroups = New-Object System.Collections.ArrayList
+    foreach ($event in $orderedEvents) {
+        $previousGroup = if ($semanticGroups.Count -gt 0) { @($semanticGroups[$semanticGroups.Count - 1]) } else { @() }
+        $firstPrevious = if (@($previousGroup).Count -gt 0) { @($previousGroup)[0] } else { $null }
+        $lastPrevious = if (@($previousGroup).Count -gt 0) { @($previousGroup)[@($previousGroup).Count - 1] } else { $null }
+        $eventKind = [string]$event.kind
+        $canMergeClick = $null -ne $lastPrevious -and $eventKind -in @('click', 'right-click') -and
+            [string]$lastPrevious.kind -eq $eventKind -and
+            (Get-MbRecorderItemAppKey -Item $lastPrevious) -eq (Get-MbRecorderItemAppKey -Item $event) -and
+            [string]$lastPrevious.windowTitle -eq [string]$event.windowTitle -and
+            ([int]$event.timeMs - [int]$lastPrevious.timeMs) -ge 0 -and
+            ([int]$event.timeMs - [int]$lastPrevious.timeMs) -le 450 -and
+            ([int]$event.timeMs - [int]$firstPrevious.timeMs) -le 450 -and
+            (Test-MbRecorderSameSemanticTarget -First $lastPrevious -Second $event)
+        if ($canMergeClick) {
+            $semanticGroups[$semanticGroups.Count - 1] = [object[]]@(@($previousGroup) + @($event))
+        } else {
+            [void]$semanticGroups.Add([object[]]@($event))
+        }
+    }
+
     # 編集可能な場所へのクリックと、その直後の入力は利用者から見れば1手順。
     # 対象名が取れないEdgeでも、同じアプリ内で他のクリックを挟まない場合だけ結合する。
     $groups = New-Object System.Collections.ArrayList
-    for ($i = 0; $i -lt $orderedEvents.Count; $i++) {
-        $current = $orderedEvents[$i]
+    for ($i = 0; $i -lt $semanticGroups.Count; $i++) {
+        $currentGroup = @($semanticGroups[$i])
+        if (@($currentGroup).Count -lt 1) { continue }
+        $current = @($currentGroup)[0]
+        $lastCurrent = @($currentGroup)[@($currentGroup).Count - 1]
         $items = New-Object System.Collections.ArrayList
-        [void]$items.Add($current)
-        if ([string]$current.kind -in @('click', 'right-click') -and $i + 1 -lt $orderedEvents.Count) {
-            $next = $orderedEvents[$i + 1]
+        foreach ($item in $currentGroup) { [void]$items.Add($item) }
+        if ([string]$current.kind -in @('click', 'right-click') -and $i + 1 -lt $semanticGroups.Count) {
+            $nextGroup = @($semanticGroups[$i + 1])
+            $next = if (@($nextGroup).Count -gt 0) { @($nextGroup)[0] } else { $null }
+            if ($null -eq $next) { [void]$groups.Add(@($items)); continue }
             $sameApp = (Get-MbRecorderItemAppKey -Item $current) -eq
                 (Get-MbRecorderItemAppKey -Item $next)
-            $gap = [int]$next.timeMs - [int]$current.timeMs
+            $gap = [int]$next.timeMs - [int]$lastCurrent.timeMs
             $currentType = if ($current.PSObject.Properties.Name -contains 'targetType') { [string]$current.targetType } else { '' }
             $currentName = if ($current.PSObject.Properties.Name -contains 'targetName') { [string]$current.targetName } else { '' }
             $nextName = if ($next.PSObject.Properties.Name -contains 'targetName') { [string]$next.targetName } else { '' }
@@ -380,7 +439,7 @@ function New-MbRecorderLocalFrameCandidates {
                 [string]::Equals($currentName, $nextName, [StringComparison]::OrdinalIgnoreCase)
             if ([string]$next.kind -eq 'input' -and $sameApp -and $gap -ge 0 -and
                 $gap -le $EditMergeGapMs -and $editable -and $sameTarget) {
-                [void]$items.Add($next)
+                foreach ($item in $nextGroup) { [void]$items.Add($item) }
                 $i++
             }
         }
@@ -557,6 +616,7 @@ function New-MbRecorderLocalFrameCandidates {
             endMs = [int]$group[$group.Count - 1].timeMs + 1800
         })
     }
+    $eligibleVisualFrames = New-Object System.Collections.ArrayList
     foreach ($frame in $selected) {
         $change = if ($frame.PSObject.Properties.Name -contains 'visualChange') { [double]$frame.visualChange } else { 0.0 }
         if ($change -lt 0.00035 -or $existingAfter.Contains([string]$frame.id) -or
@@ -600,29 +660,54 @@ function New-MbRecorderLocalFrameCandidates {
         }).Count -gt 0
         if ($nearClick) { continue }
 
+        [void]$eligibleVisualFrames.Add($frame)
+    }
+
+    # 同じアプリで短時間に続く差分は、描画途中を複数手順にせず1つの変化episodeにする。
+    # 先頭変化の直前をbefore、episode末尾の変化をafterとして扱う。
+    $visualEpisodes = New-Object System.Collections.ArrayList
+    foreach ($frame in @($eligibleVisualFrames | Sort-Object { [int]$_.timeMs }, { [int]$_.index })) {
+        $previousEpisode = if ($visualEpisodes.Count -gt 0) { @($visualEpisodes[$visualEpisodes.Count - 1]) } else { @() }
+        $lastFrame = if (@($previousEpisode).Count -gt 0) { @($previousEpisode)[@($previousEpisode).Count - 1] } else { $null }
+        $sameEpisode = $null -ne $lastFrame -and
+            (Get-MbRecorderItemAppKey -Item $lastFrame) -eq (Get-MbRecorderItemAppKey -Item $frame) -and
+            ([int]$frame.timeMs - [int]$lastFrame.timeMs) -ge 0 -and
+            ([int]$frame.timeMs - [int]$lastFrame.timeMs) -le 1500
+        if ($sameEpisode) {
+            $visualEpisodes[$visualEpisodes.Count - 1] = [object[]]@(@($previousEpisode) + @($frame))
+        } else {
+            [void]$visualEpisodes.Add([object[]]@($frame))
+        }
+    }
+
+    foreach ($episodeValue in $visualEpisodes) {
+        $episode = @($episodeValue)
+        if (@($episode).Count -lt 1) { continue }
+        $firstFrame = @($episode)[0]
+        $afterFrame = @($episode)[@($episode).Count - 1]
+        $frameApp = Get-MbRecorderItemAppKey -Item $firstFrame
         $before = @($selected | Where-Object {
-            [int]$_.timeMs -lt $frameTime -and
+            [int]$_.timeMs -lt [int]$firstFrame.timeMs -and
                 (Get-MbRecorderItemAppKey -Item $_) -eq $frameApp -and
                 -not (Test-MbRecorderTransientFrameTitle -WindowTitle ([string]$_.windowTitle))
         } | Sort-Object { [int]$_.timeMs }, { [int]$_.index } | Select-Object -Last 1)
-        if ($before.Count -lt 1 -or [string]$before[0].id -eq [string]$frame.id) { continue }
+        if ($before.Count -lt 1 -or [string]$before[0].id -eq [string]$afterFrame.id) { continue }
         # 画像差分だけでは、近くのイベントがこの変化を起こしたとは断定できない。
         # 誤った赤枠を付けないため、必ず根拠イベントなし・要確認として残す。
-        $anchorId = 0
         [void]$result.Add([pscustomobject]@{
-            id = New-MbRecorderLocalProposalId -BeforeFrame ([string]$before[0].id) -AfterFrame ([string]$frame.id) `
-                -EventIds $(if ($anchorId -gt 0) { @($anchorId) } else { @() }) -TargetEventId $anchorId -ActionKind 'visual-change'
+            id = New-MbRecorderLocalProposalId -BeforeFrame ([string]$before[0].id) -AfterFrame ([string]$afterFrame.id) `
+                -EventIds @() -TargetEventId 0 -ActionKind 'visual-change'
             beforeFrame = [string]$before[0].id
-            afterFrame = [string]$frame.id
-            eventIds = $(if ($anchorId -gt 0) { @($anchorId) } else { @() })
-            targetEventId = $anchorId
+            afterFrame = [string]$afterFrame.id
+            eventIds = @()
+            targetEventId = 0
             actionKind = 'visual-change'
             timeMs = [int]$before[0].timeMs
             beforeImage = [string]$before[0].image
-            afterImage = [string]$frame.image
+            afterImage = [string]$afterFrame.image
             source = 'local'
         })
-        [void]$existingAfter.Add([string]$frame.id)
+        [void]$existingAfter.Add([string]$afterFrame.id)
     }
     return @($result | Sort-Object { [int]$_.timeMs })
 }
