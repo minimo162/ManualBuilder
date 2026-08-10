@@ -6,6 +6,8 @@
   --text: #1c2027;
   --text-2: #5b626e;
   --text-3: #6b7280;
+  --text-primary: var(--text);
+  --text-muted: var(--text-3);
   --border: #e7e9ed;
   --border-strong: #d4d8de;
   --accent: #3a5ba0;
@@ -17,6 +19,11 @@
   --danger: #b42318;
   --danger-soft: #fdecea;
   --focus: #6c8bd3;
+  --surface-muted: var(--surface-inset);
+  --line: var(--border);
+  --shadow-lg: 0 20px 60px rgba(28, 32, 39, 0.2);
+  --control-size: 44px;
+  --control-size-primary: 48px;
   /* BIZ UDPゴシックを基準フォントとし、Excel・Wordの解決順（Resolve-Mb*BodyFont）と同じ並びにする。
      基準フォントはRegularとBoldの2ウェイトのみのため、font-weightは400と700だけを使う。 */
   --font: "BIZ UDPGothic", "BIZ UDPゴシック", "BIZ UDGothic", "BIZ UDゴシック", Meiryo, "Yu Gothic UI", "MS Pゴシック", sans-serif;
@@ -38,7 +45,7 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font);
-  font-size: 15px;
+  font-size: 16px;
   line-height: 1.5;
 }
 
@@ -299,6 +306,23 @@ button:disabled {
   color: var(--danger);
 }
 
+.save-status__retry {
+  min-height: 26px;
+  margin-left: 3px;
+  padding: 2px 8px;
+  border: 1px solid currentColor;
+  border-radius: 5px;
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.save-status__retry:hover {
+  background: var(--danger-soft);
+}
+
 .watch-status {
   padding-left: 8px;
   border-left: 1px solid var(--border);
@@ -318,7 +342,7 @@ button:disabled {
 
 .button,
 .icon-button {
-  min-height: 36px;
+  min-height: var(--control-size);
   border: 1px solid transparent;
   border-radius: 6px;
   padding: 7px 12px;
@@ -329,6 +353,7 @@ button:disabled {
 }
 
 .button--primary {
+  min-height: var(--control-size-primary);
   color: #fff;
   background: var(--accent);
   border-color: var(--accent);
@@ -363,8 +388,9 @@ button:disabled {
 }
 
 .icon-button {
-  width: 32px;
-  min-height: 32px;
+  width: var(--control-size);
+  min-width: var(--control-size);
+  min-height: var(--control-size);
   display: inline-grid;
   place-items: center;
   padding: 0;
@@ -407,7 +433,7 @@ button:disabled {
 
 .menu-command {
   width: 100%;
-  min-height: 34px;
+  min-height: var(--control-size);
   display: block;
   padding: 7px 9px;
   border: 0;
@@ -1052,7 +1078,7 @@ button:disabled {
 .finish-guide {
   min-height: 76px;
   display: grid;
-  grid-template-columns: minmax(190px, 0.85fr) minmax(440px, 2fr) auto;
+  grid-template-columns: minmax(190px, 0.85fr) minmax(440px, 2fr);
   align-items: center;
   gap: 14px;
   margin-bottom: 14px;
@@ -1142,10 +1168,6 @@ button:disabled {
   background: var(--warning-soft);
 }
 
-.finish-guide__export {
-  min-width: 116px;
-}
-
 kbd {
   padding: 1px 4px;
   background: var(--surface-inset);
@@ -1171,6 +1193,10 @@ kbd {
   border-radius: 10px;
   box-shadow: 0 8px 24px rgb(20 34 62 / 8%);
   backdrop-filter: blur(10px);
+}
+
+.step-review-toolbar__export {
+  white-space: nowrap;
 }
 
 .step-review-toolbar__heading strong,
@@ -3153,22 +3179,43 @@ kbd {
 }
 
 .project-create {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px;
+  min-width: min(100%, 520px);
+  display: grid;
+  gap: 6px;
+  padding: 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
 }
 
-.project-create input {
-  width: 250px;
-  min-height: 34px;
-  padding: 5px 8px;
-  border: 0;
-  background: transparent;
+.project-create > label {
   color: var(--text);
+  font-weight: 700;
+}
+
+.project-create__controls {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.project-create > small {
+  color: var(--text-2);
+}
+
+.project-create input {
+  width: min(280px, 45vw);
+  min-height: 48px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.project-create .button {
+  min-height: 48px;
+  white-space: nowrap;
 }
 
 .project-library__section {
@@ -3496,7 +3543,7 @@ kbd {
   }
 
   .step-review-toolbar {
-    grid-template-columns: minmax(180px, 1fr) auto auto;
+    grid-template-columns: minmax(160px, 1fr) auto auto auto;
   }
 
   .step-review-shortcut {
@@ -3507,10 +3554,6 @@ kbd {
     grid-template-columns: minmax(180px, 0.7fr) minmax(400px, 2fr);
   }
 
-  .finish-guide__export {
-    grid-column: 1 / -1;
-    justify-self: end;
-  }
 }
 
 @media (max-width: 1100px) {
@@ -3523,6 +3566,32 @@ kbd {
   }
 }
 
+/* 125%表示の1366x768相当でも、二段のヘッダーと固定要素を重ねない。 */
+@media (max-width: 1100px) and (max-height: 700px) {
+  .workspace:not(.project-library) .topbar {
+    position: static;
+  }
+
+  .workspace:not(.project-library) .sidebar {
+    top: 0;
+    height: 100dvh;
+  }
+
+  .workspace:not(.project-library) .step-review-toolbar {
+    position: static;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .workspace:not(.project-library) .step-review-toolbar__heading,
+  .workspace:not(.project-library) .step-review-toolbar__export {
+    grid-column: 1 / -1;
+  }
+
+  .workspace:not(.project-library) .step-review-toolbar__export {
+    width: 100%;
+  }
+}
+
 @media (max-width: 900px) {
   .topbar {
     position: static;
@@ -3532,6 +3601,26 @@ kbd {
   .topbar__actions {
     grid-column: 2 / -1;
     justify-content: flex-end;
+  }
+
+  .project-library__intro,
+  .project-create__controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .project-library__actions,
+  .project-create,
+  .project-create input {
+    width: 100%;
+  }
+
+  .output-review-dialog__actions {
+    grid-template-columns: 1fr;
+  }
+
+  .output-review-dialog__actions > p {
+    grid-column: 1;
   }
 
   .editor__actions .button {
@@ -3606,6 +3695,11 @@ kbd {
     grid-column: 1 / -1;
   }
 
+  .step-review-toolbar__export {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
   .image-panel {
     border-right: 0;
     border-bottom: 1px solid var(--border);
@@ -3643,9 +3737,6 @@ kbd {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .finish-guide__export {
-    width: 100%;
-  }
 }
 
 @media (max-width: 620px) {
@@ -3882,6 +3973,11 @@ kbd {
   font-size: 11px;
 }
 
+.output-review-dialog__header h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
 .output-review-dialog__close {
   width: 34px;
   height: 34px;
@@ -3943,6 +4039,36 @@ kbd {
   display: grid;
   grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
   gap: 8px;
+}
+
+.output-review-dialog__actions {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.output-review-dialog__actions > p {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--text-2);
+}
+
+.output-review-dialog__primary {
+  min-height: var(--control-size-primary);
+  font-size: 16px;
+}
+
+.output-review-dialog__word {
+  color: var(--text-2);
+  font-weight: 400;
+}
+
+.output-format.output-format--secondary {
+  align-self: center;
+  min-height: 88px;
+  border-color: var(--border);
+  background: var(--surface-inset);
 }
 
 .output-format {
@@ -4043,6 +4169,11 @@ kbd {
   display: block;
 }
 
+.copilot-dialog__header h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
 .copilot-dialog__header span {
   margin-top: 2px;
   font-size: 12px;
@@ -4071,6 +4202,57 @@ kbd {
   min-height: 0;
   overflow-y: auto;
   padding: 18px;
+}
+
+.recorder-view-heading {
+  margin: 0 0 10px;
+  font-size: 18px;
+}
+
+.recorder-view-heading:focus {
+  outline: none;
+}
+
+.recorder-decision-dialog {
+  width: min(560px, calc(100vw - 32px));
+  padding: 24px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.recorder-decision-dialog::backdrop {
+  background: rgba(28, 32, 39, 0.48);
+}
+
+.recorder-decision-dialog h2,
+.recorder-decision-dialog p {
+  margin-top: 0;
+}
+
+.recorder-decision-dialog__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 22px;
+}
+
+.button--danger {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: var(--surface);
+}
+
+.button--danger:hover:not(:disabled) {
+  color: #fff;
+  background: var(--danger);
+}
+
+.recorder-decision-dialog__warning {
+  margin: 14px 0 0 !important;
+  color: var(--danger);
 }
 
 .copilot-dialog__state strong {
@@ -4727,11 +4909,15 @@ kbd {
   padding-top: 2px;
 }
 
-.recorder-proposal__body strong {
+.recorder-proposal__body strong,
+.recorder-proposal__body h3 {
+  margin: 0;
   font-size: 15px;
 }
 
-.recorder-proposal__body > span {
+.recorder-proposal__body > span,
+.recorder-proposal__body > p:not(.recorder-proposal__reason) {
+  margin: 0;
   color: var(--text-2);
   font-size: 13px;
   line-height: 1.65;
@@ -5133,6 +5319,34 @@ kbd {
 /* 画面下部の固定要素どうしが重ならないようにする。 */
 .toast-region {
   bottom: 88px;
+}
+
+/* 老眼・弱視・手指の震えを前提に、主要画面の下限を一か所で保証する。 */
+body :is(p, span, small, label, legend, figcaption, strong, button, input, textarea, select, summary) {
+  font-size: max(14px, 1em) !important;
+}
+
+button,
+summary,
+select,
+input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]),
+textarea {
+  min-block-size: var(--control-size) !important;
+}
+
+button {
+  min-inline-size: var(--control-size);
+}
+
+.button--primary,
+.step-review-toolbar__export,
+.recorder-dialog__start,
+.output-review-dialog__primary {
+  min-block-size: var(--control-size-primary) !important;
+}
+
+.icon-button {
+  font-size: 18px !important;
 }
 
 /* 3列が収まらなくなる幅は実測で約1225px。1180pxの折返しでは遅く、

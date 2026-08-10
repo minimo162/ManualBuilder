@@ -126,7 +126,20 @@ if (appJs) {
     check(`${name} の呼び出しが残っている`, appJs.includes(marker));
   }
   check('HTML出力の呼び出しが残っていない', !appJs.includes('data-export-html') && !appJs.includes('/api/export/html'));
-  check('Excelを主選択、Wordを印刷向けとして案内する', appJs.includes('Excelファイルを作成') && appJs.includes('Wordファイルを作成') && appJs.includes('印刷しやすい縦型'));
+  check('Excelを主選択、Wordを印刷向けとして案内する', appJs.includes('Excelファイルを作成') && appJs.includes('印刷向けにWordで作成') && appJs.includes('Excelが標準です'));
+  check('出力確認ではExcelを標準、Wordを必要時の副出力として扱う',
+    appJs.includes('output-review-dialog__primary') && appJs.includes('output-review-dialog__word') &&
+    appJs.includes('Excelが標準です') && !appJs.includes('output-format--recommended'));
+  check('保存失敗を未保存と伝え、永続再試行を出す',
+    !appJs.includes('入力内容は保存されています') &&
+    appJs.includes('まだ保存されていません。上部の［再試行］') &&
+    appJs.includes("target.setAttribute('role', state === 'error' ? 'alert' : 'status')"));
+  check('記録終了を結果の分かるボタンで選べる',
+    appJs.includes('askRecorderCloseAction') && appJs.includes('記録を続ける') &&
+    appJs.includes('終了して確認') && appJs.includes('記録を捨てて閉じる'));
+  check('要確認候補は見出しで命名し、編集欄と本文を重複表示しない',
+    appJs.includes('aria-labelledby="${titleId}"') && appJs.includes('<h3 id="${titleId}">') &&
+    appJs.includes('const proposalContent = reviewRequired'));
   check('完成ファイルの共有は手動だと案内する', appJs.includes('完成ファイルを手動でコピーまたは送付してください'));
   const recommendation = appJs.match(/const getRecommendedRecordedIndexes = \(events\) => \{([\s\S]*?)\n  \};/);
   let multiAppSelected = false;
@@ -200,7 +213,6 @@ if (appJs) {
     appJs.includes('accepted: isRecorderRowSelected(row)') &&
     appJs.includes('JSON.stringify({ accept, decisions })'));
   check('記録中の補助画面を役割が分かる記録レシートと呼ぶ',
-    appJs.includes('記録レシートで確認・終了') &&
     appJs.includes('対象アプリの端に記録レシートが開きます'));
   check('変換理由と元操作件数は詳細を開いたときだけ表示する',
     appJs.includes('recorder-source-evidence') && appJs.includes('<summary>元の操作を見る</summary>') &&
@@ -229,6 +241,10 @@ if (appJs) {
   check('通知を積んで出す', appJs.includes('TOAST_LIMIT'));
   check('通知を閉じられる', appJs.includes('toast__close'));
   check('サーバーが返した具体的な失敗理由を表示する', appJs.includes("contentType.includes('text/plain')") && appJs.includes('serverMessage ||'));
+  check('文章の保存失敗から入力を保ったまま再試行できる',
+    appJs.includes('failedSaveRequest') && appJs.includes('retryFailedSave') &&
+    appJs.includes("window.htmx.trigger(failed.element, 'change')") &&
+    appJs.includes("retry.textContent = '再試行'"));
   check('動きを減らす設定を尊重する', appJs.includes('prefers-reduced-motion'));
   check('取り込み後に仕上げ状況を集計する', appJs.includes('updateFinishGuide'));
   check('未完了手順へ移動できる', appJs.includes('focusFinishTarget'));
@@ -276,19 +292,39 @@ if (appJs) {
   check('編集中カードを追加位置として選ぶ', appJs.includes("document.body.addEventListener('focusin'"));
   // 名前の無いダイアログは読み上げが「ダイアログ」としか伝えない。作る数と名前を付ける数を合わせる。
   const dialogCreations = (appJs.match(/document\.createElement\('dialog'\)/g) || []).length;
-  const dialogLabels = (appJs.match(/dialog\.setAttribute\('aria-label'/g) || []).length;
+  const dialogLabels = (appJs.match(/(?:dialog|decision)\.setAttribute\('aria-(?:label|labelledby)'/g) || []).length;
   check('作るダイアログすべてに名前を付ける', dialogLabels >= dialogCreations,
     `ダイアログ ${dialogCreations} 件 / 名前 ${dialogLabels} 件`);
 }
 
 const appCss = read('web/assets/css/app.css');
 if (appCss) {
+  check('本文16px・操作44px・主操作48pxの下限を定義する',
+    appCss.includes('font-size: 16px') && appCss.includes('--control-size: 44px') &&
+    appCss.includes('--control-size-primary: 48px'));
+  check('低い中幅画面で固定要素を重ねない',
+    appCss.includes('@media (max-width: 1100px) and (max-height: 700px)') &&
+    appCss.includes('.workspace:not(.project-library) .step-review-toolbar'));
+  check('記録画面の旧トークンを有効な共通トークンへ対応づける',
+    appCss.includes('--text-muted: var(--text-3)') && appCss.includes('--line: var(--border)') &&
+    appCss.includes('--shadow-lg:'));
   check('フォーカス位置を輪郭線でも示す', /:focus-visible[\s\S]{0,200}outline:/.test(appCss));
   check('ハイコントラストでもフォーカスが見える', appCss.includes('forced-colors: active'));
   check('未入力の目印を狭い画面で切り捨てない', !appCss.includes('max-width: 32px'));
   check('削除取り消しを消えない操作バーで表示する', appCss.includes('.deletion-undo') && appCss.includes('.deletion-undo__button'));
   check('一覧確認で全カードと大きな画像を表示する', appCss.includes('.workspace.step-view--review .step-card') && appCss.includes('height: clamp(500px, 68vh, 820px)'));
   check('選択中かつ表示中の手順も複数選択色を保つ', appCss.includes('.step-nav__item--active.step-nav__item--selected'));
+}
+
+const companionHtml = read('src/RecorderCompanion/web/index.html');
+const companionCss = read('src/RecorderCompanion/web/styles.css');
+if (companionHtml && companionCss) {
+  check('記録コンパニオンのapp-shellと確認dialogを正しく閉じる',
+    companionHtml.includes('</section>\n  </div>\n\n  <dialog class="modal"') &&
+    companionHtml.includes('</section>\n  </dialog>'));
+  check('記録コンパニオンも本文16px・操作44px・主操作48pxにする',
+    companionCss.includes('font-size: 16px') && companionCss.includes('min-height: 44px') &&
+    companionCss.includes('.primary-button { min-height: 48px'));
 }
 
 const indexHtmlText = read('web/index.html');
